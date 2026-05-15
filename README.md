@@ -2,7 +2,7 @@
 
 Portus MCP is an MCP server for AI assisted project work.
 
-It lets MCP clients like ChatGPT, Codex, and other AI harnesses work with registered projects through direct project tools. It can also spawn Flue agents when you enable that capability.
+It lets MCP clients like ChatGPT, Codex, and other AI harnesses work with registered projects on your local or remote machines, including VMs, through direct project tools. It can also spawn Flue agents when you enable that capability.
 
 You can configure several machines in different locations to run their own Portus MCP servers, with their own configurations and policies, allowing clients to connect to their registered projects separately or within the same conversation.
 
