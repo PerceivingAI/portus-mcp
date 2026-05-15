@@ -1,0 +1,168 @@
+import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { timingSafeEqual } from "node:crypto";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { optionalEnv } from "./env.js";
+import { registerProjectTools } from "./tools/projects.js";
+import { registerAgentTools } from "./tools/agents.js";
+import { registerSkillTools } from "./tools/skills.js";
+import { registerConfigTools } from "./tools/config.js";
+import { readSessionEvents } from "./state/SessionEvents.js";
+
+export function createMcpServer(): McpServer {
+  const server = new McpServer({
+    name: "portus-mcp",
+    version: "0.1.1"
+  });
+
+  registerProjectTools(server);
+  registerAgentTools(server);
+  registerSkillTools(server);
+  registerConfigTools(server);
+
+  return server;
+}
+
+export function createHttpServer(mcpPath = optionalEnv("PORTUS_MCP_PATH", "/mcp")) {
+  const bearerToken = optionalEnv("PORTUS_MCP_BEARER_TOKEN", "").trim();
+
+  const hasValidBearerToken = (authorization: string | undefined): boolean => {
+    if (!bearerToken) return true;
+    const prefix = "Bearer ";
+    if (!authorization?.startsWith(prefix)) return false;
+    const suppliedToken = authorization.slice(prefix.length).trim();
+    const expected = Buffer.from(bearerToken);
+    const supplied = Buffer.from(suppliedToken);
+    return expected.length === supplied.length && timingSafeEqual(expected, supplied);
+  };
+
+  return createServer(async (req: IncomingMessage, res: ServerResponse) => {
+  if (!req.url) {
+    res.writeHead(400).end("Missing URL");
+    return;
+  }
+
+  const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
+  const isMcpRoute = url.pathname === mcpPath || url.pathname.startsWith(`${mcpPath}/`);
+  const corsHeaders = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, GET, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "content-type, mcp-session-id, mcp-protocol-version, authorization, last-event-id",
+    "Access-Control-Expose-Headers": "Mcp-Session-Id, mcp-session-id"
+  };
+
+  if (req.method === "OPTIONS" && isMcpRoute) {
+    res.writeHead(204, corsHeaders);
+    res.end();
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/") {
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+      name: "portus-mcp",
+      mcp: mcpPath,
+      status: "ok"
+    }, null, 2));
+    return;
+  }
+
+  if (isMcpRoute && !hasValidBearerToken(req.headers.authorization)) {
+    res.writeHead(401, {
+      ...corsHeaders,
+      "content-type": "text/plain",
+      "www-authenticate": "Bearer"
+    }).end("Bearer token required for this Portus MCP server.");
+    return;
+  }
+
+  if (isMcpRoute && req.method === "GET" && url.pathname === `${mcpPath}/events`) {
+    const sessionId = url.searchParams.get("sessionId");
+    if (!sessionId) {
+      res.writeHead(400, { ...corsHeaders, "content-type": "text/plain" }).end("Missing sessionId");
+      return;
+    }
+    let afterSequence = Number(url.searchParams.get("afterSequence") ?? req.headers["last-event-id"] ?? "0");
+    if (!Number.isInteger(afterSequence) || afterSequence < 0) afterSequence = 0;
+    res.writeHead(200, {
+      ...corsHeaders,
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive"
+    });
+    const sendEvents = () => {
+      try {
+        const page = readSessionEvents({ sessionId, afterSequence, limit: 100 });
+        for (const event of page.events) {
+          res.write(`id: ${event.sequence}\n`);
+          res.write(`event: ${event.type}\n`);
+          res.write(`data: ${JSON.stringify(event)}\n\n`);
+          afterSequence = event.sequence;
+        }
+      } catch (error) {
+        res.write(`event: error\n`);
+        res.write(`data: ${JSON.stringify({ message: error instanceof Error ? error.message : String(error) })}\n\n`);
+      }
+    };
+    sendEvents();
+    const interval = setInterval(sendEvents, 1000);
+    res.on("close", () => clearInterval(interval));
+    return;
+  }
+
+  if (isMcpRoute && req.method === "GET" && !String(req.headers.accept ?? "").includes("text/event-stream")) {
+    res.writeHead(200, {
+      ...corsHeaders,
+      "content-type": "application/json"
+    }).end(JSON.stringify({
+      name: "portus-mcp",
+      mcp: mcpPath,
+      status: "ok",
+      note: "Use POST with JSON-RPC or GET with Accept: text/event-stream for MCP."
+    }, null, 2));
+    return;
+  }
+
+  if (isMcpRoute && req.method && ["GET", "POST", "DELETE"].includes(req.method)) {
+    for (const [key, value] of Object.entries(corsHeaders)) {
+      res.setHeader(key, value);
+    }
+
+    const server = createMcpServer();
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true
+    });
+
+    res.on("close", () => {
+      transport.close();
+      server.close();
+    });
+
+    try {
+      await server.connect(transport);
+      await transport.handleRequest(req, res);
+    } catch (error) {
+      console.error(error);
+      if (!res.headersSent) res.writeHead(500).end("Internal server error");
+    }
+    return;
+  }
+
+  res.writeHead(404).end("Not Found");
+});
+}
+
+export function startServer(): void {
+  const port = Number(optionalEnv("PORTUS_MCP_PORT", "8789"));
+  const mcpPath = optionalEnv("PORTUS_MCP_PATH", "/mcp");
+  createHttpServer(mcpPath).listen(port, () => {
+    console.log(`portus-mcp MCP server listening on http://localhost:${port}${mcpPath}`);
+  });
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  startServer();
+}
+

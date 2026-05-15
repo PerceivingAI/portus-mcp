@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Inspector"
+  short_description: "Map a project before changing it"
+  default_prompt: "Use $project-inspector to inspect this project and report the key files, scripts, risks, and next action."

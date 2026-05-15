@@ -1,0 +1,41 @@
+{
+  "agents": {
+    "maxConcurrent": 4,
+    "maxConcurrentPerProject": 2,
+    "queueEnabled": false,
+    "maxQueueDepth": 10,
+    "queuedTaskTtlSecs": 300,
+    "projectLockTimeoutSecs": 1800,
+    "maxRuntimeSecs": 900,
+    "networkAccess": true,
+    "grantCommands": true,
+    "gitCommand": true,
+    "packageManagerCommand": false,
+    "nodeCommand": false
+  },
+  "chatgpt": {
+    "registerProjects": false,
+    "updatePermissions": false,
+    "spawnAgents": true,
+    "readFiles": true,
+    "writeFiles": true,
+    "moveFiles": true,
+    "deleteFiles": true,
+    "readGitIgnoredFiles": false,
+    "runPackageScripts": true,
+    "gitCommands": true
+  },
+  "output": {
+    "maxStdoutBytes": 200000,
+    "maxStderrBytes": 200000
+  },
+  "input": {
+    "maxWriteBytes": 1000000,
+    "maxPatchBytes": 1000000,
+    "maxTextOperationBytes": 200000,
+    "maxSearchOrMarkerBytes": 20000
+  },
+  "audit": {
+    "strictMode": false
+  }
+}

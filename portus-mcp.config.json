@@ -1,0 +1,44 @@
+{
+  "projects": {
+    "allowedRootMode": "registered-only"
+  },
+  "agents": {
+    "defaultTemplate": "ephemeral-project-agent",
+    "allowPersistentSessions": false,
+    "useFlueCli": true,
+    "allowedCommands": ["git", "npm", "node"],
+    "retry": {
+      "enabled": true,
+      "maxAttempts": 3,
+      "baseDelayMs": 1500,
+      "maxDelayMs": 15000,
+      "jitterRatio": 0.2,
+      "retryOn": ["provider_rate_limited", "network_transient", "flue_startup_hang"],
+      "respectRetryAfter": true,
+      "maxRetryWindowSecs": 60
+    }
+  },
+  "blockedPathPatterns": [
+    ".env",
+    ".ssh",
+    "id_rsa",
+    "id_ed25519",
+    "secrets",
+    "private",
+    "AppData",
+    "Bitwarden"
+  ],
+  "excludedTraversalPatterns": [
+    ".git",
+    "node_modules",
+    "dist",
+    ".portus-mcp",
+    ".flue",
+    "coverage",
+    ".next",
+    ".cache"
+  ],
+  "skills": {
+    "directory": "skills"
+  }
+}

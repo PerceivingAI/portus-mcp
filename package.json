@@ -1,0 +1,34 @@
+{
+  "name": "portus-mcp",
+  "version": "0.1.1",
+  "private": true,
+  "type": "module",
+  "description": "Local-first, multi-machine MCP server for AI-assisted project work.",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "build": "tsc",
+    "flue:check": "flue build --target node",
+    "smoke:health": "node scripts/smoke-health.mjs",
+    "smoke:flue-write": "node --import tsx scripts/smoke-flue-write.mjs",
+    "smoke:flue-lifecycle": "node --import tsx scripts/smoke-flue-lifecycle.mjs",
+    "clean-state": "node scripts/clean-state.mjs"
+  },
+  "dependencies": {
+    "@flue/cli": "^0.2.0",
+    "@flue/sdk": "^0.2.0",
+    "@modelcontextprotocol/sdk": "^1.20.2",
+    "dotenv": "^16.4.7",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

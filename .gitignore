@@ -1,0 +1,8 @@
+node_modules/
+dist/
+portus-agents/
+portus-mcp/
+.env
+.portus-agents/
+.flue/
+*.log

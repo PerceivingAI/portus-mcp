@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test And Verify"
+  short_description: "Run focused project verification"
+  default_prompt: "Use $test-and-verify to choose and run the relevant checks for this project change."

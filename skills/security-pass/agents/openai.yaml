@@ -1,0 +1,4 @@
+interface:
+  display_name: "Security Pass"
+  short_description: "Review practical security risks"
+  default_prompt: "Use $security-pass to review this project or change for practical security risks."
