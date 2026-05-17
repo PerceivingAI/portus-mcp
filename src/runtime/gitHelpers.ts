@@ -8,7 +8,7 @@ const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
 
 export async function gitStatus(cwd: string): Promise<string> {
   const { stdout, stderr } = await execFileAsync("git", ["status", "--short"], { cwd });
-  return limitText(stdout + stderr, loadPolicyConfig().output.maxStdoutChars).text;
+  return limitText(stdout + stderr, loadPolicyConfig().limits.agentOutput.maxStdoutChars).text;
 }
 
 export async function gitDiff(cwd: string): Promise<string> {
@@ -22,7 +22,7 @@ export async function gitDiff(cwd: string): Promise<string> {
     stat.stdout + stat.stderr,
     "## git diff",
     diff.stdout + diff.stderr
-  ].join("\n"), loadPolicyConfig().output.maxStdoutChars).text;
+  ].join("\n"), loadPolicyConfig().limits.agentOutput.maxStdoutChars).text;
 }
 
 export async function gitDiffFile(cwd: string, relativePath: string, includeUntracked = false): Promise<string> {

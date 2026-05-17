@@ -78,12 +78,12 @@ agent_limits
 Common causes:
 
 ```text
-chatgpt.spawnAgents=false
-chatgpt.runPackageScripts=false
-chatgpt.moveFiles=false
-chatgpt.deleteFiles=false
-agents.maxConcurrent=0
-agents.maxConcurrentPerProject=0
+permissions.chatgpt.spawnAgents=false
+permissions.chatgpt.runPackageScripts=false
+permissions.chatgpt.moveFiles=false
+permissions.chatgpt.deleteFiles=false
+agents.concurrency.maxConcurrent=0
+agents.concurrency.maxConcurrentPerProject=0
 ```
 
 ## Path Blocked

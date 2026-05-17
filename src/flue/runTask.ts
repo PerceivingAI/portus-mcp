@@ -119,7 +119,7 @@ export async function runFlueTask(input: RunFlueTaskInput): Promise<SessionRecor
   });
 
   if (isBlocked && limits.queueEnabled) {
-    const maxQueueDepth = loadPolicyConfig().agents.maxQueueDepth;
+    const maxQueueDepth = loadPolicyConfig().agents.concurrency.maxQueueDepth;
     if (pendingQueue.length >= maxQueueDepth) {
       const failed = failQueuedRecord(record, "queue_ttl_expired", "Queue is full and cannot accept more tasks.");
       appendSessionEvent(failed, "queue_full", "Queue is full and cannot accept more tasks.", { queueDepth: pendingQueue.length });
@@ -335,7 +335,7 @@ function failQueuedRecord(record: SessionRecord, failureType: FailureType, messa
 }
 
 function scheduleQueueDrain(): void {
-  const delayMs = loadPolicyConfig().agents.queueDrainDelayMs;
+  const delayMs = loadPolicyConfig().agents.lifecycle.queueDrainDelayMs;
   setTimeout(() => {
     void drainQueue();
   }, delayMs);
@@ -343,7 +343,7 @@ function scheduleQueueDrain(): void {
 
 async function drainQueue(): Promise<void> {
   if (pendingQueue.length === 0) return;
-  const queueTtlMs = loadPolicyConfig().agents.queuedTaskTtlSecs * 1000;
+  const queueTtlMs = loadPolicyConfig().agents.lifecycle.queuedTaskTtlSecs * 1000;
   const now = Date.now();
   for (let i = pendingQueue.length - 1; i >= 0; i -= 1) {
     const item = pendingQueue[i]!;
@@ -371,7 +371,7 @@ async function drainQueue(): Promise<void> {
 function canAcquireProjectLock(projectAlias: string): boolean {
   const existing = projectLocks.get(projectAlias);
   if (!existing) return true;
-  const lockTimeoutMs = loadPolicyConfig().agents.projectLockTimeoutSecs * 1000;
+  const lockTimeoutMs = loadPolicyConfig().agents.lifecycle.projectLockTimeoutSecs * 1000;
   if (Date.now() - existing.acquiredAtMs > lockTimeoutMs) {
     projectLocks.delete(projectAlias);
     appendSessionEventById(existing.sessionId, "lock_expired", "Project lock expired and was released.", { projectAlias });
@@ -453,14 +453,14 @@ export function getAgentLimits(projectAlias?: string): {
   lockedProjects: Array<{ projectAlias: string; sessionId: string; acquiredAt: string }>;
 } {
   const policy = loadPolicyConfig();
-  const maxConcurrentAgents = policy.agents.maxConcurrent;
-  const maxConcurrentAgentsPerProject = policy.agents.maxConcurrentPerProject;
+  const maxConcurrentAgents = policy.agents.concurrency.maxConcurrent;
+  const maxConcurrentAgentsPerProject = policy.agents.concurrency.maxConcurrentPerProject;
   const activeSessions = listActiveSessions().length;
   const projectActiveSessions = projectAlias ? listActiveSessions(projectAlias).length : 0;
-  const queueEnabled = policy.agents.queueEnabled;
-  const maxQueueDepth = policy.agents.maxQueueDepth;
-  const queueTaskTtlSecs = policy.agents.queuedTaskTtlSecs;
-  const sessionLockTimeoutSecs = policy.agents.projectLockTimeoutSecs;
+  const queueEnabled = policy.agents.concurrency.queueEnabled;
+  const maxQueueDepth = policy.agents.concurrency.maxQueueDepth;
+  const queueTaskTtlSecs = policy.agents.lifecycle.queuedTaskTtlSecs;
+  const sessionLockTimeoutSecs = policy.agents.lifecycle.projectLockTimeoutSecs;
   const lockedProjects = Array.from(projectLocks.entries()).map(([alias, lock]) => ({
     projectAlias: alias,
     sessionId: lock.sessionId,
@@ -629,7 +629,7 @@ async function runSingleAttempt(params: {
   let stderr = "";
   let emittedOutput = false;
   let startupHang = false;
-  const agentPolicy = loadPolicyConfig().agents;
+  const agentPolicy = loadPolicyConfig().agents.lifecycle;
   child.stdout?.on("data", (chunk) => {
     emittedOutput = true;
     const text = chunk.toString("utf8");
@@ -856,7 +856,7 @@ async function terminateChildTree(child: ChildProcess, reason: string) {
   } catch {
     // best effort
   }
-  await delay(loadPolicyConfig().agents.killEscalationDelayMs);
+  await delay(loadPolicyConfig().agents.lifecycle.killEscalationDelayMs);
   if (child.exitCode !== null) return;
   if (process.platform === "win32") {
     try {

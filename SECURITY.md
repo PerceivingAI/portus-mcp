@@ -34,7 +34,7 @@ Portus MCP blocks path escapes, absolute paths where relative paths are required
 
 ## Gitignored Files
 
-When `chatgpt.readGitIgnoredFiles=false`, ignored files are opaque.
+When `permissions.chatgpt.readGitIgnoredFiles=false`, ignored files are opaque.
 
 Portus MCP blocks reads, metadata checks, copy sources, overwrites, deletes, directory deletes, replace/insert/patch edits, and ignored `package.json` script discovery or execution.
 
@@ -74,7 +74,7 @@ Spawned agents use Flue and run as local processes with cwd set to the registere
 
 They are useful for delegated work, but they are not a hard filesystem sandbox. If a spawned agent receives command access, it may be able to read files allowed by OS permissions and granted commands.
 
-You can disable spawned agents by setting `chatgpt.spawnAgents=false`, `agents.maxConcurrent=0`, or `agents.maxConcurrentPerProject=0`.
+You can disable spawned agents by setting `permissions.chatgpt.spawnAgents=false`, `agents.concurrency.maxConcurrent=0`, or `agents.concurrency.maxConcurrentPerProject=0`.
 
 ## Provider Credentials
 

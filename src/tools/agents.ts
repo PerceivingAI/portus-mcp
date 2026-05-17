@@ -118,17 +118,20 @@ export function registerAgentTools(server: McpServer): void {
   }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ sessionId, stream }) => {
     const session = getSession(sessionId);
     const target = stream === "stdout" ? session.stdoutPath : stream === "stderr" ? session.stderrPath : session.resultPath;
-    const policy = loadPolicyConfig().output;
-    const limit = stream === "stdout" ? policy.maxStdoutChars : stream === "stderr" ? policy.maxStderrChars : policy.defaultReadChars;
+    const policy = loadPolicyConfig().limits;
+    const limit = stream === "stdout"
+      ? policy.agentOutput.maxStdoutChars
+      : stream === "stderr"
+        ? policy.agentOutput.maxStderrChars
+        : policy.fileRead.maxChars;
     const limited = limitText(readFileSync(target, "utf8"), limit);
     return { sessionId, stream, content: limited.text, truncated: limited.truncated, chars: limited.chars, totalChars: limited.totalChars, omittedChars: limited.omittedChars, limit: limited.limit };
   });
 
   registerTool(server, "session_read_events", "Use this when ChatGPT needs to inspect incremental session events without rereading full logs.", {
     sessionId: z.string(),
-    afterSequence: z.number().int().min(0).default(0),
-    limit: z.number().int().positive().max(500).default(100)
-  }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ sessionId, afterSequence, limit }) => readSessionEvents({ sessionId, afterSequence, limit }));
+    afterSequence: z.number().int().min(0).default(0)
+  }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ sessionId, afterSequence }) => readSessionEvents({ sessionId, afterSequence }));
 
   registerTool(server, "session_stop_all", "Stop all running sessions, optionally scoped to one project.", {
     projectAlias: z.string().optional()

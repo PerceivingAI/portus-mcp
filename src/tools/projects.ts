@@ -14,7 +14,7 @@ import { assertChatGptPermission } from "../policy/permissionPolicy.js";
 import { loadPolicyConfig } from "../policy/policyConfig.js";
 import { getEffectivePermissions } from "../state/PermissionRegistry.js";
 import { gitDiffFile, gitStatus, gitUntrackedFiles } from "../runtime/gitHelpers.js";
-import { limitText } from "../runtime/outputLimits.js";
+import { countChars, limitText } from "../runtime/outputLimits.js";
 import { runProjectCheck, runProjectScript } from "../runtime/checks.js";
 import { registerTool } from "./toolUtils.js";
 
@@ -22,16 +22,14 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_EXCLUDED_TRAVERSAL_PATTERNS = [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"];
 const TEXT_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json", ".md", ".txt", ".yaml", ".yml", ".toml", ".env", ".html", ".css", ".scss", ".xml", ".sh", ".ps1", ".sql"]);
 
-function assertInputBytes(name: string, value: string, limit: number): void {
-  const bytes = Buffer.byteLength(value, "utf8");
-  if (bytes > limit) throw new Error(`Input exceeds ${name}: ${bytes} > ${limit} bytes`);
+function assertInputChars(name: string, value: string, limit: number): void {
+  const chars = countChars(value);
+  if (chars > limit) throw new Error(`Input exceeds ${name}: ${chars} > ${limit} chars`);
 }
 
-async function readProjectTextFile(input: { projectAlias: string; relativePath: string; maxChars?: number }) {
+async function readProjectTextFile(input: { projectAlias: string; relativePath: string }) {
   assertChatGptPermission("readFiles", input.projectAlias);
-  const { defaultReadChars, maxReadChars } = loadPolicyConfig().output;
-  const readLimit = input.maxChars ?? defaultReadChars;
-  if (readLimit > maxReadChars) throw new Error(`Input exceeds maxReadChars: ${readLimit} > ${maxReadChars} chars`);
+  const readLimit = loadPolicyConfig().limits.fileRead.maxChars;
   const target = resolveProjectPath(input.projectAlias, input.relativePath);
   assertCanReadProjectPath(input.projectAlias, target, input.relativePath);
   const limited = limitText(readFileSync(target, "utf8"), readLimit);
@@ -193,8 +191,8 @@ export function registerProjectTools(server: McpServer): void {
     try { git = await gitStatus(project.rootPath); } catch (error) { git = `git status unavailable: ${String(error)}`; }
     return { project, git };
   });
-  registerTool(server, "project_read_file", "Use this when ChatGPT needs to read a text file inside a registered project. The path must be relative to the registered project root and cannot read outside that project.", { projectAlias: z.string(), relativePath: z.string(), maxChars: z.number().int().positive().optional() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath, maxChars }) => readProjectTextFile({ projectAlias, relativePath, maxChars }));
-  registerTool(server, "project_read_text_file", "Use this when ChatGPT needs to read a text file inside a registered project. The path must be relative to the registered project root and cannot read outside that project.", { projectAlias: z.string(), relativePath: z.string(), maxChars: z.number().int().positive().optional() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath, maxChars }) => readProjectTextFile({ projectAlias, relativePath, maxChars }));
+  registerTool(server, "project_read_file", "Use this when ChatGPT needs to read a text file inside a registered project. The path must be relative to the registered project root and cannot read outside that project.", { projectAlias: z.string(), relativePath: z.string() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath }) => readProjectTextFile({ projectAlias, relativePath }));
+  registerTool(server, "project_read_text_file", "Use this when ChatGPT needs to read a text file inside a registered project. The path must be relative to the registered project root and cannot read outside that project.", { projectAlias: z.string(), relativePath: z.string() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath }) => readProjectTextFile({ projectAlias, relativePath }));
   registerTool(server, "project_list_files", "Use this when ChatGPT needs to list files inside a registered project.", { projectAlias: z.string(), relativePath: z.string().default("."), maxEntries: z.number().int().positive().max(1000).default(200) }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath, maxEntries }) => {
     assertChatGptPermission("readFiles", projectAlias);
     const root = resolveProjectPath(projectAlias, relativePath);
@@ -204,7 +202,7 @@ export function registerProjectTools(server: McpServer): void {
   });
   registerTool(server, "project_write_file", "Use this when ChatGPT needs to write a file inside a registered project.", { projectAlias: z.string(), relativePath: z.string(), content: z.string() }, { readOnlyHint: false, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath, content }) => {
     assertChatGptPermission("writeFiles", projectAlias);
-    assertInputBytes("maxWriteBytes", content, loadPolicyConfig().input.maxWriteBytes);
+    assertInputChars("limits.fileWrite.maxChars", content, loadPolicyConfig().limits.fileWrite.maxChars);
     const target = resolveProjectPath(projectAlias, relativePath);
     if (existsSync(target)) assertCanReadProjectPath(projectAlias, target, relativePath);
     const bytes = Buffer.byteLength(content, "utf8");
@@ -327,18 +325,19 @@ export function registerProjectTools(server: McpServer): void {
     const matches = ranked.slice(0, maxResults).map(({ item, score, matchedTokens }) => ({ ...item, score, matchedTokens }));
     return { projectAlias, query, tokens, matches, truncated: ranked.length > maxResults, maxResults };
   });
-  registerTool(server, "project_search_text", "Search text content inside project files.", { projectAlias: z.string(), query: z.string(), relativePath: z.string().default("."), glob: z.string().optional(), maxResults: z.number().int().positive().max(5000).default(100), maxCharsPerFile: z.number().int().positive().max(500000).default(200000), contextLines: z.number().int().min(0).max(10).default(0), caseSensitive: z.boolean().default(false), regex: z.boolean().default(false) }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, query, relativePath, maxResults, maxCharsPerFile, contextLines, caseSensitive, regex }) => {
+  registerTool(server, "project_search_text", "Search text content inside project files.", { projectAlias: z.string(), query: z.string(), relativePath: z.string().default("."), glob: z.string().optional(), maxResults: z.number().int().positive().max(5000).default(100), contextLines: z.number().int().min(0).max(10).default(0), caseSensitive: z.boolean().default(false), regex: z.boolean().default(false) }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, query, relativePath, maxResults, contextLines, caseSensitive, regex }) => {
     assertChatGptPermission("readFiles", projectAlias);
     const root = resolveProjectPath(projectAlias, relativePath);
     assertCanReadProjectPath(projectAlias, root, relativePath);
-    const files = collectPaths(projectAlias, root, loadPolicyConfig().output.maxSearchScanEntries, true, false);
+    const searchLimits = loadPolicyConfig().limits.search;
+    const files = collectPaths(projectAlias, root, searchLimits.maxScanEntries, true, false);
     const matches: Array<Record<string, unknown>> = [];
     const pattern = regex ? new RegExp(query, caseSensitive ? "" : "i") : null;
     for (const entry of files) {
       if (matches.length >= maxResults) break;
       const full = path.join(root, entry.relativePath);
       if (!isTextLikely(full)) continue;
-      const lines = limitText(readFileSync(full, "utf8"), maxCharsPerFile).text.split(/\r?\n/);
+      const lines = limitText(readFileSync(full, "utf8"), searchLimits.maxTextFileChars).text.split(/\r?\n/);
       for (let i = 0; i < lines.length; i += 1) {
         const line = lines[i] ?? "";
         const matched = pattern ? pattern.test(line) : (caseSensitive ? line : line.toLowerCase()).includes(caseSensitive ? query : query.toLowerCase());
@@ -351,7 +350,7 @@ export function registerProjectTools(server: McpServer): void {
   });
   registerTool(server, "project_apply_patch", "Apply a unified diff patch inside a registered project.", { projectAlias: z.string(), patch: z.string(), dryRun: z.boolean().default(false), expectedFiles: z.array(z.object({ relativePath: z.string(), sha256: z.string().optional(), sizeBytes: z.number().int().positive().optional(), modifiedAt: z.string().optional() })).default([]), conflictPolicy: z.enum(["fail", "attempt-fuzzy"]).default("fail"), confirm: z.boolean().default(false) }, { readOnlyHint: false, destructiveHint: true, openWorldHint: false }, async ({ projectAlias, patch, dryRun, expectedFiles, conflictPolicy, confirm }) => {
     assertChatGptPermission("writeFiles", projectAlias);
-    assertInputBytes("maxPatchBytes", patch, loadPolicyConfig().input.maxPatchBytes);
+    assertInputChars("limits.patch.maxChars", patch, loadPolicyConfig().limits.patch.maxChars);
     const project = getProject(projectAlias);
     const parsed = parsePatchPaths(patch);
     for (const file of parsed.files) resolveProjectPath(projectAlias, file);
@@ -393,9 +392,9 @@ export function registerProjectTools(server: McpServer): void {
   });
   registerTool(server, "project_replace_text", "Replace text in a single project file.", { projectAlias: z.string(), relativePath: z.string(), search: z.string(), replace: z.string(), expectedOccurrences: z.number().int().nonnegative().optional(), expectedSha256: z.string().optional(), dryRun: z.boolean().default(false) }, { readOnlyHint: false, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath, search, replace, expectedOccurrences, expectedSha256, dryRun }) => {
     assertChatGptPermission("writeFiles", projectAlias);
-    const inputLimits = loadPolicyConfig().input;
-    assertInputBytes("maxSearchOrMarkerBytes", search, inputLimits.maxSearchOrMarkerBytes);
-    assertInputBytes("maxTextOperationBytes", replace, inputLimits.maxTextOperationBytes);
+    const textEditLimits = loadPolicyConfig().limits.textEdit;
+    assertInputChars("limits.textEdit.maxSearchOrMarkerChars", search, textEditLimits.maxSearchOrMarkerChars);
+    assertInputChars("limits.textEdit.maxOperationChars", replace, textEditLimits.maxOperationChars);
     const target = resolveProjectPath(projectAlias, relativePath);
     assertCanReadProjectPath(projectAlias, target, relativePath);
     if (!isTextLikely(target)) throw new Error("binary_file");
@@ -411,9 +410,9 @@ export function registerProjectTools(server: McpServer): void {
   });
   registerTool(server, "project_insert_text", "Insert text before or after a marker in one file.", { projectAlias: z.string(), relativePath: z.string(), marker: z.string(), content: z.string(), position: z.enum(["before", "after"]), expectedOccurrences: z.number().int().positive().optional(), expectedSha256: z.string().optional(), dryRun: z.boolean().default(false) }, { readOnlyHint: false, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath, marker, content, position, expectedOccurrences, expectedSha256, dryRun }) => {
     assertChatGptPermission("writeFiles", projectAlias);
-    const inputLimits = loadPolicyConfig().input;
-    assertInputBytes("maxSearchOrMarkerBytes", marker, inputLimits.maxSearchOrMarkerBytes);
-    assertInputBytes("maxTextOperationBytes", content, inputLimits.maxTextOperationBytes);
+    const textEditLimits = loadPolicyConfig().limits.textEdit;
+    assertInputChars("limits.textEdit.maxSearchOrMarkerChars", marker, textEditLimits.maxSearchOrMarkerChars);
+    assertInputChars("limits.textEdit.maxOperationChars", content, textEditLimits.maxOperationChars);
     const target = resolveProjectPath(projectAlias, relativePath);
     assertCanReadProjectPath(projectAlias, target, relativePath);
     if (expectedSha256 && hashSha256(readFileSync(target)) !== expectedSha256) return { ok: false, errorType: "stale_file" };
@@ -443,7 +442,7 @@ export function registerProjectTools(server: McpServer): void {
     stateStore.audit({ tool: "project_delete_directory", projectAlias, relativePath, recursive });
     return { projectAlias, relativePath, deleted: true, recursive };
   });
-  registerTool(server, "project_git_diff", "Use this when ChatGPT needs to inspect what changed in a registered project.", { projectAlias: z.string(), includeUntracked: z.boolean().default(false), maxChars: z.number().int().positive().max(500000).default(200000) }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, includeUntracked, maxChars }) => {
+  registerTool(server, "project_git_diff", "Use this when ChatGPT needs to inspect what changed in a registered project.", { projectAlias: z.string(), includeUntracked: z.boolean().default(false) }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, includeUntracked }) => {
     assertChatGptPermission("gitCommands", projectAlias);
     const project = getProject(projectAlias);
     const statusOutput = await gitStatus(project.rootPath);
@@ -465,17 +464,17 @@ export function registerProjectTools(server: McpServer): void {
       const untracked = (await gitUntrackedFiles(project.rootPath)).filter((file) => canReadProjectRelativePath(projectAlias, file));
       diffParts.push("## untracked", untracked.join("\n"));
     }
-    const limited = limitText(diffParts.join("\n"), maxChars);
+    const limited = limitText(diffParts.join("\n"), loadPolicyConfig().limits.git.maxDiffChars);
     return { projectAlias, diff: limited.text, skippedPaths: Array.from(new Set(skippedPaths)), truncated: limited.truncated, chars: limited.chars, totalChars: limited.totalChars, omittedChars: limited.omittedChars, limit: limited.limit };
   });
-  registerTool(server, "project_git_diff_file", "Show git diff for one file.", { projectAlias: z.string(), relativePath: z.string(), includeUntracked: z.boolean().default(false), maxChars: z.number().int().positive().max(500000).default(200000) }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath, includeUntracked, maxChars }) => {
+  registerTool(server, "project_git_diff_file", "Show git diff for one file.", { projectAlias: z.string(), relativePath: z.string(), includeUntracked: z.boolean().default(false) }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath, includeUntracked }) => {
     assertChatGptPermission("gitCommands", projectAlias);
     const target = resolveProjectPath(projectAlias, relativePath);
     assertCanReadProjectPath(projectAlias, target, relativePath);
-    const limited = limitText(await gitDiffFile(getProject(projectAlias).rootPath, relativePath, includeUntracked), maxChars);
+    const limited = limitText(await gitDiffFile(getProject(projectAlias).rootPath, relativePath, includeUntracked), loadPolicyConfig().limits.git.maxDiffChars);
     return { projectAlias, relativePath, diff: limited.text, truncated: limited.truncated, chars: limited.chars, totalChars: limited.totalChars, omittedChars: limited.omittedChars, limit: limited.limit };
   });
-  registerTool(server, "project_git_show_untracked", "Preview untracked files in a project.", { projectAlias: z.string(), relativePaths: z.array(z.string()).optional(), maxCharsPerFile: z.number().int().positive().max(200000).default(50000) }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePaths, maxCharsPerFile }) => {
+  registerTool(server, "project_git_show_untracked", "Preview untracked files in a project.", { projectAlias: z.string(), relativePaths: z.array(z.string()).optional() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePaths }) => {
     assertChatGptPermission("gitCommands", projectAlias);
     assertChatGptPermission("readFiles", projectAlias);
     const untracked = await gitUntrackedFiles(getProject(projectAlias).rootPath);
@@ -483,7 +482,7 @@ export function registerProjectTools(server: McpServer): void {
     return { projectAlias, files: selected.map((relativePath) => {
       const target = resolveProjectPath(projectAlias, relativePath);
       if (!existsSync(target) || !isTextLikely(target)) return { relativePath, skipped: true, reason: "non-text-or-missing" };
-      const limited = limitText(readFileSync(target, "utf8"), maxCharsPerFile);
+      const limited = limitText(readFileSync(target, "utf8"), loadPolicyConfig().limits.git.maxUntrackedFileChars);
       return { relativePath, content: limited.text, truncated: limited.truncated, chars: limited.chars, totalChars: limited.totalChars, omittedChars: limited.omittedChars, limit: limited.limit };
     }) };
   });
@@ -520,7 +519,7 @@ export function registerProjectTools(server: McpServer): void {
     const root = resolveProjectPath(projectAlias, ".");
     const matches: Array<{ relativePath: string; line: number; text: string }> = [];
     const needle = query.toLowerCase();
-    for (const entry of collectPaths(projectAlias, root, loadPolicyConfig().output.maxSearchScanEntries, true, false)) {
+    for (const entry of collectPaths(projectAlias, root, loadPolicyConfig().limits.search.maxScanEntries, true, false)) {
       if (matches.length >= maxResults) break;
       if (!canReadProjectRelativePath(projectAlias, entry.relativePath)) continue;
       const target = resolveProjectPath(projectAlias, entry.relativePath);

@@ -18,20 +18,19 @@ blocked path patterns
 gitignored-file policy
 direct permission gates
 delete confirmation
-output caps
-input caps
+policy limits
 audit writes
 ```
 
-Project file reads use `output.defaultReadChars` from `portus-mcp.policy.json` unless the caller passes `maxChars`.
+Project file reads use `limits.fileRead.maxChars` from `portus-mcp.policy.json`.
 
-Caller-provided `maxChars` is capped by `output.maxReadChars`.
+Callers cannot override char output limits per request.
 
 Returned text is hard cut at the configured char limit. Char counts use Unicode code points. Limited responses return `chars`, `totalChars`, `omittedChars`, `truncated`, and `limit` metadata when applicable.
 
-Project text search and symbol search scan at most `output.maxSearchScanEntries` files.
+Project text search and symbol search scan at most `limits.search.maxScanEntries` files.
 
-Skill folder reads are capped by `output.maxSkillReadChars`.
+Skill folder reads are capped by `limits.skills.maxReadChars`.
 
 ## Agent Tools
 
@@ -51,7 +50,7 @@ agent_templates
 agent_template_describe
 ```
 
-Agent tools are gated by `chatgpt.spawnAgents` and the `agents` policy settings.
+Agent tools are gated by `permissions.chatgpt.spawnAgents` and the `agents` policy settings.
 
 ## Session Tools
 

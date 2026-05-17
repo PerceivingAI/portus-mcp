@@ -120,7 +120,7 @@ export function readFullSkill(skillName: string): FullSkill {
   }
 
   let totalChars = 0;
-  const maxSkillReadChars = loadPolicyConfig().output.maxSkillReadChars;
+  const maxSkillReadChars = loadPolicyConfig().limits.skills.maxReadChars;
   const files = listBundledFiles(skillRoot).sort().map((relativePath) => {
     const absolutePath = path.resolve(skillRoot, relativePath);
     if (!absolutePath.startsWith(`${skillRoot}${path.sep}`) && absolutePath !== skillRoot) {

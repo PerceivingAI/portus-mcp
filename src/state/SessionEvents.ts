@@ -53,13 +53,12 @@ export function appendSessionEventById(
 export function readSessionEvents(input: {
   sessionId: string;
   afterSequence?: number;
-  limit?: number;
 }): { sessionId: string; events: SessionEvent[]; nextSequence: number; hasMore: boolean } {
   const session = getSession(input.sessionId);
   const filePath = sessionEventsPath(session);
-  const policy = loadPolicyConfig().output;
+  const policy = loadPolicyConfig().limits.sessionEvents;
   const afterSequence = Math.max(0, input.afterSequence ?? 0);
-  const limit = Math.min(policy.maxEventLimit, Math.max(1, input.limit ?? policy.defaultEventLimit));
+  const limit = policy.maxEvents;
   if (!existsSync(filePath)) {
     return { sessionId: input.sessionId, events: [], nextSequence: afterSequence, hasMore: false };
   }
@@ -92,7 +91,7 @@ function nextSequence(filePath: string): number {
 }
 
 function limitEventData(data: Record<string, unknown>): Record<string, unknown> {
-  const maxChunkChars = loadPolicyConfig().output.maxEventChunkChars;
+  const maxChunkChars = loadPolicyConfig().limits.sessionEvents.maxChunkChars;
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(data)) {
     out[key] = typeof value === "string"

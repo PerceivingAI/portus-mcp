@@ -37,7 +37,7 @@ export async function runProjectScript(
   const packageJsonPath = path.join(rootPath, "package.json");
   const packageJson = packageJsonInput ?? JSON.parse(readFileSync(packageJsonPath, "utf8")) as { scripts?: Record<string, string> };
   if (!packageJson.scripts?.[scriptName]) throw new Error(`Missing package.json script: ${scriptName}`);
-  const maxBuffer = loadPolicyConfig().output.maxProcessOutputBufferBytes;
+  const maxBuffer = Math.floor(loadPolicyConfig().limits.process.maxOutputBufferMb * 1024 * 1024);
 
   const npmExecPath = process.env.npm_execpath;
   const command = process.platform === "win32" && npmExecPath ? process.execPath : "npm";
@@ -49,7 +49,7 @@ export async function runProjectScript(
       timeout: timeoutSecs * 1000,
       maxBuffer
     });
-    const policy = loadPolicyConfig().output;
+    const policy = loadPolicyConfig().limits.agentOutput;
     const stdout = limitText(result.stdout, policy.maxStdoutChars);
     const stderr = limitText(result.stderr, policy.maxStderrChars);
     return {
@@ -60,7 +60,7 @@ export async function runProjectScript(
       truncated: stdout.truncated || stderr.truncated
     };
   } catch (error: any) {
-    const policy = loadPolicyConfig().output;
+    const policy = loadPolicyConfig().limits.agentOutput;
     const stdout = limitText(error?.stdout ?? "", policy.maxStdoutChars);
     const stderr = limitText(error?.stderr ?? String(error), policy.maxStderrChars);
     return {

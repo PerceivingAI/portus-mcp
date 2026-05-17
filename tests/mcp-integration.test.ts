@@ -49,54 +49,82 @@ writeFileSync(path.join(skillsDir, "sample", "references", "unicode.md"), "a🙂
 writeFileSync(path.join(skillsDir, "loose.md"), "# Loose Skill\n\nThis must be ignored.\n", "utf8");
 writeFileSync(policyPath, JSON.stringify({
   agents: {
-    maxConcurrent: 4,
-    maxConcurrentPerProject: 2,
-    queueEnabled: false,
-    maxQueueDepth: 10,
-    queuedTaskTtlSecs: 300,
-    projectLockTimeoutSecs: 1800,
-    maxRuntimeSecs: 900,
-    startupWatchdogMs: 15000,
-    forcedCloseGraceMs: 8000,
-    killEscalationDelayMs: 1200,
-    queueDrainDelayMs: 50,
-    networkAccess: true,
-    grantCommands: true,
-    gitCommand: true,
-    packageManagerCommand: true,
-    nodeCommand: true
+    concurrency: {
+      maxConcurrent: 4,
+      maxConcurrentPerProject: 2,
+      queueEnabled: false,
+      maxQueueDepth: 10,
+    },
+    lifecycle: {
+      queuedTaskTtlSecs: 300,
+      projectLockTimeoutSecs: 1800,
+      maxRuntimeSecs: 900,
+      startupWatchdogMs: 15000,
+      forcedCloseGraceMs: 8000,
+      killEscalationDelayMs: 1200,
+      queueDrainDelayMs: 50,
+    },
+    capabilities: {
+      networkAccess: true,
+      grantCommands: true,
+      gitCommand: true,
+      packageManagerCommand: true,
+      nodeCommand: true
+    }
   },
-  chatgpt: {
-    registerProjects: true,
-    updatePermissions: true,
-    spawnAgents: true,
-    readFiles: true,
-    writeFiles: true,
-    moveFiles: false,
-    deleteFiles: false,
-    readGitIgnoredFiles: false,
-    runPackageScripts: false,
-    gitCommands: true
+  permissions: {
+    chatgpt: {
+      registerProjects: true,
+      updatePermissions: true,
+      spawnAgents: true,
+      readFiles: true,
+      writeFiles: true,
+      moveFiles: false,
+      deleteFiles: false,
+      readGitIgnoredFiles: false,
+      runPackageScripts: false,
+      gitCommands: true
+    }
   },
-  output: {
-    maxStdoutChars: 200000,
-    maxStderrChars: 200000,
-    defaultReadChars: 120000,
-    maxReadChars: 500000,
-    maxSkillReadChars: 200000,
-    maxSearchScanEntries: 100000,
-    defaultEventLimit: 100,
-    maxEventLimit: 500,
-    maxEventChunkChars: 4000,
-    defaultAuditLimit: 100,
-    maxAuditLimit: 1000,
-    maxProcessOutputBufferBytes: 10485760
-  },
-  input: {
-    maxWriteBytes: 1000000,
-    maxPatchBytes: 1000000,
-    maxTextOperationBytes: 200000,
-    maxSearchOrMarkerBytes: 20000
+  limits: {
+    fileRead: {
+      maxChars: 500000,
+    },
+    fileWrite: {
+      maxChars: 1000000,
+    },
+    patch: {
+      maxChars: 1000000,
+    },
+    textEdit: {
+      maxOperationChars: 200000,
+      maxSearchOrMarkerChars: 20000
+    },
+    search: {
+      maxScanEntries: 100000,
+      maxTextFileChars: 200000,
+    },
+    git: {
+      maxDiffChars: 200000,
+      maxUntrackedFileChars: 50000,
+    },
+    skills: {
+      maxReadChars: 200000,
+    },
+    agentOutput: {
+      maxStdoutChars: 200000,
+      maxStderrChars: 200000,
+    },
+    sessionEvents: {
+      maxEvents: 500,
+      maxChunkChars: 4000,
+    },
+    audit: {
+      maxEvents: 1000,
+    },
+    process: {
+      maxOutputBufferMb: 10
+    }
   },
   audit: {
     strictMode: false
@@ -247,8 +275,7 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     name: "project_read_text_file",
     arguments: {
       projectAlias: "mcp",
-      relativePath: "README.md",
-      maxChars: 1000
+      relativePath: "README.md"
     }
   }));
   assert.match(read.content, /MCP Test/);
@@ -572,7 +599,7 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
 
   const audit = resultOf(await client.callTool({
     name: "audit_list",
-    arguments: { projectAlias: "mcp", limit: 50 }
+    arguments: { projectAlias: "mcp" }
   }));
   assert.equal(Array.isArray(audit.events), true);
   const auditJson = JSON.stringify(audit.events);
@@ -613,3 +640,5 @@ test("skill frontmatter parser requires valid name and description", () => {
     "---"
   ].join("\n"), "invalid-name"), /invalid frontmatter name/);
 });
+
+

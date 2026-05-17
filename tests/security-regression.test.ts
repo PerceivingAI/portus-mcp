@@ -37,54 +37,82 @@ writeFileSync(path.join(projectRoot, ".env"), "SECRET_TOKEN=changed\n", "utf8");
 
 writeFileSync(policyPath, JSON.stringify({
   agents: {
-    maxConcurrent: 4,
-    maxConcurrentPerProject: 2,
-    queueEnabled: false,
-    maxQueueDepth: 10,
-    queuedTaskTtlSecs: 300,
-    projectLockTimeoutSecs: 1800,
-    maxRuntimeSecs: 900,
-    startupWatchdogMs: 15000,
-    forcedCloseGraceMs: 8000,
-    killEscalationDelayMs: 1200,
-    queueDrainDelayMs: 50,
-    networkAccess: false,
-    grantCommands: true,
-    gitCommand: true,
-    packageManagerCommand: false,
-    nodeCommand: false
+    concurrency: {
+      maxConcurrent: 4,
+      maxConcurrentPerProject: 2,
+      queueEnabled: false,
+      maxQueueDepth: 10,
+    },
+    lifecycle: {
+      queuedTaskTtlSecs: 300,
+      projectLockTimeoutSecs: 1800,
+      maxRuntimeSecs: 900,
+      startupWatchdogMs: 15000,
+      forcedCloseGraceMs: 8000,
+      killEscalationDelayMs: 1200,
+      queueDrainDelayMs: 50,
+    },
+    capabilities: {
+      networkAccess: false,
+      grantCommands: true,
+      gitCommand: true,
+      packageManagerCommand: false,
+      nodeCommand: false
+    }
   },
-  chatgpt: {
-    registerProjects: true,
-    updatePermissions: false,
-    spawnAgents: true,
-    readFiles: true,
-    writeFiles: true,
-    moveFiles: false,
-    deleteFiles: false,
-    readGitIgnoredFiles: false,
-    runPackageScripts: false,
-    gitCommands: true
+  permissions: {
+    chatgpt: {
+      registerProjects: true,
+      updatePermissions: false,
+      spawnAgents: true,
+      readFiles: true,
+      writeFiles: true,
+      moveFiles: false,
+      deleteFiles: false,
+      readGitIgnoredFiles: false,
+      runPackageScripts: false,
+      gitCommands: true
+    }
   },
-  output: {
-    maxStdoutChars: 200000,
-    maxStderrChars: 200000,
-    defaultReadChars: 120000,
-    maxReadChars: 500000,
-    maxSkillReadChars: 200000,
-    maxSearchScanEntries: 100000,
-    defaultEventLimit: 100,
-    maxEventLimit: 500,
-    maxEventChunkChars: 4000,
-    defaultAuditLimit: 100,
-    maxAuditLimit: 1000,
-    maxProcessOutputBufferBytes: 10485760
-  },
-  input: {
-    maxWriteBytes: 1000000,
-    maxPatchBytes: 1000000,
-    maxTextOperationBytes: 200000,
-    maxSearchOrMarkerBytes: 20000
+  limits: {
+    fileRead: {
+      maxChars: 500000,
+    },
+    fileWrite: {
+      maxChars: 1000000,
+    },
+    patch: {
+      maxChars: 1000000,
+    },
+    textEdit: {
+      maxOperationChars: 200000,
+      maxSearchOrMarkerChars: 20000
+    },
+    search: {
+      maxScanEntries: 100000,
+      maxTextFileChars: 200000,
+    },
+    git: {
+      maxDiffChars: 200000,
+      maxUntrackedFileChars: 50000,
+    },
+    skills: {
+      maxReadChars: 200000,
+    },
+    agentOutput: {
+      maxStdoutChars: 200000,
+      maxStderrChars: 200000,
+    },
+    sessionEvents: {
+      maxEvents: 500,
+      maxChunkChars: 4000,
+    },
+    audit: {
+      maxEvents: 1000,
+    },
+    process: {
+      maxOutputBufferMb: 10
+    }
   },
   audit: {
     strictMode: false
@@ -243,7 +271,7 @@ test("MCP git diff and symbol search do not leak blocked tracked files", async (
   const client = await withClient(t);
   resultOf(await client.callTool({ name: "project_register", arguments: { projectAlias: "blocked", rootPath: projectRoot } }));
 
-  const diff = resultOf(await client.callTool({ name: "project_git_diff", arguments: { projectAlias: "blocked", maxChars: 20000 } }));
+  const diff = resultOf(await client.callTool({ name: "project_git_diff", arguments: { projectAlias: "blocked" } }));
   assert.doesNotMatch(diff.diff, /SECRET_TOKEN/);
   assert.deepEqual(diff.skippedPaths, [".env"]);
 
@@ -332,32 +360,32 @@ test("MCP mutation tools reject oversized input payloads", async (t) => {
     {
       name: "project_write_file",
       arguments: { projectAlias, relativePath: "large.txt", content: "x".repeat(1000001) },
-      error: /maxWriteBytes/
+      error: /limits\.fileWrite\.maxChars/
     },
     {
       name: "project_apply_patch",
       arguments: { projectAlias, patch: "x".repeat(1000001), dryRun: true },
-      error: /maxPatchBytes/
+      error: /limits\.patch\.maxChars/
     },
     {
       name: "project_replace_text",
       arguments: { projectAlias, relativePath: "README.md", search: "x".repeat(20001), replace: "small", dryRun: true },
-      error: /maxSearchOrMarkerBytes/
+      error: /limits\.textEdit\.maxSearchOrMarkerChars/
     },
     {
       name: "project_replace_text",
       arguments: { projectAlias, relativePath: "README.md", search: "Security", replace: "x".repeat(200001), dryRun: true },
-      error: /maxTextOperationBytes/
+      error: /limits\.textEdit\.maxOperationChars/
     },
     {
       name: "project_insert_text",
       arguments: { projectAlias, relativePath: "README.md", marker: "x".repeat(20001), content: "small", position: "after", dryRun: true },
-      error: /maxSearchOrMarkerBytes/
+      error: /limits\.textEdit\.maxSearchOrMarkerChars/
     },
     {
       name: "project_insert_text",
       arguments: { projectAlias, relativePath: "README.md", marker: "Security", content: "x".repeat(200001), position: "after", dryRun: true },
-      error: /maxTextOperationBytes/
+      error: /limits\.textEdit\.maxOperationChars/
     }
   ]) {
     const response = await client.callTool(call);
@@ -365,3 +393,5 @@ test("MCP mutation tools reject oversized input payloads", async (t) => {
     assert.match(JSON.stringify(response.structuredContent), call.error);
   }
 });
+
+

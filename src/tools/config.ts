@@ -184,11 +184,9 @@ export function registerConfigTools(server: McpServer): void {
 
   registerTool(server, "audit_list", "List recent audit events.", {
     projectAlias: z.string().optional(),
-    sessionId: z.string().optional(),
-    limit: z.number().int().positive().optional()
-  }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, sessionId, limit }) => {
-    const policy = loadPolicyConfig().output;
-    const auditLimit = Math.min(policy.maxAuditLimit, Math.max(1, limit ?? policy.defaultAuditLimit));
+    sessionId: z.string().optional()
+  }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, sessionId }) => {
+    const auditLimit = loadPolicyConfig().limits.audit.maxEvents;
     const events = stateStore.readAudit(auditLimit).filter((event) => {
       if (projectAlias && event.projectAlias !== projectAlias) return false;
       if (sessionId && event.sessionId !== sessionId) return false;
@@ -201,7 +199,7 @@ export function registerConfigTools(server: McpServer): void {
     eventId: z.string().optional(),
     sessionId: z.string().optional()
   }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ eventId, sessionId }) => {
-    const events = stateStore.readAudit(loadPolicyConfig().output.maxAuditLimit).filter((event) => {
+    const events = stateStore.readAudit(loadPolicyConfig().limits.audit.maxEvents).filter((event) => {
       if (eventId && event.eventId !== eventId) return false;
       if (sessionId && event.sessionId !== sessionId) return false;
       return true;

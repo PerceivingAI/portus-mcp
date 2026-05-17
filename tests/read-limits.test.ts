@@ -18,54 +18,82 @@ writeFileSync(path.join(projectRoot, "README.md"), "abcdefghijklmnopqrstuvwxyz\n
 
 const basePolicy = {
   agents: {
-    maxConcurrent: 4,
-    maxConcurrentPerProject: 2,
-    queueEnabled: false,
-    maxQueueDepth: 10,
-    queuedTaskTtlSecs: 300,
-    projectLockTimeoutSecs: 1800,
-    maxRuntimeSecs: 900,
-    startupWatchdogMs: 15000,
-    forcedCloseGraceMs: 8000,
-    killEscalationDelayMs: 1200,
-    queueDrainDelayMs: 50,
-    networkAccess: true,
-    grantCommands: true,
-    gitCommand: true,
-    packageManagerCommand: false,
-    nodeCommand: false
+    concurrency: {
+      maxConcurrent: 4,
+      maxConcurrentPerProject: 2,
+      queueEnabled: false,
+      maxQueueDepth: 10,
+    },
+    lifecycle: {
+      queuedTaskTtlSecs: 300,
+      projectLockTimeoutSecs: 1800,
+      maxRuntimeSecs: 900,
+      startupWatchdogMs: 15000,
+      forcedCloseGraceMs: 8000,
+      killEscalationDelayMs: 1200,
+      queueDrainDelayMs: 50,
+    },
+    capabilities: {
+      networkAccess: true,
+      grantCommands: true,
+      gitCommand: true,
+      packageManagerCommand: false,
+      nodeCommand: false
+    }
   },
-  chatgpt: {
-    registerProjects: true,
-    updatePermissions: false,
-    spawnAgents: true,
-    readFiles: true,
-    writeFiles: true,
-    moveFiles: false,
-    deleteFiles: false,
-    readGitIgnoredFiles: false,
-    runPackageScripts: false,
-    gitCommands: true
+  permissions: {
+    chatgpt: {
+      registerProjects: true,
+      updatePermissions: false,
+      spawnAgents: true,
+      readFiles: true,
+      writeFiles: true,
+      moveFiles: false,
+      deleteFiles: false,
+      readGitIgnoredFiles: false,
+      runPackageScripts: false,
+      gitCommands: true
+    }
   },
-  output: {
-    maxStdoutChars: 200000,
-    maxStderrChars: 200000,
-    defaultReadChars: 5,
-    maxReadChars: 10,
-    maxSkillReadChars: 200000,
-    maxSearchScanEntries: 100000,
-    defaultEventLimit: 100,
-    maxEventLimit: 500,
-    maxEventChunkChars: 4000,
-    defaultAuditLimit: 100,
-    maxAuditLimit: 1000,
-    maxProcessOutputBufferBytes: 10485760
-  },
-  input: {
-    maxWriteBytes: 1000000,
-    maxPatchBytes: 1000000,
-    maxTextOperationBytes: 200000,
-    maxSearchOrMarkerBytes: 20000
+  limits: {
+    fileRead: {
+      maxChars: 5,
+    },
+    fileWrite: {
+      maxChars: 1000000,
+    },
+    patch: {
+      maxChars: 1000000,
+    },
+    textEdit: {
+      maxOperationChars: 200000,
+      maxSearchOrMarkerChars: 20000
+    },
+    search: {
+      maxScanEntries: 100000,
+      maxTextFileChars: 200000,
+    },
+    git: {
+      maxDiffChars: 200000,
+      maxUntrackedFileChars: 50000,
+    },
+    skills: {
+      maxReadChars: 200000,
+    },
+    agentOutput: {
+      maxStdoutChars: 200000,
+      maxStderrChars: 200000,
+    },
+    sessionEvents: {
+      maxEvents: 500,
+      maxChunkChars: 4000,
+    },
+    audit: {
+      maxEvents: 1000,
+    },
+    process: {
+      maxOutputBufferMb: 10
+    }
   },
   audit: {
     strictMode: false
@@ -128,13 +156,13 @@ async function withClient(t: any): Promise<Client> {
   return client;
 }
 
-test("project reads use configured defaultReadChars", async (t) => {
+test("project reads use configured maxReadChars", async (t) => {
   const client = await withClient(t);
-  resultOf(await client.callTool({ name: "project_register", arguments: { projectAlias: "read-default", rootPath: projectRoot } }));
+  resultOf(await client.callTool({ name: "project_register", arguments: { projectAlias: "read-max", rootPath: projectRoot } }));
 
   const read = resultOf(await client.callTool({
     name: "project_read_text_file",
-    arguments: { projectAlias: "read-default", relativePath: "README.md" }
+    arguments: { projectAlias: "read-max", relativePath: "README.md" }
   }));
 
   assert.equal(read.limit, 5);
@@ -146,75 +174,57 @@ test("project reads use configured defaultReadChars", async (t) => {
   assert.match(read.content, /^abcde/);
 });
 
-test("project reads allow maxChars up to configured maxReadChars", async (t) => {
+test("project read tools do not expose caller char limit arguments", async (t) => {
   const client = await withClient(t);
-  resultOf(await client.callTool({ name: "project_register", arguments: { projectAlias: "read-max", rootPath: projectRoot } }));
+  const tools = await client.listTools();
+  const readTool = tools.tools.find((tool) => tool.name === "project_read_text_file");
+  assert(readTool);
 
-  const read = resultOf(await client.callTool({
-    name: "project_read_text_file",
-    arguments: { projectAlias: "read-max", relativePath: "README.md", maxChars: 10 }
+  assert.equal(JSON.stringify(readTool.inputSchema).includes("maxChars"), false);
+});
+
+test("text input limits count Unicode code points", async (t) => {
+  writePolicy({
+    ...basePolicy,
+    limits: {
+      ...basePolicy.limits,
+      fileWrite: { maxChars: 1 },
+      textEdit: {
+        ...basePolicy.limits.textEdit,
+        maxOperationChars: 1,
+        maxSearchOrMarkerChars: 1
+      }
+    }
+  });
+  t.after(() => writePolicy());
+
+  const client = await withClient(t);
+  resultOf(await client.callTool({ name: "project_register", arguments: { projectAlias: "unicode-input", rootPath: projectRoot } }));
+
+  const write = resultOf(await client.callTool({
+    name: "project_write_file",
+    arguments: { projectAlias: "unicode-input", relativePath: "emoji.txt", content: "🙂" }
   }));
+  assert.equal(write.bytes, Buffer.byteLength("🙂", "utf8"));
 
-  assert.equal(read.limit, 10);
-  assert.equal(read.truncated, true);
-  assert.equal(read.chars, 10);
-  assert.equal(read.totalChars, 27);
-  assert.equal(read.omittedChars, 17);
-  assert.equal(read.content.length, 10);
-  assert.match(read.content, /^abcdefghij/);
-});
-
-test("project reads reject maxChars above configured maxReadChars", async (t) => {
-  const client = await withClient(t);
-  resultOf(await client.callTool({ name: "project_register", arguments: { projectAlias: "read-reject", rootPath: projectRoot } }));
-
-  const response = await client.callTool({
-    name: "project_read_text_file",
-    arguments: { projectAlias: "read-reject", relativePath: "README.md", maxChars: 11 }
+  const rejectedWrite = await client.callTool({
+    name: "project_write_file",
+    arguments: { projectAlias: "unicode-input", relativePath: "too-many.txt", content: "🙂🙂" }
   });
-
-  assert.equal(response.isError, true);
-  assert.match(JSON.stringify(response.structuredContent), /maxReadChars/);
+  assert.equal(rejectedWrite.isError, true);
+  assert.match(JSON.stringify(rejectedWrite.structuredContent), /limits\.fileWrite\.maxChars/);
 });
 
-test("policy validation rejects defaultReadChars above maxReadChars", () => {
+test("policy validation rejects the removed flat policy layout", () => {
   writePolicy({
     ...basePolicy,
     output: {
-      ...basePolicy.output,
-      defaultReadChars: 11,
-      maxReadChars: 10
+      maxReadChars: 11
     }
   });
 
-  assert.throws(() => loadPolicyConfig(), /defaultReadChars must be less than or equal to maxReadChars/);
+  assert.throws(() => loadPolicyConfig(), /output/);
   writePolicy();
 });
 
-test("policy validation rejects defaultEventLimit above maxEventLimit", () => {
-  writePolicy({
-    ...basePolicy,
-    output: {
-      ...basePolicy.output,
-      defaultEventLimit: 501,
-      maxEventLimit: 500
-    }
-  });
 
-  assert.throws(() => loadPolicyConfig(), /defaultEventLimit must be less than or equal to maxEventLimit/);
-  writePolicy();
-});
-
-test("policy validation rejects defaultAuditLimit above maxAuditLimit", () => {
-  writePolicy({
-    ...basePolicy,
-    output: {
-      ...basePolicy.output,
-      defaultAuditLimit: 1001,
-      maxAuditLimit: 1000
-    }
-  });
-
-  assert.throws(() => loadPolicyConfig(), /defaultAuditLimit must be less than or equal to maxAuditLimit/);
-  writePolicy();
-});

@@ -103,54 +103,91 @@ max concurrent agents
 max concurrent agents per project
 queue settings
 project lock timeout
-output caps
-input caps
+grouped limits
 audit strict mode
 direct tool permissions
 spawned-agent permissions
 ```
 
-Default output limits:
+Default grouped policy shape:
 
 ```json
 {
-  "output": {
-    "maxStdoutChars": 200000,
-    "maxStderrChars": 200000,
-    "defaultReadChars": 120000,
-    "maxReadChars": 500000,
-    "maxSkillReadChars": 200000,
-    "maxSearchScanEntries": 100000,
-    "defaultEventLimit": 100,
-    "maxEventLimit": 500,
-    "maxEventChunkChars": 4000,
-    "defaultAuditLimit": 100,
-    "maxAuditLimit": 1000,
-    "maxProcessOutputBufferBytes": 10485760
+  "agents": {
+    "concurrency": {},
+    "lifecycle": {},
+    "capabilities": {}
+  },
+  "permissions": {
+    "chatgpt": {}
+  },
+  "limits": {
+    "fileRead": {
+      "maxChars": 500000
+    },
+    "fileWrite": {
+      "maxChars": 1000000
+    },
+    "patch": {
+      "maxChars": 1000000
+    },
+    "textEdit": {
+      "maxOperationChars": 200000,
+      "maxSearchOrMarkerChars": 20000
+    },
+    "search": {
+      "maxScanEntries": 100000,
+      "maxTextFileChars": 200000
+    },
+    "git": {
+      "maxDiffChars": 200000,
+      "maxUntrackedFileChars": 50000
+    },
+    "skills": {
+      "maxReadChars": 200000
+    },
+    "agentOutput": {
+      "maxStdoutChars": 200000,
+      "maxStderrChars": 200000
+    },
+    "sessionEvents": {
+      "maxEvents": 500,
+      "maxChunkChars": 4000
+    },
+    "audit": {
+      "maxEvents": 1000
+    },
+    "process": {
+      "maxOutputBufferMb": 10
+    }
   }
 }
 ```
 
-`defaultReadChars` is used by project file read tools when the caller does not pass `maxChars`.
+`limits.fileRead.maxChars` is the hard cap for project file read output.
 
-`maxReadChars` is the highest `maxChars` value a caller can request for project file reads.
+`limits.sessionEvents.maxEvents` and `limits.audit.maxEvents` are hard caps for session events and audit event lists.
 
-Char output limits count Unicode code points and hard cut returned text at the configured limit. Byte limits under `input` and `maxProcessOutputBufferBytes` remain byte-based because they protect file writes, patch input, and process buffer memory.
+`limits.search.maxTextFileChars`, `limits.git.maxDiffChars`, and `limits.git.maxUntrackedFileChars` replace tool-level char arguments. Callers do not choose char output limits per request.
+
+Text-facing limits under `limits.fileRead`, `limits.fileWrite`, `limits.patch`, and `limits.textEdit` count Unicode code points. `limits.process.maxOutputBufferMb` is the only size-based limit because it protects process buffer memory rather than user text.
 
 Agent timing defaults:
 
 ```json
 {
   "agents": {
-    "startupWatchdogMs": 15000,
-    "forcedCloseGraceMs": 8000,
-    "killEscalationDelayMs": 1200,
-    "queueDrainDelayMs": 50
+    "lifecycle": {
+      "startupWatchdogMs": 15000,
+      "forcedCloseGraceMs": 8000,
+      "killEscalationDelayMs": 1200,
+      "queueDrainDelayMs": 50
+    }
   }
 }
 ```
 
-Direct tool permissions:
+Direct tool permissions under `permissions.chatgpt`:
 
 ```text
 registerProjects
@@ -165,7 +202,7 @@ runPackageScripts
 gitCommands
 ```
 
-Spawned-agent permissions:
+Spawned-agent settings under `agents.capabilities` and `agents.lifecycle`:
 
 ```text
 networkAccess
@@ -182,7 +219,9 @@ Set either agent limit to `0` to disable spawned-agent runs:
 ```json
 {
   "agents": {
-    "maxConcurrent": 0
+    "concurrency": {
+      "maxConcurrent": 0
+    }
   }
 }
 ```
@@ -192,7 +231,9 @@ or:
 ```json
 {
   "agents": {
-    "maxConcurrentPerProject": 0
+    "concurrency": {
+      "maxConcurrentPerProject": 0
+    }
   }
 }
 ```
@@ -207,10 +248,12 @@ If you want read/write-only project access, set:
 
 ```json
 {
-  "chatgpt": {
-    "runPackageScripts": false,
-    "moveFiles": false,
-    "deleteFiles": false
+  "permissions": {
+    "chatgpt": {
+      "runPackageScripts": false,
+      "moveFiles": false,
+      "deleteFiles": false
+    }
   }
 }
 ```

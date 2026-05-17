@@ -42,67 +42,123 @@ function restoreEnv(name: string, value: string | undefined): void {
   }
 }
 
-function writePolicy(overrides: Partial<typeof defaultPolicy> = {}): void {
+type DeepPartial<T> = {
+  [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K];
+};
+
+function writePolicy(overrides: DeepPartial<typeof defaultPolicy> = {}): void {
   writeFileSync(policyPath, JSON.stringify({
     ...defaultPolicy,
     ...overrides,
-    agents: { ...defaultPolicy.agents, ...(overrides.agents ?? {}) },
-    chatgpt: { ...defaultPolicy.chatgpt, ...(overrides.chatgpt ?? {}) },
-    output: { ...defaultPolicy.output, ...(overrides.output ?? {}) },
+    agents: {
+      ...defaultPolicy.agents,
+      ...(overrides.agents ?? {}),
+      concurrency: { ...defaultPolicy.agents.concurrency, ...(overrides.agents?.concurrency ?? {}) },
+      lifecycle: { ...defaultPolicy.agents.lifecycle, ...(overrides.agents?.lifecycle ?? {}) },
+      capabilities: { ...defaultPolicy.agents.capabilities, ...(overrides.agents?.capabilities ?? {}) }
+    },
+    permissions: {
+      ...defaultPolicy.permissions,
+      ...(overrides.permissions ?? {}),
+      chatgpt: { ...defaultPolicy.permissions.chatgpt, ...(overrides.permissions?.chatgpt ?? {}) }
+    },
+    limits: {
+      ...defaultPolicy.limits,
+      ...(overrides.limits ?? {}),
+      fileRead: { ...defaultPolicy.limits.fileRead, ...(overrides.limits?.fileRead ?? {}) },
+      fileWrite: { ...defaultPolicy.limits.fileWrite, ...(overrides.limits?.fileWrite ?? {}) },
+      patch: { ...defaultPolicy.limits.patch, ...(overrides.limits?.patch ?? {}) },
+      textEdit: { ...defaultPolicy.limits.textEdit, ...(overrides.limits?.textEdit ?? {}) },
+      search: { ...defaultPolicy.limits.search, ...(overrides.limits?.search ?? {}) },
+      git: { ...defaultPolicy.limits.git, ...(overrides.limits?.git ?? {}) },
+      skills: { ...defaultPolicy.limits.skills, ...(overrides.limits?.skills ?? {}) },
+      agentOutput: { ...defaultPolicy.limits.agentOutput, ...(overrides.limits?.agentOutput ?? {}) },
+      sessionEvents: { ...defaultPolicy.limits.sessionEvents, ...(overrides.limits?.sessionEvents ?? {}) },
+      audit: { ...defaultPolicy.limits.audit, ...(overrides.limits?.audit ?? {}) },
+      process: { ...defaultPolicy.limits.process, ...(overrides.limits?.process ?? {}) }
+    },
     audit: { ...defaultPolicy.audit, ...(overrides.audit ?? {}) }
   }, null, 2), "utf8");
 }
 
 const defaultPolicy = {
   agents: {
-    maxConcurrent: 4,
-    maxConcurrentPerProject: 2,
-    queueEnabled: false,
-    maxQueueDepth: 10,
-    queuedTaskTtlSecs: 300,
-    projectLockTimeoutSecs: 1800,
-    maxRuntimeSecs: 10,
-    startupWatchdogMs: 15000,
-    forcedCloseGraceMs: 8000,
-    killEscalationDelayMs: 1200,
-    queueDrainDelayMs: 50,
-    networkAccess: true,
-    grantCommands: true,
-    gitCommand: true,
-    packageManagerCommand: false,
-    nodeCommand: false
+    concurrency: {
+      maxConcurrent: 4,
+      maxConcurrentPerProject: 2,
+      queueEnabled: false,
+      maxQueueDepth: 10,
+    },
+    lifecycle: {
+      queuedTaskTtlSecs: 300,
+      projectLockTimeoutSecs: 1800,
+      maxRuntimeSecs: 10,
+      startupWatchdogMs: 15000,
+      forcedCloseGraceMs: 8000,
+      killEscalationDelayMs: 1200,
+      queueDrainDelayMs: 50,
+    },
+    capabilities: {
+      networkAccess: true,
+      grantCommands: true,
+      gitCommand: true,
+      packageManagerCommand: false,
+      nodeCommand: false
+    }
   },
-  chatgpt: {
-    registerProjects: false,
-    updatePermissions: false,
-    spawnAgents: true,
-    readFiles: true,
-    writeFiles: true,
-    moveFiles: false,
-    deleteFiles: false,
-    readGitIgnoredFiles: false,
-    runPackageScripts: false,
-    gitCommands: true
+  permissions: {
+    chatgpt: {
+      registerProjects: false,
+      updatePermissions: false,
+      spawnAgents: true,
+      readFiles: true,
+      writeFiles: true,
+      moveFiles: false,
+      deleteFiles: false,
+      readGitIgnoredFiles: false,
+      runPackageScripts: false,
+      gitCommands: true
+    }
   },
-  output: {
-    maxStdoutChars: 200000,
-    maxStderrChars: 200000,
-    defaultReadChars: 120000,
-    maxReadChars: 500000,
-    maxSkillReadChars: 200000,
-    maxSearchScanEntries: 100000,
-    defaultEventLimit: 100,
-    maxEventLimit: 500,
-    maxEventChunkChars: 4000,
-    defaultAuditLimit: 100,
-    maxAuditLimit: 1000,
-    maxProcessOutputBufferBytes: 10485760
-  },
-  input: {
-    maxWriteBytes: 1000000,
-    maxPatchBytes: 1000000,
-    maxTextOperationBytes: 200000,
-    maxSearchOrMarkerBytes: 20000
+  limits: {
+    fileRead: {
+      maxChars: 500000,
+    },
+    fileWrite: {
+      maxChars: 1000000,
+    },
+    patch: {
+      maxChars: 1000000,
+    },
+    textEdit: {
+      maxOperationChars: 200000,
+      maxSearchOrMarkerChars: 20000
+    },
+    search: {
+      maxScanEntries: 100000,
+      maxTextFileChars: 200000,
+    },
+    git: {
+      maxDiffChars: 200000,
+      maxUntrackedFileChars: 50000,
+    },
+    skills: {
+      maxReadChars: 200000,
+    },
+    agentOutput: {
+      maxStdoutChars: 200000,
+      maxStderrChars: 200000,
+    },
+    sessionEvents: {
+      maxEvents: 500,
+      maxChunkChars: 4000,
+    },
+    audit: {
+      maxEvents: 1000,
+    },
+    process: {
+      maxOutputBufferMb: 10
+    }
   },
   audit: {
     strictMode: false
@@ -289,7 +345,7 @@ test("missing flue cli path fails fast with flue_cli_missing", async () => {
 });
 
 test("queue disabled rejects when concurrency limits are reached", async () => {
-  writePolicy({ agents: { maxConcurrent: 1, maxConcurrentPerProject: 1, queueEnabled: false } });
+  writePolicy({ agents: { concurrency: { maxConcurrent: 1, maxConcurrentPerProject: 1, queueEnabled: false } } });
   writeDefaultFakeFlue();
 
   const first = await runFlueTask({ projectAlias: "agent", task: "SLEEP TASK", agentTemplate: "ephemeral-project-agent" });
@@ -304,7 +360,7 @@ test("queue disabled rejects when concurrency limits are reached", async () => {
 });
 
 test("agent run is disabled when max concurrent agents is zero", async () => {
-  writePolicy({ agents: { maxConcurrent: 0 } });
+  writePolicy({ agents: { concurrency: { maxConcurrent: 0 } } });
 
   await assert.rejects(
     () => runFlueTask({ projectAlias: "agent", task: "SUCCESS TASK", agentTemplate: "ephemeral-project-agent" }),
@@ -317,7 +373,7 @@ test("agent run is disabled when max concurrent agents is zero", async () => {
 });
 
 test("agent run is disabled when max concurrent agents per project is zero", async () => {
-  writePolicy({ agents: { maxConcurrentPerProject: 0 } });
+  writePolicy({ agents: { concurrency: { maxConcurrentPerProject: 0 } } });
 
   await assert.rejects(
     () => runFlueTask({ projectAlias: "agent", task: "SUCCESS TASK", agentTemplate: "ephemeral-project-agent" }),
@@ -330,7 +386,7 @@ test("agent run is disabled when max concurrent agents per project is zero", asy
 });
 
 test("queue enabled enqueues and eventually executes task in order", async () => {
-  writePolicy({ agents: { maxConcurrent: 1, maxConcurrentPerProject: 1, queueEnabled: true, maxQueueDepth: 10, queuedTaskTtlSecs: 300 } });
+  writePolicy({ agents: { concurrency: { maxConcurrent: 1, maxConcurrentPerProject: 1, queueEnabled: true, maxQueueDepth: 10 }, lifecycle: { queuedTaskTtlSecs: 300 } } });
   writeDefaultFakeFlue();
 
   const first = await runFlueTask({ projectAlias: "agent", task: "SLEEP TASK", agentTemplate: "ephemeral-project-agent" });
@@ -354,7 +410,7 @@ test("queue enabled enqueues and eventually executes task in order", async () =>
 });
 
 test("stopping running session releases lock for subsequent sessions", async () => {
-  writePolicy({ agents: { maxConcurrent: 1, maxConcurrentPerProject: 1, queueEnabled: false } });
+  writePolicy({ agents: { concurrency: { maxConcurrent: 1, maxConcurrentPerProject: 1, queueEnabled: false } } });
   writeDefaultFakeFlue();
 
   const first = await runFlueTask({ projectAlias: "agent", task: "SLEEP TASK", agentTemplate: "ephemeral-project-agent" });
@@ -367,3 +423,5 @@ test("stopping running session releases lock for subsequent sessions", async () 
   assert.equal(completed.status, "completed");
   writePolicy();
 });
+
+

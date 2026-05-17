@@ -93,7 +93,7 @@ export function createHttpServer(mcpPath = optionalEnv("PORTUS_MCP_PATH", "/mcp"
     });
     const sendEvents = () => {
       try {
-        const page = readSessionEvents({ sessionId, afterSequence, limit: 100 });
+        const page = readSessionEvents({ sessionId, afterSequence });
         for (const event of page.events) {
           res.write(`id: ${event.sequence}\n`);
           res.write(`event: ${event.type}\n`);
