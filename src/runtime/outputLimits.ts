@@ -2,19 +2,30 @@ export const DEFAULT_TEXT_LIMIT = 120_000;
 
 export type LimitedText = {
   text: string;
-  bytes: number;
+  chars: number;
+  totalChars: number;
+  omittedChars: number;
   truncated: boolean;
   limit: number;
 };
 
+export function countChars(text: string): number {
+  return Array.from(text).length;
+}
+
 export function limitText(text: string, limit = DEFAULT_TEXT_LIMIT): LimitedText {
-  if (text.length <= limit) {
-    return { text, bytes: text.length, truncated: false, limit };
+  const chars = Array.from(text);
+  const totalChars = chars.length;
+  if (totalChars <= limit) {
+    return { text, chars: totalChars, totalChars, omittedChars: 0, truncated: false, limit };
   }
 
+  const limited = chars.slice(0, limit).join("");
   return {
-    text: `${text.slice(0, limit)}\n\n[truncated: ${text.length - limit} chars omitted]`,
-    bytes: text.length,
+    text: limited,
+    chars: limit,
+    totalChars,
+    omittedChars: totalChars - limit,
     truncated: true,
     limit
   };

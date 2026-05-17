@@ -3,19 +3,19 @@ import { getSession } from "../state/SessionRegistry.js";
 import { limitText } from "../runtime/outputLimits.js";
 import { loadPolicyConfig } from "../policy/policyConfig.js";
 
-function readLimited(file: string): string {
+function readLimited(file: string, limit: number): string {
   if (!existsSync(file)) return "";
-  return limitText(readFileSync(file, "utf8")).text;
+  return limitText(readFileSync(file, "utf8"), limit).text;
 }
 
 export function collectFlueResult(sessionId: string): { result: string; stdout: string; stderr: string; summary: Record<string, unknown> | null } {
   const session = getSession(sessionId);
   const policy = loadPolicyConfig();
-  const stdoutMax = Math.max(1000, policy.output.maxStdoutBytes);
-  const stderrMax = Math.max(1000, policy.output.maxStderrBytes);
-  const stdout = limitText(readLimited(session.stdoutPath), stdoutMax).text;
-  const stderr = limitText(readLimited(session.stderrPath), stderrMax).text;
-  const result = readLimited(session.resultPath);
+  const stdoutMax = Math.max(1000, policy.output.maxStdoutChars);
+  const stderrMax = Math.max(1000, policy.output.maxStderrChars);
+  const stdout = readLimited(session.stdoutPath, stdoutMax);
+  const stderr = readLimited(session.stderrPath, stderrMax);
+  const result = readLimited(session.resultPath, policy.output.defaultReadChars);
   const summary = extractSummary(result, session.metadataPath);
   return {
     result: result || stdout || stderr,

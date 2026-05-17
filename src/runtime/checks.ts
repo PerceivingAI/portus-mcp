@@ -49,8 +49,9 @@ export async function runProjectScript(
       timeout: timeoutSecs * 1000,
       maxBuffer
     });
-    const stdout = limitText(result.stdout);
-    const stderr = limitText(result.stderr);
+    const policy = loadPolicyConfig().output;
+    const stdout = limitText(result.stdout, policy.maxStdoutChars);
+    const stderr = limitText(result.stderr, policy.maxStderrChars);
     return {
       command: `npm run ${scriptName}${args.length > 0 ? ` -- ${args.join(" ")}` : ""}`,
       exitCode: 0,
@@ -59,8 +60,9 @@ export async function runProjectScript(
       truncated: stdout.truncated || stderr.truncated
     };
   } catch (error: any) {
-    const stdout = limitText(error?.stdout ?? "");
-    const stderr = limitText(error?.stderr ?? String(error));
+    const policy = loadPolicyConfig().output;
+    const stdout = limitText(error?.stdout ?? "", policy.maxStdoutChars);
+    const stderr = limitText(error?.stderr ?? String(error), policy.maxStderrChars);
     return {
       command: `npm run ${scriptName}${args.length > 0 ? ` -- ${args.join(" ")}` : ""}`,
       exitCode: typeof error?.code === "number" ? error.code : null,

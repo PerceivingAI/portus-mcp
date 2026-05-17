@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { getSession, type SessionRecord } from "./SessionRegistry.js";
 import { loadPolicyConfig } from "../policy/policyConfig.js";
+import { limitText } from "../runtime/outputLimits.js";
 
 export type SessionEvent = {
   sequence: number;
@@ -94,8 +95,8 @@ function limitEventData(data: Record<string, unknown>): Record<string, unknown> 
   const maxChunkChars = loadPolicyConfig().output.maxEventChunkChars;
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(data)) {
-    out[key] = typeof value === "string" && value.length > maxChunkChars
-      ? `${value.slice(0, maxChunkChars)}\n\n[truncated: ${value.length - maxChunkChars} chars omitted]`
+    out[key] = typeof value === "string"
+      ? limitText(value, maxChunkChars).text
       : value;
   }
   return out;

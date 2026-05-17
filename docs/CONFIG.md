@@ -115,11 +115,11 @@ Default output limits:
 ```json
 {
   "output": {
-    "maxStdoutBytes": 200000,
-    "maxStderrBytes": 200000,
-    "defaultReadBytes": 120000,
-    "maxReadBytes": 500000,
-    "maxSkillReadBytes": 200000,
+    "maxStdoutChars": 200000,
+    "maxStderrChars": 200000,
+    "defaultReadChars": 120000,
+    "maxReadChars": 500000,
+    "maxSkillReadChars": 200000,
     "maxSearchScanEntries": 100000,
     "defaultEventLimit": 100,
     "maxEventLimit": 500,
@@ -131,9 +131,11 @@ Default output limits:
 }
 ```
 
-`defaultReadBytes` is used by project file read tools when the caller does not pass `maxBytes`.
+`defaultReadChars` is used by project file read tools when the caller does not pass `maxChars`.
 
-`maxReadBytes` is the highest `maxBytes` value a caller can request for project file reads.
+`maxReadChars` is the highest `maxChars` value a caller can request for project file reads.
+
+Char output limits count Unicode code points and hard cut returned text at the configured limit. Byte limits under `input` and `maxProcessOutputBufferBytes` remain byte-based because they protect file writes, patch input, and process buffer memory.
 
 Agent timing defaults:
 

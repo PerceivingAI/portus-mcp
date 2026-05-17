@@ -50,11 +50,11 @@ writeFileSync(policyPath, JSON.stringify({
     gitCommands: true
   },
   output: {
-    maxStdoutBytes: 200000,
-    maxStderrBytes: 200000,
-    defaultReadBytes: 120000,
-    maxReadBytes: 500000,
-    maxSkillReadBytes: 200000,
+    maxStdoutChars: 200000,
+    maxStderrChars: 200000,
+    defaultReadChars: 120000,
+    maxReadChars: 500000,
+    maxSkillReadChars: 200000,
     maxSearchScanEntries: 100000,
     defaultEventLimit: 100,
     maxEventLimit: 500,
@@ -118,7 +118,19 @@ test("project checks return failure stderr and exit code", async () => {
 test("output limiter truncates long text", () => {
   const result = limitText("x".repeat(300000), 1024);
   assert.equal(result.truncated, true);
-  assert.equal(result.text.length <= 1024 + 100, true);
+  assert.equal(result.text.length, 1024);
+  assert.equal(result.chars, 1024);
+  assert.equal(result.totalChars, 300000);
+  assert.equal(result.omittedChars, 298976);
+});
+
+test("output limiter counts unicode code points as chars", () => {
+  const result = limitText("a🙂b", 2);
+  assert.equal(result.text, "a🙂");
+  assert.equal(result.truncated, true);
+  assert.equal(result.chars, 2);
+  assert.equal(result.totalChars, 3);
+  assert.equal(result.omittedChars, 1);
 });
 
 test("provider config reports missing OpenAI credential", () => {

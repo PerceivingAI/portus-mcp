@@ -8,6 +8,7 @@ import { runFlueTask } from "../flue/runTask.js";
 import { assertChatGptPermission } from "../policy/permissionPolicy.js";
 import { toPublicSession } from "../state/SessionRegistry.js";
 import { loadPolicyConfig } from "../policy/policyConfig.js";
+import { countChars } from "../runtime/outputLimits.js";
 
 export function registerSkillTools(server: McpServer): void {
   registerTool(server, "skill_list", "Use this when ChatGPT needs to list available local Portus agent skills.", {}, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async () => {
@@ -72,14 +73,14 @@ type SkillMetadata = {
 type SkillFile = {
   relativePath: string;
   content: string;
-  bytes: number;
+  chars: number;
 };
 
 type FullSkill = SkillMetadata & {
   path: string;
   entrypoint: string;
   files: SkillFile[];
-  totalBytes: number;
+  totalChars: number;
 };
 
 function listSkillMetadata(): SkillMetadata[] {
@@ -118,20 +119,20 @@ export function readFullSkill(skillName: string): FullSkill {
     throw new Error(`Invalid skill ${safeName}: frontmatter name must match folder name.`);
   }
 
-  let totalBytes = 0;
-  const maxSkillReadBytes = loadPolicyConfig().output.maxSkillReadBytes;
+  let totalChars = 0;
+  const maxSkillReadChars = loadPolicyConfig().output.maxSkillReadChars;
   const files = listBundledFiles(skillRoot).sort().map((relativePath) => {
     const absolutePath = path.resolve(skillRoot, relativePath);
     if (!absolutePath.startsWith(`${skillRoot}${path.sep}`) && absolutePath !== skillRoot) {
       throw new Error(`Invalid skill file path: ${relativePath}.`);
     }
     const content = readFileSync(absolutePath, "utf8");
-    const bytes = Buffer.byteLength(content, "utf8");
-    totalBytes += bytes;
-    if (totalBytes > maxSkillReadBytes) {
-      throw new Error(`Skill ${safeName} exceeds max read size of ${maxSkillReadBytes} bytes.`);
+    const chars = countChars(content);
+    totalChars += chars;
+    if (totalChars > maxSkillReadChars) {
+      throw new Error(`Skill ${safeName} exceeds max read size of ${maxSkillReadChars} chars.`);
     }
-    return { relativePath, content, bytes };
+    return { relativePath, content, chars };
   });
 
   return {
@@ -139,7 +140,7 @@ export function readFullSkill(skillName: string): FullSkill {
     path: normalizeRelativePath(path.relative(process.cwd(), skillRoot)),
     entrypoint: normalizeRelativePath(path.relative(process.cwd(), entrypointFile)),
     files,
-    totalBytes
+    totalChars
   };
 }
 

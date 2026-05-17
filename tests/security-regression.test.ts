@@ -67,11 +67,11 @@ writeFileSync(policyPath, JSON.stringify({
     gitCommands: true
   },
   output: {
-    maxStdoutBytes: 200000,
-    maxStderrBytes: 200000,
-    defaultReadBytes: 120000,
-    maxReadBytes: 500000,
-    maxSkillReadBytes: 200000,
+    maxStdoutChars: 200000,
+    maxStderrChars: 200000,
+    defaultReadChars: 120000,
+    maxReadChars: 500000,
+    maxSkillReadChars: 200000,
     maxSearchScanEntries: 100000,
     defaultEventLimit: 100,
     maxEventLimit: 500,
@@ -243,7 +243,7 @@ test("MCP git diff and symbol search do not leak blocked tracked files", async (
   const client = await withClient(t);
   resultOf(await client.callTool({ name: "project_register", arguments: { projectAlias: "blocked", rootPath: projectRoot } }));
 
-  const diff = resultOf(await client.callTool({ name: "project_git_diff", arguments: { projectAlias: "blocked", maxBytes: 20000 } }));
+  const diff = resultOf(await client.callTool({ name: "project_git_diff", arguments: { projectAlias: "blocked", maxChars: 20000 } }));
   assert.doesNotMatch(diff.diff, /SECRET_TOKEN/);
   assert.deepEqual(diff.skippedPaths, [".env"]);
 

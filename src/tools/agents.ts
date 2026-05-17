@@ -12,6 +12,7 @@ import { formatSkillForPrompt, readFullSkill } from "./skills.js";
 import { stateStore } from "../state/StateStore.js";
 import { assertChatGptPermission } from "../policy/permissionPolicy.js";
 import { appendSessionEvent, readSessionEvents } from "../state/SessionEvents.js";
+import { loadPolicyConfig } from "../policy/policyConfig.js";
 
 export function registerAgentTools(server: McpServer): void {
   registerTool(server, "agent_run_task", "Use this when the user wants to spawn a Flue-backed Portus agent to perform a task in a registered project.", {
@@ -117,8 +118,10 @@ export function registerAgentTools(server: McpServer): void {
   }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ sessionId, stream }) => {
     const session = getSession(sessionId);
     const target = stream === "stdout" ? session.stdoutPath : stream === "stderr" ? session.stderrPath : session.resultPath;
-    const limited = limitText(readFileSync(target, "utf8"));
-    return { sessionId, stream, content: limited.text, truncated: limited.truncated, bytes: limited.bytes, limit: limited.limit };
+    const policy = loadPolicyConfig().output;
+    const limit = stream === "stdout" ? policy.maxStdoutChars : stream === "stderr" ? policy.maxStderrChars : policy.defaultReadChars;
+    const limited = limitText(readFileSync(target, "utf8"), limit);
+    return { sessionId, stream, content: limited.text, truncated: limited.truncated, chars: limited.chars, totalChars: limited.totalChars, omittedChars: limited.omittedChars, limit: limited.limit };
   });
 
   registerTool(server, "session_read_events", "Use this when ChatGPT needs to inspect incremental session events without rereading full logs.", {

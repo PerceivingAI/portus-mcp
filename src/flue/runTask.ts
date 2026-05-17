@@ -11,6 +11,7 @@ import { optionalEnv } from "../env.js";
 import { assertAgentPermission } from "../policy/permissionPolicy.js";
 import { getEffectivePermissions } from "../state/PermissionRegistry.js";
 import { loadPolicyConfig } from "../policy/policyConfig.js";
+import { countChars } from "../runtime/outputLimits.js";
 
 const runningProcesses = new Map<string, ChildProcess>();
 const runningStops = new Set<string>();
@@ -175,8 +176,8 @@ async function startSessionExecution(input: RunFlueTaskInput, record: SessionRec
       failureType: "flue_cli_missing",
       flueCli,
       attempts: [],
-      stdoutBytes: 0,
-      stderrBytes: 0,
+      stdoutChars: 0,
+      stderrChars: 0,
       grantedCommands
     }, null, 2), "utf8");
     upsertSession(failed);
@@ -564,8 +565,8 @@ async function runSessionAttempts(params: {
           status: "completed",
           exitCode: 0,
           signal: result.signal,
-          stdoutBytes: result.stdout.length,
-          stderrBytes: result.stderr.length,
+          stdoutChars: countChars(result.stdout),
+          stderrChars: countChars(result.stderr),
           attempts
         });
         return;
@@ -576,8 +577,8 @@ async function runSessionAttempts(params: {
           status: "failed",
           exitCode: result.exitCode,
           signal: result.signal,
-          stdoutBytes: result.stdout.length,
-          stderrBytes: result.stderr.length,
+          stdoutChars: countChars(result.stdout),
+          stderrChars: countChars(result.stderr),
           attempts,
           failureType
         });
@@ -633,13 +634,13 @@ async function runSingleAttempt(params: {
     emittedOutput = true;
     const text = chunk.toString("utf8");
     stdout += text;
-    appendSessionEventById(params.sessionId, "stdout", "stdout chunk", { attempt, text, bytes: text.length });
+    appendSessionEventById(params.sessionId, "stdout", "stdout chunk", { attempt, text, chars: countChars(text) });
   });
   child.stderr?.on("data", (chunk) => {
     emittedOutput = true;
     const text = chunk.toString("utf8");
     stderr += text;
-    appendSessionEventById(params.sessionId, "stderr", "stderr chunk", { attempt, text, bytes: text.length });
+    appendSessionEventById(params.sessionId, "stderr", "stderr chunk", { attempt, text, chars: countChars(text) });
   });
   child.stdout?.pipe(stdoutStream);
   child.stderr?.pipe(stderrStream);
@@ -670,9 +671,10 @@ async function runSingleAttempt(params: {
       resolve({ exitCode: 124, signal: null, stdout, stderr, closed: false, startupHang });
     }, params.timeoutSecs * 1000 + agentPolicy.forcedCloseGraceMs);
     child.on("error", (error) => {
-      stderr += String(error);
-      safeWrite(stderrStream, String(error));
-      appendSessionEventById(params.sessionId, "stderr", "child process error", { attempt, text: String(error), bytes: String(error).length });
+      const text = String(error);
+      stderr += text;
+      safeWrite(stderrStream, text);
+      appendSessionEventById(params.sessionId, "stderr", "child process error", { attempt, text, chars: countChars(text) });
     });
     child.on("close", (code, signal) => {
       closed = true;
@@ -711,8 +713,8 @@ function finalizeSession(
     status: "completed" | "failed";
     exitCode: number | null;
     signal: string | null;
-    stdoutBytes: number;
-    stderrBytes: number;
+    stdoutChars: number;
+    stderrChars: number;
     attempts: Array<Record<string, unknown>>;
     failureType?: FailureType;
   }
@@ -743,8 +745,8 @@ function finalizeSession(
     writeFileSync(params.metadataPath, JSON.stringify({
       exitCode: result.exitCode,
       signal: result.signal,
-      stdoutBytes: result.stdoutBytes,
-      stderrBytes: result.stderrBytes,
+      stdoutChars: result.stdoutChars,
+      stderrChars: result.stderrChars,
       attempts: result.attempts,
       failureType: result.failureType ?? null,
       grantedCommands: params.grantedCommands,
@@ -761,8 +763,8 @@ function finalizeSession(
     exitCode: result.exitCode,
     signal: result.signal,
     failureType: result.failureType ?? null,
-    stdoutBytes: result.stdoutBytes,
-    stderrBytes: result.stderrBytes,
+    stdoutChars: result.stdoutChars,
+    stderrChars: result.stderrChars,
     attempts: result.attempts.length
   });
   releaseProjectLock(params.input.projectAlias, params.sessionId);

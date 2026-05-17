@@ -36,11 +36,11 @@ const policySchema = z.object({
     gitCommands: z.boolean()
   }).strict(),
   output: z.object({
-    maxStdoutBytes: z.number().int().positive(),
-    maxStderrBytes: z.number().int().positive(),
-    defaultReadBytes: z.number().int().positive(),
-    maxReadBytes: z.number().int().positive(),
-    maxSkillReadBytes: z.number().int().positive(),
+    maxStdoutChars: z.number().int().positive(),
+    maxStderrChars: z.number().int().positive(),
+    defaultReadChars: z.number().int().positive(),
+    maxReadChars: z.number().int().positive(),
+    maxSkillReadChars: z.number().int().positive(),
     maxSearchScanEntries: z.number().int().positive(),
     defaultEventLimit: z.number().int().positive(),
     maxEventLimit: z.number().int().positive(),
@@ -59,11 +59,11 @@ const policySchema = z.object({
     strictMode: z.boolean()
   }).strict()
 }).strict().superRefine((policy, ctx) => {
-  if (policy.output.defaultReadBytes > policy.output.maxReadBytes) {
+  if (policy.output.defaultReadChars > policy.output.maxReadChars) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      path: ["output", "defaultReadBytes"],
-      message: "defaultReadBytes must be less than or equal to maxReadBytes"
+      path: ["output", "defaultReadChars"],
+      message: "defaultReadChars must be less than or equal to maxReadChars"
     });
   }
   if (policy.output.defaultEventLimit > policy.output.maxEventLimit) {

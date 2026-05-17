@@ -48,11 +48,11 @@ const basePolicy = {
     gitCommands: true
   },
   output: {
-    maxStdoutBytes: 200000,
-    maxStderrBytes: 200000,
-    defaultReadBytes: 5,
-    maxReadBytes: 10,
-    maxSkillReadBytes: 200000,
+    maxStdoutChars: 200000,
+    maxStderrChars: 200000,
+    defaultReadChars: 5,
+    maxReadChars: 10,
+    maxSkillReadChars: 200000,
     maxSearchScanEntries: 100000,
     defaultEventLimit: 100,
     maxEventLimit: 500,
@@ -128,7 +128,7 @@ async function withClient(t: any): Promise<Client> {
   return client;
 }
 
-test("project reads use configured defaultReadBytes", async (t) => {
+test("project reads use configured defaultReadChars", async (t) => {
   const client = await withClient(t);
   resultOf(await client.callTool({ name: "project_register", arguments: { projectAlias: "read-default", rootPath: projectRoot } }));
 
@@ -139,47 +139,55 @@ test("project reads use configured defaultReadBytes", async (t) => {
 
   assert.equal(read.limit, 5);
   assert.equal(read.truncated, true);
+  assert.equal(read.chars, 5);
+  assert.equal(read.totalChars, 27);
+  assert.equal(read.omittedChars, 22);
+  assert.equal(read.content.length, 5);
   assert.match(read.content, /^abcde/);
 });
 
-test("project reads allow maxBytes up to configured maxReadBytes", async (t) => {
+test("project reads allow maxChars up to configured maxReadChars", async (t) => {
   const client = await withClient(t);
   resultOf(await client.callTool({ name: "project_register", arguments: { projectAlias: "read-max", rootPath: projectRoot } }));
 
   const read = resultOf(await client.callTool({
     name: "project_read_text_file",
-    arguments: { projectAlias: "read-max", relativePath: "README.md", maxBytes: 10 }
+    arguments: { projectAlias: "read-max", relativePath: "README.md", maxChars: 10 }
   }));
 
   assert.equal(read.limit, 10);
   assert.equal(read.truncated, true);
+  assert.equal(read.chars, 10);
+  assert.equal(read.totalChars, 27);
+  assert.equal(read.omittedChars, 17);
+  assert.equal(read.content.length, 10);
   assert.match(read.content, /^abcdefghij/);
 });
 
-test("project reads reject maxBytes above configured maxReadBytes", async (t) => {
+test("project reads reject maxChars above configured maxReadChars", async (t) => {
   const client = await withClient(t);
   resultOf(await client.callTool({ name: "project_register", arguments: { projectAlias: "read-reject", rootPath: projectRoot } }));
 
   const response = await client.callTool({
     name: "project_read_text_file",
-    arguments: { projectAlias: "read-reject", relativePath: "README.md", maxBytes: 11 }
+    arguments: { projectAlias: "read-reject", relativePath: "README.md", maxChars: 11 }
   });
 
   assert.equal(response.isError, true);
-  assert.match(JSON.stringify(response.structuredContent), /maxReadBytes/);
+  assert.match(JSON.stringify(response.structuredContent), /maxReadChars/);
 });
 
-test("policy validation rejects defaultReadBytes above maxReadBytes", () => {
+test("policy validation rejects defaultReadChars above maxReadChars", () => {
   writePolicy({
     ...basePolicy,
     output: {
       ...basePolicy.output,
-      defaultReadBytes: 11,
-      maxReadBytes: 10
+      defaultReadChars: 11,
+      maxReadChars: 10
     }
   });
 
-  assert.throws(() => loadPolicyConfig(), /defaultReadBytes must be less than or equal to maxReadBytes/);
+  assert.throws(() => loadPolicyConfig(), /defaultReadChars must be less than or equal to maxReadChars/);
   writePolicy();
 });
 

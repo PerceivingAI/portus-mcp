@@ -23,13 +23,15 @@ input caps
 audit writes
 ```
 
-Project file reads use `output.defaultReadBytes` from `portus-mcp.policy.json` unless the caller passes `maxBytes`.
+Project file reads use `output.defaultReadChars` from `portus-mcp.policy.json` unless the caller passes `maxChars`.
 
-Caller-provided `maxBytes` is capped by `output.maxReadBytes`.
+Caller-provided `maxChars` is capped by `output.maxReadChars`.
+
+Returned text is hard cut at the configured char limit. Char counts use Unicode code points. Limited responses return `chars`, `totalChars`, `omittedChars`, `truncated`, and `limit` metadata when applicable.
 
 Project text search and symbol search scan at most `output.maxSearchScanEntries` files.
 
-Skill folder reads are capped by `output.maxSkillReadBytes`.
+Skill folder reads are capped by `output.maxSkillReadChars`.
 
 ## Agent Tools
 

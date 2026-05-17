@@ -45,6 +45,7 @@ writeFileSync(path.join(skillsDir, "sample", "agents", "openai.yaml"), [
   ""
 ].join("\n"), "utf8");
 writeFileSync(path.join(skillsDir, "sample", "references", "guide.md"), "# Guide\n\nUse this nested reference.\n", "utf8");
+writeFileSync(path.join(skillsDir, "sample", "references", "unicode.md"), "a🙂b\n", "utf8");
 writeFileSync(path.join(skillsDir, "loose.md"), "# Loose Skill\n\nThis must be ignored.\n", "utf8");
 writeFileSync(policyPath, JSON.stringify({
   agents: {
@@ -78,11 +79,11 @@ writeFileSync(policyPath, JSON.stringify({
     gitCommands: true
   },
   output: {
-    maxStdoutBytes: 200000,
-    maxStderrBytes: 200000,
-    defaultReadBytes: 120000,
-    maxReadBytes: 500000,
-    maxSkillReadBytes: 200000,
+    maxStdoutChars: 200000,
+    maxStderrChars: 200000,
+    defaultReadChars: 120000,
+    maxReadChars: 500000,
+    maxSkillReadChars: 200000,
     maxSearchScanEntries: 100000,
     defaultEventLimit: 100,
     maxEventLimit: 500,
@@ -247,7 +248,7 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     arguments: {
       projectAlias: "mcp",
       relativePath: "README.md",
-      maxBytes: 1000
+      maxChars: 1000
     }
   }));
   assert.match(read.content, /MCP Test/);
@@ -389,7 +390,8 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.equal(fullSkill.files.some((file: any) => file.relativePath === "SKILL.md" && /Sample Skill/.test(file.content)), true);
   assert.equal(fullSkill.files.some((file: any) => file.relativePath === "agents/openai.yaml" && /display_name/.test(file.content)), true);
   assert.equal(fullSkill.files.some((file: any) => file.relativePath === "references/guide.md" && /nested reference/.test(file.content)), true);
-  assert.equal(fullSkill.totalBytes, fullSkill.files.reduce((sum: number, file: any) => sum + file.bytes, 0));
+  assert.equal(fullSkill.files.some((file: any) => file.relativePath === "references/unicode.md" && file.chars === 4), true);
+  assert.equal(fullSkill.totalChars, fullSkill.files.reduce((sum: number, file: any) => sum + file.chars, 0));
 
   const invalidFullSkill = await client.callTool({ name: "skill_read", arguments: { skillName: "../sample" } });
   assert.equal(invalidFullSkill.isError, true);

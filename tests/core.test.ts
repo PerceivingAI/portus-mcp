@@ -46,11 +46,11 @@ writeFileSync(policyPath, JSON.stringify({
     gitCommands: true
   },
   output: {
-    maxStdoutBytes: 200000,
-    maxStderrBytes: 200000,
-    defaultReadBytes: 120000,
-    maxReadBytes: 500000,
-    maxSkillReadBytes: 200000,
+    maxStdoutChars: 200000,
+    maxStderrChars: 200000,
+    defaultReadChars: 120000,
+    maxReadChars: 500000,
+    maxSkillReadChars: 200000,
     maxSearchScanEntries: 100000,
     defaultEventLimit: 100,
     maxEventLimit: 500,
