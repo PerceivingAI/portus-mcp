@@ -1,7 +1,7 @@
 import { copyFileSync, createWriteStream, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { ChildProcess, spawn, spawnSync } from "node:child_process";
-import { loadAgentCommandConfig, loadAgentProviderConfig, loadConfig } from "../config.js";
+import { loadAgentProviderConfig, loadConfig } from "../config.js";
 import type { AgentProviderConfig } from "../config.js";
 import { stateStore } from "../state/StateStore.js";
 import { SessionRecord, getSession, listActiveSessions, upsertSession } from "../state/SessionRegistry.js";
@@ -10,7 +10,7 @@ import { getProject } from "../state/ProjectRegistry.js";
 import { optionalEnv } from "../env.js";
 import { assertAgentPermission } from "../policy/permissionPolicy.js";
 import { getEffectivePermissions } from "../state/PermissionRegistry.js";
-import { loadPolicyConfig } from "../policy/policyConfig.js";
+import { loadAgentCommandConfig, loadPolicyConfig } from "../policy/policyConfig.js";
 import { countChars } from "../runtime/outputLimits.js";
 
 const runningProcesses = new Map<string, ChildProcess>();
@@ -150,7 +150,7 @@ async function startSessionExecution(input: RunFlueTaskInput, record: SessionRec
 
   acquireProjectLock(input.projectAlias, record.sessionId);
 
-  const commandConfig = loadAgentCommandConfig(config);
+  const commandConfig = loadAgentCommandConfig();
   const grantedCommands = grantedCommandsForProject(input.projectAlias, commandConfig.allowedCommands);
 
   const flueAgentName = input.agentTemplate.replace(/\.ts$/, "");
@@ -396,15 +396,8 @@ function releaseProjectLock(projectAlias: string, sessionId: string): void {
   stateStore.audit({ tool: "project_lock", projectAlias, action: "release", sessionId });
 }
 
-function grantedCommandsForProject(projectAlias: string, allowedCommands: string[]): string[] {
-  const permissions = getEffectivePermissions(projectAlias);
-  if (!permissions.agents.grantCommands) return [];
-  return allowedCommands.filter((command) => {
-    if (command === "git") return permissions.agents.gitCommand;
-    if (command === "npm") return permissions.agents.packageManagerCommand;
-    if (command === "node") return permissions.agents.nodeCommand;
-    return permissions.agents.grantCommands;
-  });
+function grantedCommandsForProject(_projectAlias: string, allowedCommands: string[]): string[] {
+  return allowedCommands;
 }
 
 function buildAgentChildEnv(providerConfig: AgentProviderConfig): NodeJS.ProcessEnv {

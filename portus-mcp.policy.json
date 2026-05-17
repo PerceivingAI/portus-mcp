@@ -17,10 +17,9 @@
     },
     "capabilities": {
       "networkAccess": true,
-      "grantCommands": true,
-      "gitCommand": true,
-      "packageManagerCommand": false,
-      "nodeCommand": false
+      "allowedCommands": [
+        "git"
+      ]
     }
   },
   "permissions": {
@@ -36,6 +35,18 @@
       "runPackageScripts": true,
       "gitCommands": true
     }
+  },
+  "pathPolicy": {
+    "blockedPatterns": [
+      ".env",
+      ".ssh",
+      "id_rsa",
+      "id_ed25519",
+      "secrets",
+      "private",
+      "AppData",
+      "Bitwarden"
+    ]
   },
   "limits": {
     "fileRead": {

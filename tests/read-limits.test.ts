@@ -35,10 +35,7 @@ const basePolicy = {
     },
     capabilities: {
       networkAccess: true,
-      grantCommands: true,
-      gitCommand: true,
-      packageManagerCommand: false,
-      nodeCommand: false
+      allowedCommands: ["git"]
     }
   },
   permissions: {
@@ -54,6 +51,9 @@ const basePolicy = {
       runPackageScripts: false,
       gitCommands: true
     }
+  },
+  pathPolicy: {
+    blockedPatterns: [".env"]
   },
   limits: {
     fileRead: {
@@ -106,11 +106,8 @@ function writePolicy(policy = basePolicy): void {
 
 writePolicy();
 writeFileSync(configPath, JSON.stringify({
-  projects: { allowedRootMode: "registered-only" },
   agents: {
     defaultTemplate: "ephemeral-project-agent",
-    allowPersistentSessions: false,
-    useFlueCli: true,
     retry: {
       enabled: true,
       maxAttempts: 3,
@@ -122,7 +119,9 @@ writeFileSync(configPath, JSON.stringify({
       maxRetryWindowSecs: 60
     }
   },
-  blockedPathPatterns: [".env"],
+  traversal: {
+    excludedPatterns: [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"]
+  },
   skills: { directory: "skills" }
 }, null, 2), "utf8");
 

@@ -22,10 +22,6 @@ export type ChatGptPermissionConfig = {
 
 export type AgentPermissionConfig = {
   network: boolean;
-  grantCommands: boolean;
-  gitCommand: boolean;
-  packageManagerCommand: boolean;
-  nodeCommand: boolean;
   maxRuntimeSecs: number;
 };
 
@@ -34,19 +30,9 @@ export type PermissionConfig = {
   agents: AgentPermissionConfig;
 };
 
-export type AgentCommandConfig = {
-  allowedCommands: string[];
-};
-
 export type PortusMcpConfig = {
-  projects: {
-    allowedRootMode: "registered-only";
-  };
   agents: {
     defaultTemplate: string;
-    allowPersistentSessions: boolean;
-    useFlueCli: boolean;
-    allowedCommands?: string[];
     retry: {
       enabled: boolean;
       maxAttempts: number;
@@ -58,8 +44,9 @@ export type PortusMcpConfig = {
       maxRetryWindowSecs: number;
     };
   };
-  blockedPathPatterns: string[];
-  excludedTraversalPatterns?: string[];
+  traversal: {
+    excludedPatterns: string[];
+  };
   skills: {
     directory: string;
   };
@@ -77,18 +64,13 @@ const retrySchema = z.object({
 }).strict();
 
 const configSchema = z.object({
-  projects: z.object({
-    allowedRootMode: z.literal("registered-only")
-  }).strict(),
   agents: z.object({
     defaultTemplate: z.string().min(1),
-    allowPersistentSessions: z.boolean(),
-    useFlueCli: z.boolean(),
-    allowedCommands: z.array(z.string().min(1)).optional(),
     retry: retrySchema
   }).strict(),
-  blockedPathPatterns: z.array(z.string().min(1)),
-  excludedTraversalPatterns: z.array(z.string().min(1)).optional(),
+  traversal: z.object({
+    excludedPatterns: z.array(z.string().min(1))
+  }).strict(),
   skills: z.object({
     directory: z.string().min(1)
   }).strict()
@@ -114,35 +96,6 @@ export function loadConfig(): PortusMcpConfig {
     throw new Error(`Invalid config file ${configPath}: ${details}`);
   }
   return parsed.data as PortusMcpConfig;
-}
-
-export function loadAgentCommandConfig(config = loadConfig()): AgentCommandConfig {
-  const defaults: AgentCommandConfig = {
-    allowedCommands: ["git", "npm", "node"]
-  };
-  const allowedCommands = normalizeCommandList(config.agents.allowedCommands ?? defaults.allowedCommands, "agents.allowedCommands");
-  return {
-    allowedCommands
-  };
-}
-
-function normalizeCommandList(commands: string[], configPath: string): string[] {
-  const seen = new Set<string>();
-  const normalized: string[] = [];
-  for (const raw of commands) {
-    const command = raw.trim();
-    if (!isSafeCommandName(command)) {
-      throw new Error(`Invalid command name in ${configPath}: ${raw}`);
-    }
-    if (seen.has(command)) continue;
-    seen.add(command);
-    normalized.push(command);
-  }
-  return normalized;
-}
-
-function isSafeCommandName(command: string): boolean {
-  return /^[A-Za-z0-9._-]+$/.test(command);
 }
 
 export function loadAgentProviderConfig(config = loadConfig()): AgentProviderConfig {

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { loadConfig } from "../config.js";
+import { loadPolicyConfig } from "./policyConfig.js";
 import { getProject } from "../state/ProjectRegistry.js";
 
 export function resolveProjectPath(projectAlias: string, relativePath = "."): string {
@@ -12,9 +12,9 @@ export function resolveProjectPath(projectAlias: string, relativePath = "."): st
     throw new Error(`Path escapes project root: ${relativePath}`);
   }
 
-  const config = loadConfig();
+  const policy = loadPolicyConfig();
   const normalizedTarget = target.toLowerCase();
-  for (const blocked of config.blockedPathPatterns) {
+  for (const blocked of policy.pathPolicy.blockedPatterns) {
     if (normalizedTarget.includes(blocked.toLowerCase())) {
       throw new Error(`Blocked path pattern '${blocked}' matched ${target}`);
     }

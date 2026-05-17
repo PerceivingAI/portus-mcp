@@ -62,6 +62,10 @@ function writePolicy(overrides: DeepPartial<typeof defaultPolicy> = {}): void {
       ...(overrides.permissions ?? {}),
       chatgpt: { ...defaultPolicy.permissions.chatgpt, ...(overrides.permissions?.chatgpt ?? {}) }
     },
+    pathPolicy: {
+      ...defaultPolicy.pathPolicy,
+      ...(overrides.pathPolicy ?? {})
+    },
     limits: {
       ...defaultPolicy.limits,
       ...(overrides.limits ?? {}),
@@ -100,10 +104,7 @@ const defaultPolicy = {
     },
     capabilities: {
       networkAccess: true,
-      grantCommands: true,
-      gitCommand: true,
-      packageManagerCommand: false,
-      nodeCommand: false
+      allowedCommands: ["git"]
     }
   },
   permissions: {
@@ -119,6 +120,9 @@ const defaultPolicy = {
       runPackageScripts: false,
       gitCommands: true
     }
+  },
+  pathPolicy: {
+    blockedPatterns: [".env"]
   },
   limits: {
     fileRead: {
@@ -168,11 +172,8 @@ const defaultPolicy = {
 writeDefaultFakeFlue();
 writePolicy();
 writeFileSync(configPath, JSON.stringify({
-  projects: { allowedRootMode: "registered-only" },
   agents: {
     defaultTemplate: "ephemeral-project-agent",
-    allowPersistentSessions: false,
-    useFlueCli: true,
     retry: {
       enabled: true,
       maxAttempts: 3,
@@ -184,7 +185,9 @@ writeFileSync(configPath, JSON.stringify({
       maxRetryWindowSecs: 1
     }
   },
-  blockedPathPatterns: [".env"],
+  traversal: {
+    excludedPatterns: [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"]
+  },
   skills: { directory: "skills" }
 }, null, 2), "utf8");
 

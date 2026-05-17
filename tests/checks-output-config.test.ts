@@ -37,10 +37,7 @@ writeFileSync(policyPath, JSON.stringify({
     },
     capabilities: {
       networkAccess: true,
-      grantCommands: true,
-      gitCommand: true,
-      packageManagerCommand: false,
-      nodeCommand: false
+      allowedCommands: ["git"]
     }
   },
   permissions: {
@@ -56,6 +53,9 @@ writeFileSync(policyPath, JSON.stringify({
       runPackageScripts: false,
       gitCommands: true
     }
+  },
+  pathPolicy: {
+    blockedPatterns: [".env"]
   },
   limits: {
     fileRead: {
@@ -102,11 +102,8 @@ writeFileSync(policyPath, JSON.stringify({
   }
 }, null, 2), "utf8");
 writeFileSync(configPath, JSON.stringify({
-  projects: { allowedRootMode: "registered-only" },
   agents: {
     defaultTemplate: "ephemeral-project-agent",
-    allowPersistentSessions: false,
-    useFlueCli: true,
     retry: {
       enabled: true,
       maxAttempts: 3,
@@ -118,7 +115,9 @@ writeFileSync(configPath, JSON.stringify({
       maxRetryWindowSecs: 60
     }
   },
-  blockedPathPatterns: [".env"],
+  traversal: {
+    excludedPatterns: [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"]
+  },
   skills: { directory: "skills" }
 }, null, 2), "utf8");
 
@@ -208,9 +207,9 @@ test("config validation rejects unknown top-level fields", () => {
 test("config validation rejects invalid path pattern arrays", () => {
   const original = readFileSync(configPath, "utf8");
   try {
-    const invalid = { ...JSON.parse(original), blockedPathPatterns: [".env", 12] };
+    const invalid = { ...JSON.parse(original), traversal: { excludedPatterns: [".git", 12] } };
     writeFileSync(configPath, JSON.stringify(invalid, null, 2), "utf8");
-    assert.throws(() => loadConfig(), /blockedPathPatterns\.1/i);
+    assert.throws(() => loadConfig(), /traversal\.excludedPatterns\.1/i);
   } finally {
     writeFileSync(configPath, original, "utf8");
   }

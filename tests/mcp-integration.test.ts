@@ -66,10 +66,7 @@ writeFileSync(policyPath, JSON.stringify({
     },
     capabilities: {
       networkAccess: true,
-      grantCommands: true,
-      gitCommand: true,
-      packageManagerCommand: true,
-      nodeCommand: true
+      allowedCommands: ["git", "npm", "node"]
     }
   },
   permissions: {
@@ -85,6 +82,9 @@ writeFileSync(policyPath, JSON.stringify({
       runPackageScripts: false,
       gitCommands: true
     }
+  },
+  pathPolicy: {
+    blockedPatterns: [".env"]
   },
   limits: {
     fileRead: {
@@ -131,11 +131,8 @@ writeFileSync(policyPath, JSON.stringify({
   }
 }, null, 2), "utf8");
 writeFileSync(configPath, JSON.stringify({
-  projects: { allowedRootMode: "registered-only" },
   agents: {
     defaultTemplate: "ephemeral-project-agent",
-    allowPersistentSessions: false,
-    useFlueCli: true,
     retry: {
       enabled: true,
       maxAttempts: 3,
@@ -147,7 +144,9 @@ writeFileSync(configPath, JSON.stringify({
       maxRetryWindowSecs: 60
     }
   },
-  blockedPathPatterns: [".env"],
+  traversal: {
+    excludedPatterns: [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"]
+  },
   skills: { directory: skillsDir }
 }, null, 2), "utf8");
 
@@ -377,7 +376,8 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.equal(effectiveConfig.permissions.chatgpt.readFiles, true);
   assert.deepEqual(effectiveConfig.commands.allowedCommands, ["git", "npm", "node"]);
   assert.deepEqual(effectiveConfig.commands.effectiveCommands, ["git", "npm", "node"]);
-  assert.deepEqual(effectiveConfig.pathPolicy.blockedPathPatterns, [".env"]);
+  assert.deepEqual(effectiveConfig.pathPolicy.blockedPatterns, [".env"]);
+  assert.deepEqual(effectiveConfig.traversal.excludedPatterns, [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"]);
 
   const updated = resultOf(await client.callTool({
     name: "permission_update",

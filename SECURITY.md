@@ -30,7 +30,7 @@ Portus MCP controls each operation and applies registered project roots, relativ
 
 Project paths are resolved from the registered project root.
 
-Portus MCP blocks path escapes, absolute paths where relative paths are required, configured blocked path patterns, and gitignored paths when ignored-file reads are disabled.
+Portus MCP blocks path escapes, absolute paths where relative paths are required, `pathPolicy.blockedPatterns`, and gitignored paths when ignored-file reads are disabled.
 
 ## Gitignored Files
 
@@ -59,10 +59,7 @@ Spawned-agent permissions include:
 
 ```text
 networkAccess
-grantCommands
-gitCommand
-packageManagerCommand
-nodeCommand
+allowedCommands
 maxRuntimeSecs
 ```
 

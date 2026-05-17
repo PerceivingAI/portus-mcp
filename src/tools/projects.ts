@@ -19,7 +19,6 @@ import { runProjectCheck, runProjectScript } from "../runtime/checks.js";
 import { registerTool } from "./toolUtils.js";
 
 const execFileAsync = promisify(execFile);
-const DEFAULT_EXCLUDED_TRAVERSAL_PATTERNS = [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"];
 const TEXT_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json", ".md", ".txt", ".yaml", ".yml", ".toml", ".env", ".html", ".css", ".scss", ".xml", ".sh", ".ps1", ".sql"]);
 
 function assertInputChars(name: string, value: string, limit: number): void {
@@ -50,7 +49,7 @@ function isTextLikely(filePath: string): boolean {
 }
 
 function getExcludedTraversalPatterns(): string[] {
-  return loadConfig().excludedTraversalPatterns ?? DEFAULT_EXCLUDED_TRAVERSAL_PATTERNS;
+  return loadConfig().traversal.excludedPatterns;
 }
 
 function pathMatchesPattern(relativePath: string, entryName: string, pattern: string): boolean {

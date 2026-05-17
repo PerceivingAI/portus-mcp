@@ -4,6 +4,10 @@ import { z } from "zod";
 import { optionalEnv } from "../env.js";
 import type { PermissionConfig } from "../config.js";
 
+export type AgentCommandConfig = {
+  allowedCommands: string[];
+};
+
 const policySchema = z.object({
   agents: z.object({
     concurrency: z.object({
@@ -23,10 +27,7 @@ const policySchema = z.object({
     }).strict(),
     capabilities: z.object({
       networkAccess: z.boolean(),
-      grantCommands: z.boolean(),
-      gitCommand: z.boolean(),
-      packageManagerCommand: z.boolean(),
-      nodeCommand: z.boolean()
+      allowedCommands: z.array(z.string().min(1))
     }).strict()
   }).strict(),
   permissions: z.object({
@@ -42,6 +43,9 @@ const policySchema = z.object({
       runPackageScripts: z.boolean(),
       gitCommands: z.boolean()
     }).strict()
+  }).strict(),
+  pathPolicy: z.object({
+    blockedPatterns: z.array(z.string().min(1))
   }).strict(),
   limits: z.object({
     fileRead: z.object({
@@ -117,11 +121,32 @@ export function policyPermissions(policy = loadPolicyConfig()): PermissionConfig
     chatgpt: { ...policy.permissions.chatgpt },
     agents: {
       network: policy.agents.capabilities.networkAccess,
-      grantCommands: policy.agents.capabilities.grantCommands,
-      gitCommand: policy.agents.capabilities.gitCommand,
-      packageManagerCommand: policy.agents.capabilities.packageManagerCommand,
-      nodeCommand: policy.agents.capabilities.nodeCommand,
       maxRuntimeSecs: policy.agents.lifecycle.maxRuntimeSecs
     }
   };
+}
+
+export function loadAgentCommandConfig(policy = loadPolicyConfig()): AgentCommandConfig {
+  return {
+    allowedCommands: normalizeCommandList(policy.agents.capabilities.allowedCommands, "agents.capabilities.allowedCommands")
+  };
+}
+
+function normalizeCommandList(commands: string[], configPath: string): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const raw of commands) {
+    const command = raw.trim();
+    if (!isSafeCommandName(command)) {
+      throw new Error(`Invalid command name in ${configPath}: ${raw}`);
+    }
+    if (seen.has(command)) continue;
+    seen.add(command);
+    normalized.push(command);
+  }
+  return normalized;
+}
+
+function isSafeCommandName(command: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(command);
 }

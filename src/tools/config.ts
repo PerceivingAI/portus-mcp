@@ -1,12 +1,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { loadAgentCommandConfig, loadAgentProviderConfig, loadConfig } from "../config.js";
+import { loadAgentProviderConfig, loadConfig } from "../config.js";
 import { getEffectivePermissions, updatePermissions } from "../state/PermissionRegistry.js";
 import { registerTool } from "./toolUtils.js";
 import { resolveProjectPath } from "../policy/pathPolicy.js";
 import { stateStore } from "../state/StateStore.js";
 import { assertChatGptPermission } from "../policy/permissionPolicy.js";
-import { loadPolicyConfig } from "../policy/policyConfig.js";
+import { loadAgentCommandConfig, loadPolicyConfig } from "../policy/policyConfig.js";
 
 const permissionUpdateSchema = z.object({
   chatgpt: z.object({
@@ -23,10 +23,6 @@ const permissionUpdateSchema = z.object({
   }).optional(),
   agents: z.object({
     network: z.boolean().optional(),
-    grantCommands: z.boolean().optional(),
-    gitCommand: z.boolean().optional(),
-    packageManagerCommand: z.boolean().optional(),
-    nodeCommand: z.boolean().optional(),
     maxRuntimeSecs: z.number().int().positive().optional()
   }).optional()
 });
@@ -77,17 +73,11 @@ export function registerConfigTools(server: McpServer): void {
     projectAlias: z.string().optional()
   }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias }) => {
     const config = loadConfig();
+    const policy = loadPolicyConfig();
     const permissions = getEffectivePermissions(projectAlias);
-    const commandConfig = loadAgentCommandConfig(config);
+    const commandConfig = loadAgentCommandConfig(policy);
     const provider = loadAgentProviderConfig(config);
-    const effectiveCommands = permissions.agents.grantCommands
-      ? commandConfig.allowedCommands.filter((command) => {
-        if (command === "git") return permissions.agents.gitCommand;
-        if (command === "npm") return permissions.agents.packageManagerCommand;
-        if (command === "node") return permissions.agents.nodeCommand;
-        return true;
-      })
-      : [];
+    const effectiveCommands = commandConfig.allowedCommands;
 
     return {
       projectAlias: projectAlias ?? null,
@@ -102,8 +92,10 @@ export function registerConfigTools(server: McpServer): void {
         effectiveCommands
       },
       pathPolicy: {
-        blockedPathPatterns: config.blockedPathPatterns,
-        excludedTraversalPatterns: config.excludedTraversalPatterns ?? []
+        blockedPatterns: policy.pathPolicy.blockedPatterns
+      },
+      traversal: {
+        excludedPatterns: config.traversal.excludedPatterns
       }
     };
   });

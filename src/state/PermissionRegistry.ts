@@ -72,12 +72,6 @@ function normalizePartialPermissions(input: PartialPermissionConfig | Record<str
 
   copyLegacy(raw, agents, "network", "network");
   copyLegacy(raw, agents, "maxRuntimeSecs", "maxRuntimeSecs");
-  copyLegacy(raw, agents, "gitCommands", "gitCommand");
-  copyLegacy(raw, agents, "runPackageManager", "packageManagerCommand");
-  if (typeof raw.runShell === "boolean") {
-    agents.grantCommands = raw.runShell;
-    agents.nodeCommand = raw.runShell;
-  }
 
   return { chatgpt, agents };
 }

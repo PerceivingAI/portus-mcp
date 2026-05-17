@@ -69,12 +69,8 @@ For the tested ChatGPT custom connector flow, leave it empty on ChatGPT since th
 This file controls structured app behavior:
 
 ```text
-registered-only project mode
 default agent template
-Flue CLI settings
-allowed agent commands
 retry policy
-blocked path patterns
 traversal exclusions
 skills directory
 ```
@@ -107,6 +103,8 @@ grouped limits
 audit strict mode
 direct tool permissions
 spawned-agent permissions
+blocked path patterns
+allowed agent commands
 ```
 
 Default grouped policy shape:
@@ -120,6 +118,9 @@ Default grouped policy shape:
   },
   "permissions": {
     "chatgpt": {}
+  },
+  "pathPolicy": {
+    "blockedPatterns": []
   },
   "limits": {
     "fileRead": {
@@ -206,11 +207,7 @@ Spawned-agent settings under `agents.capabilities` and `agents.lifecycle`:
 
 ```text
 networkAccess
-network
-grantCommands
-gitCommand
-packageManagerCommand
-nodeCommand
+allowedCommands
 maxRuntimeSecs
 ```
 

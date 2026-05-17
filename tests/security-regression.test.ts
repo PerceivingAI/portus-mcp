@@ -54,10 +54,7 @@ writeFileSync(policyPath, JSON.stringify({
     },
     capabilities: {
       networkAccess: false,
-      grantCommands: true,
-      gitCommand: true,
-      packageManagerCommand: false,
-      nodeCommand: false
+      allowedCommands: ["git"]
     }
   },
   permissions: {
@@ -73,6 +70,9 @@ writeFileSync(policyPath, JSON.stringify({
       runPackageScripts: false,
       gitCommands: true
     }
+  },
+  pathPolicy: {
+    blockedPatterns: [".env"]
   },
   limits: {
     fileRead: {
@@ -119,12 +119,8 @@ writeFileSync(policyPath, JSON.stringify({
   }
 }, null, 2), "utf8");
 writeFileSync(configPath, JSON.stringify({
-  projects: { allowedRootMode: "registered-only" },
   agents: {
     defaultTemplate: "ephemeral-project-agent",
-    allowPersistentSessions: false,
-    useFlueCli: true,
-    allowedCommands: ["git", "npm", "node"],
     retry: {
       enabled: true,
       maxAttempts: 3,
@@ -136,8 +132,9 @@ writeFileSync(configPath, JSON.stringify({
       maxRetryWindowSecs: 60
     }
   },
-  blockedPathPatterns: [".env"],
-  excludedTraversalPatterns: [".git", "skip-me"],
+  traversal: {
+    excludedPatterns: [".git", "skip-me"]
+  },
   skills: { directory: "skills" }
 }, null, 2), "utf8");
 
@@ -181,10 +178,10 @@ test("permission gates cover every chatgpt and agents field", () => {
   }
   assert.throws(() => assertChatGptPermission("updatePermissions", "missing-project"), /Permission denied/);
 
-  for (const permission of ["network", "packageManagerCommand", "nodeCommand"] as const) {
+  for (const permission of ["network"] as const) {
     assert.throws(() => assertAgentPermission(permission, "missing-project"), /Permission denied/);
   }
-  for (const permission of ["grantCommands", "gitCommand", "maxRuntimeSecs"] as const) {
+  for (const permission of ["maxRuntimeSecs"] as const) {
     assert.doesNotThrow(() => assertAgentPermission(permission, "missing-project"));
   }
 });
