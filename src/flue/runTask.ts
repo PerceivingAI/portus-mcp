@@ -334,9 +334,10 @@ function failQueuedRecord(record: SessionRecord, failureType: FailureType, messa
 }
 
 function scheduleQueueDrain(): void {
+  const delayMs = loadPolicyConfig().agents.queueDrainDelayMs;
   setTimeout(() => {
     void drainQueue();
-  }, 50);
+  }, delayMs);
 }
 
 async function drainQueue(): Promise<void> {
@@ -627,6 +628,7 @@ async function runSingleAttempt(params: {
   let stderr = "";
   let emittedOutput = false;
   let startupHang = false;
+  const agentPolicy = loadPolicyConfig().agents;
   child.stdout?.on("data", (chunk) => {
     emittedOutput = true;
     const text = chunk.toString("utf8");
@@ -651,7 +653,7 @@ async function runSingleAttempt(params: {
     stderr += "\n[portus-mcp] startup watchdog detected no output";
     appendSessionEventById(params.sessionId, "startup_watchdog", "Startup watchdog detected no output.", { attempt });
     void terminateChildTree(child, `attempt ${attempt} startup watchdog`);
-  }, 15000);
+  }, agentPolicy.startupWatchdogMs);
 
   const closeResult = await new Promise<{ exitCode: number | null; signal: string | null; stdout: string; stderr: string; closed: boolean; startupHang: boolean }>((resolve) => {
     let closed = false;
@@ -666,7 +668,7 @@ async function runSingleAttempt(params: {
       stdoutStream.end();
       stderrStream.end();
       resolve({ exitCode: 124, signal: null, stdout, stderr, closed: false, startupHang });
-    }, params.timeoutSecs * 1000 + 8000);
+    }, params.timeoutSecs * 1000 + agentPolicy.forcedCloseGraceMs);
     child.on("error", (error) => {
       stderr += String(error);
       safeWrite(stderrStream, String(error));
@@ -852,7 +854,7 @@ async function terminateChildTree(child: ChildProcess, reason: string) {
   } catch {
     // best effort
   }
-  await delay(1200);
+  await delay(loadPolicyConfig().agents.killEscalationDelayMs);
   if (child.exitCode !== null) return;
   if (process.platform === "win32") {
     try {

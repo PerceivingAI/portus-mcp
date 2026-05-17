@@ -7,8 +7,7 @@ import { registerTool } from "./toolUtils.js";
 import { runFlueTask } from "../flue/runTask.js";
 import { assertChatGptPermission } from "../policy/permissionPolicy.js";
 import { toPublicSession } from "../state/SessionRegistry.js";
-
-const maxSkillReadBytes = 200000;
+import { loadPolicyConfig } from "../policy/policyConfig.js";
 
 export function registerSkillTools(server: McpServer): void {
   registerTool(server, "skill_list", "Use this when ChatGPT needs to list available local Portus agent skills.", {}, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async () => {
@@ -120,6 +119,7 @@ export function readFullSkill(skillName: string): FullSkill {
   }
 
   let totalBytes = 0;
+  const maxSkillReadBytes = loadPolicyConfig().output.maxSkillReadBytes;
   const files = listBundledFiles(skillRoot).sort().map((relativePath) => {
     const absolutePath = path.resolve(skillRoot, relativePath);
     if (!absolutePath.startsWith(`${skillRoot}${path.sep}`) && absolutePath !== skillRoot) {

@@ -23,6 +23,14 @@ input caps
 audit writes
 ```
 
+Project file reads use `output.defaultReadBytes` from `portus-mcp.policy.json` unless the caller passes `maxBytes`.
+
+Caller-provided `maxBytes` is capped by `output.maxReadBytes`.
+
+Project text search and symbol search scan at most `output.maxSearchScanEntries` files.
+
+Skill folder reads are capped by `output.maxSkillReadBytes`.
+
 ## Agent Tools
 
 Agent tools start or inspect spawned Flue agent sessions.

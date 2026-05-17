@@ -6,6 +6,7 @@ import { registerTool } from "./toolUtils.js";
 import { resolveProjectPath } from "../policy/pathPolicy.js";
 import { stateStore } from "../state/StateStore.js";
 import { assertChatGptPermission } from "../policy/permissionPolicy.js";
+import { loadPolicyConfig } from "../policy/policyConfig.js";
 
 const permissionUpdateSchema = z.object({
   chatgpt: z.object({
@@ -184,21 +185,23 @@ export function registerConfigTools(server: McpServer): void {
   registerTool(server, "audit_list", "List recent audit events.", {
     projectAlias: z.string().optional(),
     sessionId: z.string().optional(),
-    limit: z.number().int().positive().max(1000).default(100)
+    limit: z.number().int().positive().optional()
   }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, sessionId, limit }) => {
-    const events = stateStore.readAudit(limit).filter((event) => {
+    const policy = loadPolicyConfig().output;
+    const auditLimit = Math.min(policy.maxAuditLimit, Math.max(1, limit ?? policy.defaultAuditLimit));
+    const events = stateStore.readAudit(auditLimit).filter((event) => {
       if (projectAlias && event.projectAlias !== projectAlias) return false;
       if (sessionId && event.sessionId !== sessionId) return false;
       return true;
     });
-    return { events: events.map(toPublicAuditEvent).filter((event): event is PublicAuditEvent => event !== null), limit };
+    return { events: events.map(toPublicAuditEvent).filter((event): event is PublicAuditEvent => event !== null), limit: auditLimit };
   });
 
   registerTool(server, "audit_read", "Read detailed audit events by event id or session id.", {
     eventId: z.string().optional(),
     sessionId: z.string().optional()
   }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ eventId, sessionId }) => {
-    const events = stateStore.readAudit(1000).filter((event) => {
+    const events = stateStore.readAudit(loadPolicyConfig().output.maxAuditLimit).filter((event) => {
       if (eventId && event.eventId !== eventId) return false;
       if (sessionId && event.sessionId !== sessionId) return false;
       return true;

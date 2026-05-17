@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
 import { limitText } from "./outputLimits.js";
+import { loadPolicyConfig } from "../policy/policyConfig.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -36,6 +37,7 @@ export async function runProjectScript(
   const packageJsonPath = path.join(rootPath, "package.json");
   const packageJson = packageJsonInput ?? JSON.parse(readFileSync(packageJsonPath, "utf8")) as { scripts?: Record<string, string> };
   if (!packageJson.scripts?.[scriptName]) throw new Error(`Missing package.json script: ${scriptName}`);
+  const maxBuffer = loadPolicyConfig().output.maxProcessOutputBufferBytes;
 
   const npmExecPath = process.env.npm_execpath;
   const command = process.platform === "win32" && npmExecPath ? process.execPath : "npm";
@@ -45,7 +47,7 @@ export async function runProjectScript(
     const result = await execFileAsync(command, runArgs, {
       cwd: rootPath,
       timeout: timeoutSecs * 1000,
-      maxBuffer: 1024 * 1024 * 10
+      maxBuffer
     });
     const stdout = limitText(result.stdout);
     const stderr = limitText(result.stderr);

@@ -62,6 +62,10 @@ const defaultPolicy = {
     queuedTaskTtlSecs: 300,
     projectLockTimeoutSecs: 1800,
     maxRuntimeSecs: 10,
+    startupWatchdogMs: 15000,
+    forcedCloseGraceMs: 8000,
+    killEscalationDelayMs: 1200,
+    queueDrainDelayMs: 50,
     networkAccess: true,
     grantCommands: true,
     gitCommand: true,
@@ -82,7 +86,17 @@ const defaultPolicy = {
   },
   output: {
     maxStdoutBytes: 200000,
-    maxStderrBytes: 200000
+    maxStderrBytes: 200000,
+    defaultReadBytes: 120000,
+    maxReadBytes: 500000,
+    maxSkillReadBytes: 200000,
+    maxSearchScanEntries: 100000,
+    defaultEventLimit: 100,
+    maxEventLimit: 500,
+    maxEventChunkChars: 4000,
+    defaultAuditLimit: 100,
+    maxAuditLimit: 1000,
+    maxProcessOutputBufferBytes: 10485760
   },
   input: {
     maxWriteBytes: 1000000,

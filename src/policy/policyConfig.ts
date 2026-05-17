@@ -13,6 +13,10 @@ const policySchema = z.object({
     queuedTaskTtlSecs: z.number().int().positive(),
     projectLockTimeoutSecs: z.number().int().positive(),
     maxRuntimeSecs: z.number().int().positive(),
+    startupWatchdogMs: z.number().int().positive(),
+    forcedCloseGraceMs: z.number().int().positive(),
+    killEscalationDelayMs: z.number().int().positive(),
+    queueDrainDelayMs: z.number().int().positive(),
     networkAccess: z.boolean(),
     grantCommands: z.boolean(),
     gitCommand: z.boolean(),
@@ -33,7 +37,17 @@ const policySchema = z.object({
   }).strict(),
   output: z.object({
     maxStdoutBytes: z.number().int().positive(),
-    maxStderrBytes: z.number().int().positive()
+    maxStderrBytes: z.number().int().positive(),
+    defaultReadBytes: z.number().int().positive(),
+    maxReadBytes: z.number().int().positive(),
+    maxSkillReadBytes: z.number().int().positive(),
+    maxSearchScanEntries: z.number().int().positive(),
+    defaultEventLimit: z.number().int().positive(),
+    maxEventLimit: z.number().int().positive(),
+    maxEventChunkChars: z.number().int().positive(),
+    defaultAuditLimit: z.number().int().positive(),
+    maxAuditLimit: z.number().int().positive(),
+    maxProcessOutputBufferBytes: z.number().int().positive()
   }).strict(),
   input: z.object({
     maxWriteBytes: z.number().int().positive(),
@@ -44,7 +58,29 @@ const policySchema = z.object({
   audit: z.object({
     strictMode: z.boolean()
   }).strict()
-}).strict();
+}).strict().superRefine((policy, ctx) => {
+  if (policy.output.defaultReadBytes > policy.output.maxReadBytes) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["output", "defaultReadBytes"],
+      message: "defaultReadBytes must be less than or equal to maxReadBytes"
+    });
+  }
+  if (policy.output.defaultEventLimit > policy.output.maxEventLimit) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["output", "defaultEventLimit"],
+      message: "defaultEventLimit must be less than or equal to maxEventLimit"
+    });
+  }
+  if (policy.output.defaultAuditLimit > policy.output.maxAuditLimit) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["output", "defaultAuditLimit"],
+      message: "defaultAuditLimit must be less than or equal to maxAuditLimit"
+    });
+  }
+});
 
 export type PortusPolicyConfig = z.infer<typeof policySchema>;
 

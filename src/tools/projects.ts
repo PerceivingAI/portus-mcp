@@ -29,9 +29,12 @@ function assertInputBytes(name: string, value: string, limit: number): void {
 
 async function readProjectTextFile(input: { projectAlias: string; relativePath: string; maxBytes?: number }) {
   assertChatGptPermission("readFiles", input.projectAlias);
+  const { defaultReadBytes, maxReadBytes } = loadPolicyConfig().output;
+  const readLimit = input.maxBytes ?? defaultReadBytes;
+  if (readLimit > maxReadBytes) throw new Error(`Input exceeds maxReadBytes: ${readLimit} > ${maxReadBytes} bytes`);
   const target = resolveProjectPath(input.projectAlias, input.relativePath);
   assertCanReadProjectPath(input.projectAlias, target, input.relativePath);
-  const limited = limitText(readFileSync(target, "utf8"), input.maxBytes);
+  const limited = limitText(readFileSync(target, "utf8"), readLimit);
   return { projectAlias: input.projectAlias, relativePath: input.relativePath, content: limited.text, truncated: limited.truncated, bytes: limited.bytes, limit: limited.limit };
 }
 
@@ -190,8 +193,8 @@ export function registerProjectTools(server: McpServer): void {
     try { git = await gitStatus(project.rootPath); } catch (error) { git = `git status unavailable: ${String(error)}`; }
     return { project, git };
   });
-  registerTool(server, "project_read_file", "Use this when ChatGPT needs to read a text file inside a registered project. The path must be relative to the registered project root and cannot read outside that project.", { projectAlias: z.string(), relativePath: z.string(), maxBytes: z.number().int().positive().max(200000).optional() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath, maxBytes }) => readProjectTextFile({ projectAlias, relativePath, maxBytes }));
-  registerTool(server, "project_read_text_file", "Use this when ChatGPT needs to read a text file inside a registered project. The path must be relative to the registered project root and cannot read outside that project.", { projectAlias: z.string(), relativePath: z.string(), maxBytes: z.number().int().positive().max(200000).optional() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath, maxBytes }) => readProjectTextFile({ projectAlias, relativePath, maxBytes }));
+  registerTool(server, "project_read_file", "Use this when ChatGPT needs to read a text file inside a registered project. The path must be relative to the registered project root and cannot read outside that project.", { projectAlias: z.string(), relativePath: z.string(), maxBytes: z.number().int().positive().optional() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath, maxBytes }) => readProjectTextFile({ projectAlias, relativePath, maxBytes }));
+  registerTool(server, "project_read_text_file", "Use this when ChatGPT needs to read a text file inside a registered project. The path must be relative to the registered project root and cannot read outside that project.", { projectAlias: z.string(), relativePath: z.string(), maxBytes: z.number().int().positive().optional() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath, maxBytes }) => readProjectTextFile({ projectAlias, relativePath, maxBytes }));
   registerTool(server, "project_list_files", "Use this when ChatGPT needs to list files inside a registered project.", { projectAlias: z.string(), relativePath: z.string().default("."), maxEntries: z.number().int().positive().max(1000).default(200) }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath, maxEntries }) => {
     assertChatGptPermission("readFiles", projectAlias);
     const root = resolveProjectPath(projectAlias, relativePath);
@@ -328,7 +331,7 @@ export function registerProjectTools(server: McpServer): void {
     assertChatGptPermission("readFiles", projectAlias);
     const root = resolveProjectPath(projectAlias, relativePath);
     assertCanReadProjectPath(projectAlias, root, relativePath);
-    const files = collectPaths(projectAlias, root, 100000, true, false);
+    const files = collectPaths(projectAlias, root, loadPolicyConfig().output.maxSearchScanEntries, true, false);
     const matches: Array<Record<string, unknown>> = [];
     const pattern = regex ? new RegExp(query, caseSensitive ? "" : "i") : null;
     for (const entry of files) {
@@ -517,7 +520,7 @@ export function registerProjectTools(server: McpServer): void {
     const root = resolveProjectPath(projectAlias, ".");
     const matches: Array<{ relativePath: string; line: number; text: string }> = [];
     const needle = query.toLowerCase();
-    for (const entry of collectPaths(projectAlias, root, 100000, true, false)) {
+    for (const entry of collectPaths(projectAlias, root, loadPolicyConfig().output.maxSearchScanEntries, true, false)) {
       if (matches.length >= maxResults) break;
       if (!canReadProjectRelativePath(projectAlias, entry.relativePath)) continue;
       const target = resolveProjectPath(projectAlias, entry.relativePath);

@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { getSession, type SessionRecord } from "./SessionRegistry.js";
+import { loadPolicyConfig } from "../policy/policyConfig.js";
 
 export type SessionEvent = {
   sequence: number;
@@ -11,10 +12,6 @@ export type SessionEvent = {
   message: string;
   data: Record<string, unknown>;
 };
-
-const DEFAULT_EVENT_LIMIT = 100;
-const MAX_EVENT_LIMIT = 500;
-const MAX_CHUNK_CHARS = 4000;
 
 export function sessionEventsPath(session: Pick<SessionRecord, "metadataPath" | "eventsPath">): string {
   return session.eventsPath ?? path.join(path.dirname(session.metadataPath), "events.jsonl");
@@ -59,8 +56,9 @@ export function readSessionEvents(input: {
 }): { sessionId: string; events: SessionEvent[]; nextSequence: number; hasMore: boolean } {
   const session = getSession(input.sessionId);
   const filePath = sessionEventsPath(session);
+  const policy = loadPolicyConfig().output;
   const afterSequence = Math.max(0, input.afterSequence ?? 0);
-  const limit = Math.min(MAX_EVENT_LIMIT, Math.max(1, input.limit ?? DEFAULT_EVENT_LIMIT));
+  const limit = Math.min(policy.maxEventLimit, Math.max(1, input.limit ?? policy.defaultEventLimit));
   if (!existsSync(filePath)) {
     return { sessionId: input.sessionId, events: [], nextSequence: afterSequence, hasMore: false };
   }
@@ -93,10 +91,11 @@ function nextSequence(filePath: string): number {
 }
 
 function limitEventData(data: Record<string, unknown>): Record<string, unknown> {
+  const maxChunkChars = loadPolicyConfig().output.maxEventChunkChars;
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(data)) {
-    out[key] = typeof value === "string" && value.length > MAX_CHUNK_CHARS
-      ? `${value.slice(0, MAX_CHUNK_CHARS)}\n\n[truncated: ${value.length - MAX_CHUNK_CHARS} chars omitted]`
+    out[key] = typeof value === "string" && value.length > maxChunkChars
+      ? `${value.slice(0, maxChunkChars)}\n\n[truncated: ${value.length - maxChunkChars} chars omitted]`
       : value;
   }
   return out;

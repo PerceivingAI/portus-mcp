@@ -110,6 +110,44 @@ direct tool permissions
 spawned-agent permissions
 ```
 
+Default output limits:
+
+```json
+{
+  "output": {
+    "maxStdoutBytes": 200000,
+    "maxStderrBytes": 200000,
+    "defaultReadBytes": 120000,
+    "maxReadBytes": 500000,
+    "maxSkillReadBytes": 200000,
+    "maxSearchScanEntries": 100000,
+    "defaultEventLimit": 100,
+    "maxEventLimit": 500,
+    "maxEventChunkChars": 4000,
+    "defaultAuditLimit": 100,
+    "maxAuditLimit": 1000,
+    "maxProcessOutputBufferBytes": 10485760
+  }
+}
+```
+
+`defaultReadBytes` is used by project file read tools when the caller does not pass `maxBytes`.
+
+`maxReadBytes` is the highest `maxBytes` value a caller can request for project file reads.
+
+Agent timing defaults:
+
+```json
+{
+  "agents": {
+    "startupWatchdogMs": 15000,
+    "forcedCloseGraceMs": 8000,
+    "killEscalationDelayMs": 1200,
+    "queueDrainDelayMs": 50
+  }
+}
+```
+
 Direct tool permissions:
 
 ```text
