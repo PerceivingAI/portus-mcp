@@ -135,7 +135,6 @@ npm run build
 npm run flue:check
 npm run smoke:health
 npm run smoke:flue-lifecycle
-npm run validate:public
 ```
 
 `npm run smoke:flue-write` needs real credentials for the selected provider.

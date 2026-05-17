@@ -13,7 +13,6 @@ npm run build
 npm run flue:check
 npm run smoke:health
 npm run smoke:flue-lifecycle
-npm run validate:public
 ```
 
 ## Provider-Backed Smoke
@@ -25,15 +24,6 @@ npm run smoke:flue-write
 ```
 
 If credentials are unavailable, mark it blocked instead of failed.
-
-## Staged Public Folder
-
-After staging the public folder, run:
-
-```text
-npm run validate:public -- portus-mcp
-npm --prefix portus-mcp run check
-```
 
 ## Manual ChatGPT Verification
 
