@@ -86,7 +86,7 @@ export function registerAgentTools(server: McpServer): void {
 
   registerTool(server, "agent_stop", "Use this when ChatGPT needs to stop a running agent session.", {
     sessionId: z.string()
-  }, { readOnlyHint: false, destructiveHint: true, openWorldHint: false }, async ({ sessionId }) => {
+  }, { readOnlyHint: false, destructiveHint: false, openWorldHint: false }, async ({ sessionId }) => {
     const session = getSession(sessionId);
     assertChatGptPermission("spawnAgents", session.projectAlias);
     return toPublicSession(stopFlueTask(sessionId));
@@ -129,7 +129,7 @@ export function registerAgentTools(server: McpServer): void {
 
   registerTool(server, "session_stop_all", "Stop all running sessions, optionally scoped to one project.", {
     projectAlias: z.string().optional()
-  }, { readOnlyHint: false, destructiveHint: true, openWorldHint: false }, async ({ projectAlias }) => {
+  }, { readOnlyHint: false, destructiveHint: false, openWorldHint: false }, async ({ projectAlias }) => {
     const active = listActiveSessions(projectAlias);
     for (const session of active) {
       assertChatGptPermission("spawnAgents", session.projectAlias);

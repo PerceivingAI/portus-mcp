@@ -70,13 +70,10 @@ skill_read
 skill_run
 ```
 
-`skill_list` returns skill names and descriptions from `SKILL.md` frontmatter.
-
-`skill_read` reads every regular file in the selected skill folder.
-
-`skill_run` starts a spawned-agent task with the full selected skill contents.
-
-`skill_describe` is not part of the tool surface.
+- `skill_list` returns skill names and descriptions from `SKILL.md` frontmatter.
+- `skill_read` reads every regular file in the selected skill folder.
+- `skill_run` starts a spawned-agent task with the full selected skill contents.
+- `skill_describe` is not part of the tool surface.
 
 ## Config And Permission Tools
 
@@ -84,10 +81,17 @@ These tools expose safe config, effective config, permission state, policy path 
 
 They do not return provider credential values.
 
-## Destructive Behavior
+## Destructive Tools
 
-Delete tools require explicit confirmation.
+- `project_delete_file`: Deletes one file inside a registered project and requires `confirm=true`.
+- `project_delete_directory`: Deletes one directory inside a registered project and requires `confirm=true`.
+- `project_apply_patch`: Applies a unified diff patch; `confirm=true` is required when the patch deletes files.
 
 Move and write tools are permission-gated, but they do not ask for delete-style confirmation.
 
 Users can disable move/delete capability in `portus-mcp.policy.json`.
+
+## Agent Session Cleanup
+
+- `session_cleanup`: Deletes stored artifacts for one completed, failed, or stopped agent session, without deleting project files.
+- `session_cleanup_completed`: Deletes stored artifacts for old completed, failed, or stopped agent sessions, without deleting project files.
