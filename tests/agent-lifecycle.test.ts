@@ -55,12 +55,12 @@ function writePolicy(overrides: DeepPartial<typeof defaultPolicy> = {}): void {
       ...(overrides.agents ?? {}),
       concurrency: { ...defaultPolicy.agents.concurrency, ...(overrides.agents?.concurrency ?? {}) },
       lifecycle: { ...defaultPolicy.agents.lifecycle, ...(overrides.agents?.lifecycle ?? {}) },
-      capabilities: { ...defaultPolicy.agents.capabilities, ...(overrides.agents?.capabilities ?? {}) }
+      permissions: { ...defaultPolicy.agents.permissions, ...(overrides.agents?.permissions ?? {}) }
     },
-    permissions: {
-      ...defaultPolicy.permissions,
-      ...(overrides.permissions ?? {}),
-      chatgpt: { ...defaultPolicy.permissions.chatgpt, ...(overrides.permissions?.chatgpt ?? {}) }
+    chatgpt: {
+      ...defaultPolicy.chatgpt,
+      ...(overrides.chatgpt ?? {}),
+      permissions: { ...defaultPolicy.chatgpt.permissions, ...(overrides.chatgpt?.permissions ?? {}) }
     },
     pathPolicy: {
       ...defaultPolicy.pathPolicy,
@@ -74,7 +74,6 @@ function writePolicy(overrides: DeepPartial<typeof defaultPolicy> = {}): void {
       patch: { ...defaultPolicy.limits.patch, ...(overrides.limits?.patch ?? {}) },
       textEdit: { ...defaultPolicy.limits.textEdit, ...(overrides.limits?.textEdit ?? {}) },
       search: { ...defaultPolicy.limits.search, ...(overrides.limits?.search ?? {}) },
-      git: { ...defaultPolicy.limits.git, ...(overrides.limits?.git ?? {}) },
       skills: { ...defaultPolicy.limits.skills, ...(overrides.limits?.skills ?? {}) },
       agentOutput: { ...defaultPolicy.limits.agentOutput, ...(overrides.limits?.agentOutput ?? {}) },
       sessionEvents: { ...defaultPolicy.limits.sessionEvents, ...(overrides.limits?.sessionEvents ?? {}) },
@@ -102,13 +101,13 @@ const defaultPolicy = {
       killEscalationDelayMs: 1200,
       queueDrainDelayMs: 50,
     },
-    capabilities: {
+    permissions: {
       networkAccess: true,
       allowedCommands: ["git"]
     }
   },
-  permissions: {
-    chatgpt: {
+  chatgpt: {
+    permissions: {
       registerProjects: false,
       updatePermissions: false,
       spawnAgents: true,
@@ -118,7 +117,7 @@ const defaultPolicy = {
       deleteFiles: false,
       readGitIgnoredFiles: false,
       runPackageScripts: false,
-      gitCommands: true
+      allowedCommands: ["git"]
     }
   },
   pathPolicy: {
@@ -141,10 +140,6 @@ const defaultPolicy = {
     search: {
       maxScanEntries: 100000,
       maxTextFileChars: 200000,
-    },
-    git: {
-      maxDiffChars: 200000,
-      maxUntrackedFileChars: 50000,
     },
     skills: {
       maxReadChars: 200000,

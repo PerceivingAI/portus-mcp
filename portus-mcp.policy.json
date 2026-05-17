@@ -15,15 +15,15 @@
       "killEscalationDelayMs": 1200,
       "queueDrainDelayMs": 50
     },
-    "capabilities": {
+    "permissions": {
       "networkAccess": true,
       "allowedCommands": [
         "git"
       ]
     }
   },
-  "permissions": {
-    "chatgpt": {
+  "chatgpt": {
+    "permissions": {
       "registerProjects": false,
       "updatePermissions": false,
       "spawnAgents": true,
@@ -33,7 +33,9 @@
       "deleteFiles": true,
       "readGitIgnoredFiles": false,
       "runPackageScripts": true,
-      "gitCommands": true
+      "allowedCommands": [
+        "git"
+      ]
     }
   },
   "pathPolicy": {
@@ -65,10 +67,6 @@
     "search": {
       "maxScanEntries": 100000,
       "maxTextFileChars": 200000
-    },
-    "git": {
-      "maxDiffChars": 200000,
-      "maxUntrackedFileChars": 50000
     },
     "skills": {
       "maxReadChars": 200000

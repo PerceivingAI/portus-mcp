@@ -66,7 +66,7 @@ They receive only the credentials needed for the selected provider. They do not 
 Agent command access is controlled by:
 
 ```text
-agents.capabilities.allowedCommands in portus-mcp.policy.json
+agents.permissions.allowedCommands in portus-mcp.policy.json
 agent capability gates in portus-mcp.policy.json
 ```
 

@@ -52,13 +52,13 @@ writeFileSync(policyPath, JSON.stringify({
       killEscalationDelayMs: 1200,
       queueDrainDelayMs: 50,
     },
-    capabilities: {
+    permissions: {
       networkAccess: false,
       allowedCommands: ["git"]
     }
   },
-  permissions: {
-    chatgpt: {
+  chatgpt: {
+    permissions: {
       registerProjects: true,
       updatePermissions: false,
       spawnAgents: true,
@@ -68,7 +68,7 @@ writeFileSync(policyPath, JSON.stringify({
       deleteFiles: false,
       readGitIgnoredFiles: false,
       runPackageScripts: false,
-      gitCommands: true
+      allowedCommands: ["git"]
     }
   },
   pathPolicy: {
@@ -91,10 +91,6 @@ writeFileSync(policyPath, JSON.stringify({
     search: {
       maxScanEntries: 100000,
       maxTextFileChars: 200000,
-    },
-    git: {
-      maxDiffChars: 200000,
-      maxUntrackedFileChars: 50000,
     },
     skills: {
       maxReadChars: 200000,
@@ -173,7 +169,7 @@ test("permission gates cover every chatgpt and agents field", () => {
   for (const permission of ["moveFiles", "deleteFiles", "readGitIgnoredFiles", "runPackageScripts"] as const) {
     assert.throws(() => assertChatGptPermission(permission, "missing-project"), /Permission denied/);
   }
-  for (const permission of ["registerProjects", "spawnAgents", "readFiles", "writeFiles", "gitCommands"] as const) {
+  for (const permission of ["registerProjects", "spawnAgents", "readFiles", "writeFiles"] as const) {
     assert.doesNotThrow(() => assertChatGptPermission(permission, "missing-project"));
   }
   assert.throws(() => assertChatGptPermission("updatePermissions", "missing-project"), /Permission denied/);
@@ -211,8 +207,7 @@ test("MCP denies gitignored-file reads and excludes traversal patterns", async (
     { name: "project_read_text_file", arguments: { projectAlias: "sec", relativePath: "ignored.txt" } },
     { name: "project_file_info", arguments: { projectAlias: "sec", relativePath: "ignored.txt" } },
     { name: "project_exists", arguments: { projectAlias: "sec", relativePath: "ignored.txt" } },
-    { name: "project_copy_file", arguments: { projectAlias: "sec", sourceRelativePath: "ignored.txt", destinationRelativePath: "copy.txt" } },
-    { name: "project_git_diff_file", arguments: { projectAlias: "sec", relativePath: "ignored.txt", includeUntracked: true } }
+    { name: "project_copy_file", arguments: { projectAlias: "sec", sourceRelativePath: "ignored.txt", destinationRelativePath: "copy.txt" } }
   ]) {
     const response = await client.callTool(call);
     assert.equal(response.isError, true, `${call.name} should deny ignored path`);
@@ -264,13 +259,15 @@ test("MCP package script tools cannot consume ignored package.json files when ig
   }
 });
 
-test("MCP git diff and symbol search do not leak blocked tracked files", async (t) => {
+test("direct file tools stay filtered while allowed git commands expose repository state", async (t) => {
   const client = await withClient(t);
   resultOf(await client.callTool({ name: "project_register", arguments: { projectAlias: "blocked", rootPath: projectRoot } }));
 
-  const diff = resultOf(await client.callTool({ name: "project_git_diff", arguments: { projectAlias: "blocked" } }));
-  assert.doesNotMatch(diff.diff, /SECRET_TOKEN/);
-  assert.deepEqual(diff.skippedPaths, [".env"]);
+  const diff = resultOf(await client.callTool({
+    name: "project_run_command",
+    arguments: { projectAlias: "blocked", command: "git", args: ["diff"] }
+  }));
+  assert.match(diff.stdout, /SECRET_TOKEN/);
 
   const symbols = resultOf(await client.callTool({ name: "project_search_symbols", arguments: { projectAlias: "blocked", query: "SECRET_TOKEN", maxResults: 20 } }));
   assert.equal(symbols.matches.length, 0);

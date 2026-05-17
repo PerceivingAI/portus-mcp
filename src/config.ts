@@ -17,7 +17,7 @@ export type ChatGptPermissionConfig = {
   deleteFiles: boolean;
   readGitIgnoredFiles: boolean;
   runPackageScripts: boolean;
-  gitCommands: boolean;
+  allowedCommands: string[];
 };
 
 export type AgentPermissionConfig = {

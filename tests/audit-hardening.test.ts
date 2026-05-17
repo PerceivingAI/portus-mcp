@@ -32,13 +32,13 @@ function writePolicy(strictMode: boolean): void {
         killEscalationDelayMs: 1200,
         queueDrainDelayMs: 50
       },
-      capabilities: {
+      permissions: {
         networkAccess: true,
         allowedCommands: ["git"]
       }
     },
-    permissions: {
-      chatgpt: {
+    chatgpt: {
+      permissions: {
         registerProjects: false,
         updatePermissions: true,
         spawnAgents: true,
@@ -48,7 +48,7 @@ function writePolicy(strictMode: boolean): void {
         deleteFiles: false,
         readGitIgnoredFiles: false,
         runPackageScripts: false,
-        gitCommands: true
+        allowedCommands: ["git"]
       }
     },
     pathPolicy: {
@@ -71,10 +71,6 @@ function writePolicy(strictMode: boolean): void {
       search: {
         maxScanEntries: 100000,
         maxTextFileChars: 200000
-      },
-      git: {
-        maxDiffChars: 200000,
-        maxUntrackedFileChars: 50000
       },
       skills: {
         maxReadChars: 200000

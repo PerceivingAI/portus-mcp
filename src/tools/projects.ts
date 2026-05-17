@@ -10,12 +10,12 @@ import { loadConfig } from "../config.js";
 import { upsertProject, listProjects, getProject } from "../state/ProjectRegistry.js";
 import { stateStore } from "../state/StateStore.js";
 import { resolveProjectPath } from "../policy/pathPolicy.js";
-import { assertChatGptPermission } from "../policy/permissionPolicy.js";
+import { assertChatGptCommandAllowed, assertChatGptPermission } from "../policy/permissionPolicy.js";
 import { loadPolicyConfig } from "../policy/policyConfig.js";
 import { getEffectivePermissions } from "../state/PermissionRegistry.js";
-import { gitDiffFile, gitStatus, gitUntrackedFiles } from "../runtime/gitHelpers.js";
 import { countChars, limitText } from "../runtime/outputLimits.js";
 import { runProjectCheck, runProjectScript } from "../runtime/checks.js";
+import { runProjectCommand } from "../runtime/commands.js";
 import { registerTool } from "./toolUtils.js";
 
 const execFileAsync = promisify(execFile);
@@ -88,12 +88,6 @@ function canReadProjectRelativePath(projectAlias: string, relativePath: string):
   } catch {
     return false;
   }
-}
-
-function parseGitStatusPath(line: string): string {
-  const raw = line.slice(3).trim();
-  const renameMarker = " -> ";
-  return raw.includes(renameMarker) ? raw.slice(raw.indexOf(renameMarker) + renameMarker.length) : raw;
 }
 
 function shouldSkipTraversal(projectAlias: string, fullPath: string, entryName: string, excludedPatterns: string[], allowGitIgnored: boolean): boolean {
@@ -184,12 +178,9 @@ export function registerProjectTools(server: McpServer): void {
     return record;
   });
   registerTool(server, "project_list", "Use this when the user wants to list registered projects.", {}, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async () => listProjects());
-  registerTool(server, "project_status", "Use this when the user wants project registration and git status.", { projectAlias: z.string() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias }) => {
-    const project = getProject(projectAlias);
-    let git = "";
-    try { git = await gitStatus(project.rootPath); } catch (error) { git = `git status unavailable: ${String(error)}`; }
-    return { project, git };
-  });
+  registerTool(server, "project_status", "Use this when the user wants project registration status.", { projectAlias: z.string() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias }) => ({
+    project: getProject(projectAlias)
+  }));
   registerTool(server, "project_read_file", "Use this when ChatGPT needs to read a text file inside a registered project. The path must be relative to the registered project root and cannot read outside that project.", { projectAlias: z.string(), relativePath: z.string() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath }) => readProjectTextFile({ projectAlias, relativePath }));
   registerTool(server, "project_read_text_file", "Use this when ChatGPT needs to read a text file inside a registered project. The path must be relative to the registered project root and cannot read outside that project.", { projectAlias: z.string(), relativePath: z.string() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath }) => readProjectTextFile({ projectAlias, relativePath }));
   registerTool(server, "project_list_files", "Use this when ChatGPT needs to list files inside a registered project.", { projectAlias: z.string(), relativePath: z.string().default("."), maxEntries: z.number().int().positive().max(1000).default(200) }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath, maxEntries }) => {
@@ -441,53 +432,23 @@ export function registerProjectTools(server: McpServer): void {
     stateStore.audit({ tool: "project_delete_directory", projectAlias, relativePath, recursive });
     return { projectAlias, relativePath, deleted: true, recursive };
   });
-  registerTool(server, "project_git_diff", "Use this when ChatGPT needs to inspect what changed in a registered project.", { projectAlias: z.string(), includeUntracked: z.boolean().default(false) }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, includeUntracked }) => {
-    assertChatGptPermission("gitCommands", projectAlias);
-    const project = getProject(projectAlias);
-    const statusOutput = await gitStatus(project.rootPath);
-    const statusLines = statusOutput.split(/\r?\n/).filter(Boolean);
-    const allowedStatusLines = statusLines.filter((line) => canReadProjectRelativePath(projectAlias, parseGitStatusPath(line)));
-    const skippedPaths = statusLines.map(parseGitStatusPath).filter((file) => !canReadProjectRelativePath(projectAlias, file));
-    const changedFilesResult = await execFileAsync("git", ["diff", "--name-only"], { cwd: project.rootPath }).catch(() => ({ stdout: "", stderr: "" }));
-    const changedFiles = changedFilesResult.stdout.split(/\r?\n/).map((file) => file.trim()).filter(Boolean);
-    const allowedChangedFiles = changedFiles.filter((file) => canReadProjectRelativePath(projectAlias, file));
-    const diffParts = [
-      "## git status --short",
-      allowedStatusLines.join("\n"),
-      "## git diff"
-    ];
-    for (const file of allowedChangedFiles) {
-      diffParts.push(await gitDiffFile(project.rootPath, file, false));
+  registerTool(server, "project_run_command", "Run one allowlisted command inside a registered project root.", {
+    projectAlias: z.string(),
+    command: z.string(),
+    args: z.array(z.string()).default([]),
+    timeoutSecs: z.number().int().positive().max(900).default(120),
+    confirm: z.boolean().default(false)
+  }, { readOnlyHint: false, destructiveHint: true, openWorldHint: false }, async ({ projectAlias, command, args, timeoutSecs, confirm }) => {
+    assertChatGptCommandAllowed(command, projectAlias);
+    assertProjectCommandStaysInProject(command, args);
+    const requiresConfirmation = commandRequiresConfirmation(command, args);
+    if (requiresConfirmation && !confirm) {
+      throw new Error("Confirmation required: set confirm=true");
     }
-    if (includeUntracked) {
-      const untracked = (await gitUntrackedFiles(project.rootPath)).filter((file) => canReadProjectRelativePath(projectAlias, file));
-      diffParts.push("## untracked", untracked.join("\n"));
-    }
-    const limited = limitText(diffParts.join("\n"), loadPolicyConfig().limits.git.maxDiffChars);
-    return { projectAlias, diff: limited.text, skippedPaths: Array.from(new Set(skippedPaths)), truncated: limited.truncated, chars: limited.chars, totalChars: limited.totalChars, omittedChars: limited.omittedChars, limit: limited.limit };
-  });
-  registerTool(server, "project_git_diff_file", "Show git diff for one file.", { projectAlias: z.string(), relativePath: z.string(), includeUntracked: z.boolean().default(false) }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath, includeUntracked }) => {
-    assertChatGptPermission("gitCommands", projectAlias);
-    const target = resolveProjectPath(projectAlias, relativePath);
-    assertCanReadProjectPath(projectAlias, target, relativePath);
-    const limited = limitText(await gitDiffFile(getProject(projectAlias).rootPath, relativePath, includeUntracked), loadPolicyConfig().limits.git.maxDiffChars);
-    return { projectAlias, relativePath, diff: limited.text, truncated: limited.truncated, chars: limited.chars, totalChars: limited.totalChars, omittedChars: limited.omittedChars, limit: limited.limit };
-  });
-  registerTool(server, "project_git_show_untracked", "Preview untracked files in a project.", { projectAlias: z.string(), relativePaths: z.array(z.string()).optional() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePaths }) => {
-    assertChatGptPermission("gitCommands", projectAlias);
-    assertChatGptPermission("readFiles", projectAlias);
-    const untracked = await gitUntrackedFiles(getProject(projectAlias).rootPath);
-    const selected = relativePaths && relativePaths.length > 0 ? untracked.filter((file) => relativePaths.includes(file)) : untracked;
-    return { projectAlias, files: selected.map((relativePath) => {
-      const target = resolveProjectPath(projectAlias, relativePath);
-      if (!existsSync(target) || !isTextLikely(target)) return { relativePath, skipped: true, reason: "non-text-or-missing" };
-      const limited = limitText(readFileSync(target, "utf8"), loadPolicyConfig().limits.git.maxUntrackedFileChars);
-      return { relativePath, content: limited.text, truncated: limited.truncated, chars: limited.chars, totalChars: limited.totalChars, omittedChars: limited.omittedChars, limit: limited.limit };
-    }) };
-  });
-  registerTool(server, "project_git_status", "Use this when ChatGPT needs a short git status for a registered project.", { projectAlias: z.string() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias }) => {
-    assertChatGptPermission("gitCommands", projectAlias);
-    return { projectAlias, status: await gitStatus(getProject(projectAlias).rootPath) };
+    stateStore.requireAuditWritable();
+    const result = await runProjectCommand(getProject(projectAlias).rootPath, command, args, timeoutSecs);
+    stateStore.audit({ tool: "project_run_command", projectAlias, command, args, exitCode: result.exitCode, confirm });
+    return { projectAlias, ...result, requiresConfirmation };
   });
   registerTool(server, "project_run_checks", "Use this when ChatGPT needs to run an approved project check script.", { projectAlias: z.string(), scriptName: z.string().default("check"), timeoutSecs: z.number().int().positive().max(900).default(120) }, { readOnlyHint: false, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, scriptName, timeoutSecs }) => {
     assertChatGptPermission("runPackageScripts", projectAlias);
@@ -513,7 +474,6 @@ export function registerProjectTools(server: McpServer): void {
     return { projectAlias, scriptName, args, ...result };
   });
   registerTool(server, "project_search_symbols", "Search symbols using a text heuristic.", { projectAlias: z.string(), query: z.string(), language: z.string().optional(), maxResults: z.number().int().positive().max(5000).default(100) }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, query, maxResults }) => {
-    assertChatGptPermission("gitCommands", projectAlias);
     assertChatGptPermission("readFiles", projectAlias);
     const root = resolveProjectPath(projectAlias, ".");
     const matches: Array<{ relativePath: string; line: number; text: string }> = [];
@@ -533,4 +493,22 @@ export function registerProjectTools(server: McpServer): void {
     }
     return { projectAlias, query, matches, truncated: matches.length >= maxResults };
   });
+}
+
+const READ_ONLY_GIT_SUBCOMMANDS = new Set(["status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame", "describe", "ls-tree", "cat-file"]);
+const FORBIDDEN_GIT_REPO_TARGET_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--bare", "--config-env"]);
+
+function assertProjectCommandStaysInProject(command: string, args: string[]): void {
+  if (command !== "git") return;
+  for (const arg of args) {
+    if (FORBIDDEN_GIT_REPO_TARGET_OPTIONS.has(arg) || arg.startsWith("--git-dir=") || arg.startsWith("--work-tree=")) {
+      throw new Error(`Git option not allowed for project-scoped command: ${arg}`);
+    }
+  }
+}
+
+function commandRequiresConfirmation(command: string, args: string[]): boolean {
+  if (command !== "git") return true;
+  const subcommand = args.find((arg) => !arg.startsWith("-")) ?? "";
+  return !READ_ONLY_GIT_SUBCOMMANDS.has(subcommand);
 }

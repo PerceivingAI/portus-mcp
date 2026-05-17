@@ -78,10 +78,10 @@ agent_limits
 Common causes:
 
 ```text
-permissions.chatgpt.spawnAgents=false
-permissions.chatgpt.runPackageScripts=false
-permissions.chatgpt.moveFiles=false
-permissions.chatgpt.deleteFiles=false
+chatgpt.permissions.spawnAgents=false
+chatgpt.permissions.runPackageScripts=false
+chatgpt.permissions.moveFiles=false
+chatgpt.permissions.deleteFiles=false
 agents.concurrency.maxConcurrent=0
 agents.concurrency.maxConcurrentPerProject=0
 ```

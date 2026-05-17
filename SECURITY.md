@@ -22,7 +22,7 @@ Tailscale prints only the root URL, so add `/mcp` manually.
 
 ## Direct Project Tools
 
-Direct project tools are the safest way for an MCP client to inspect and edit project files.
+Direct file-oriented project tools are the safest way for an MCP client to inspect and edit project files.
 
 Portus MCP controls each operation and applies registered project roots, relative path resolution, blocked path patterns, gitignored-file policy, permission gates, input caps, output caps, and audit writes.
 
@@ -34,7 +34,7 @@ Portus MCP blocks path escapes, absolute paths where relative paths are required
 
 ## Gitignored Files
 
-When `permissions.chatgpt.readGitIgnoredFiles=false`, ignored files are opaque.
+When `chatgpt.permissions.readGitIgnoredFiles=false`, ignored files are opaque.
 
 Portus MCP blocks reads, metadata checks, copy sources, overwrites, deletes, directory deletes, replace/insert/patch edits, and ignored `package.json` script discovery or execution.
 
@@ -51,7 +51,7 @@ moveFiles
 deleteFiles
 readGitIgnoredFiles
 runPackageScripts
-gitCommands
+allowedCommands
 spawnAgents
 ```
 
@@ -65,13 +65,15 @@ maxRuntimeSecs
 
 Direct tool permissions and spawned-agent permissions are separate and can be found on `portus-mcp.policy.json`.
 
+`chatgpt.permissions.allowedCommands` is broader than the direct file tools. If it includes `git`, ChatGPT can use real Git command access inside the registered project root, and Git can expose or change repository state beyond the narrower file-tool path policy.
+
 ## Spawned Agents
 
 Spawned agents use Flue and run as local processes with cwd set to the registered project root.
 
 They are useful for delegated work, but they are not a hard filesystem sandbox. If a spawned agent receives command access, it may be able to read files allowed by OS permissions and granted commands.
 
-You can disable spawned agents by setting `permissions.chatgpt.spawnAgents=false`, `agents.concurrency.maxConcurrent=0`, or `agents.concurrency.maxConcurrentPerProject=0`.
+You can disable spawned agents by setting `chatgpt.permissions.spawnAgents=false`, `agents.concurrency.maxConcurrent=0`, or `agents.concurrency.maxConcurrentPerProject=0`.
 
 ## Provider Credentials
 
@@ -99,6 +101,6 @@ Keep `.env` and private paths blocked.
 
 Keep `readGitIgnoredFiles=false` unless the current session needs ignored-file access.
 
-Disable `deleteFiles`, `runPackageScripts`, or spawned agents when a session should not use them.
+Disable `deleteFiles`, `runPackageScripts`, `allowedCommands`, or spawned agents when a session should not use them.
 
 Use separate MCP entries per machine and disable entries that should not be active in the current session.

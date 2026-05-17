@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -26,6 +27,7 @@ writeFileSync(path.join(projectRoot, "package.json"), JSON.stringify({
     check: "node -e \"console.log('check-ok')\""
   }
 }, null, 2), "utf8");
+execFileSync("git", ["init"], { cwd: projectRoot, stdio: "ignore" });
 writeFileSync(path.join(skillsDir, "sample", "SKILL.md"), [
   "---",
   "name: sample",
@@ -64,13 +66,13 @@ writeFileSync(policyPath, JSON.stringify({
       killEscalationDelayMs: 1200,
       queueDrainDelayMs: 50,
     },
-    capabilities: {
+    permissions: {
       networkAccess: true,
       allowedCommands: ["git", "npm", "node"]
     }
   },
-  permissions: {
-    chatgpt: {
+  chatgpt: {
+    permissions: {
       registerProjects: true,
       updatePermissions: true,
       spawnAgents: true,
@@ -80,7 +82,7 @@ writeFileSync(policyPath, JSON.stringify({
       deleteFiles: false,
       readGitIgnoredFiles: false,
       runPackageScripts: false,
-      gitCommands: true
+      allowedCommands: ["git"]
     }
   },
   pathPolicy: {
@@ -103,10 +105,6 @@ writeFileSync(policyPath, JSON.stringify({
     search: {
       maxScanEntries: 100000,
       maxTextFileChars: 200000,
-    },
-    git: {
-      maxDiffChars: 200000,
-      maxUntrackedFileChars: 50000,
     },
     skills: {
       maxReadChars: 200000,
@@ -219,10 +217,7 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     "project_insert_text",
     "project_create_directory",
     "project_delete_directory",
-    "project_git_status",
-    "project_git_diff",
-    "project_git_diff_file",
-    "project_git_show_untracked",
+    "project_run_command",
     "project_run_checks",
     "project_list_scripts",
     "project_run_script",
@@ -257,6 +252,9 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     "audit_read"
   ]) {
     assert.equal(toolNames.has(expected), true, `missing tool: ${expected}`);
+  }
+  for (const removed of ["project_git_status", "project_git_diff", "project_git_diff_file", "project_git_show_untracked"]) {
+    assert.equal(toolNames.has(removed), false, `${removed} should not be registered`);
   }
   assert.equal(toolNames.has("skill_describe"), false, "skill_describe should not be registered");
 
@@ -374,8 +372,9 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.deepEqual(effectiveConfig.provider.credentialEnvNames, ["CEREBRAS_API_KEY"]);
   assert.equal("CEREBRAS_API_KEY" in effectiveConfig.provider, false);
   assert.equal(effectiveConfig.permissions.chatgpt.readFiles, true);
-  assert.deepEqual(effectiveConfig.commands.allowedCommands, ["git", "npm", "node"]);
-  assert.deepEqual(effectiveConfig.commands.effectiveCommands, ["git", "npm", "node"]);
+  assert.deepEqual(effectiveConfig.commands.chatgpt.configuredAllowedCommands, ["git"]);
+  assert.deepEqual(effectiveConfig.commands.chatgpt.effectiveAllowedCommands, ["git"]);
+  assert.deepEqual(effectiveConfig.commands.agents.allowedCommands, ["git", "npm", "node"]);
   assert.deepEqual(effectiveConfig.pathPolicy.blockedPatterns, [".env"]);
   assert.deepEqual(effectiveConfig.traversal.excludedPatterns, [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"]);
 
@@ -470,6 +469,41 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   }));
   assert.equal(runScript.exitCode, 0);
 
+  const gitStatus = resultOf(await client.callTool({
+    name: "project_run_command",
+    arguments: { projectAlias: "mcp", command: "git", args: ["status", "--short"] }
+  }));
+  assert.equal(gitStatus.exitCode, 0);
+  assert.equal(gitStatus.requiresConfirmation, false);
+
+  const deniedNodeCommand = await client.callTool({
+    name: "project_run_command",
+    arguments: { projectAlias: "mcp", command: "node", args: ["--version"] }
+  });
+  assert.equal(deniedNodeCommand.isError, true);
+  assert.match(JSON.stringify(deniedNodeCommand.structuredContent), /allowedCommands/);
+
+  const deniedGitAdd = await client.callTool({
+    name: "project_run_command",
+    arguments: { projectAlias: "mcp", command: "git", args: ["add", "README.md"] }
+  });
+  assert.equal(deniedGitAdd.isError, true);
+  assert.match(JSON.stringify(deniedGitAdd.structuredContent), /Confirmation required/);
+
+  const deniedGitRedirect = await client.callTool({
+    name: "project_run_command",
+    arguments: { projectAlias: "mcp", command: "git", args: ["-C", "..", "status"] }
+  });
+  assert.equal(deniedGitRedirect.isError, true);
+  assert.match(JSON.stringify(deniedGitRedirect.structuredContent), /Git option not allowed/);
+
+  const gitAdd = resultOf(await client.callTool({
+    name: "project_run_command",
+    arguments: { projectAlias: "mcp", command: "git", args: ["add", "README.md"], confirm: true }
+  }));
+  assert.equal(gitAdd.exitCode, 0);
+  assert.equal(gitAdd.requiresConfirmation, true);
+
   resultOf(await client.callTool({
     name: "permission_update",
     arguments: { projectAlias: "mcp", permissions: { chatgpt: { runPackageScripts: false } } }
@@ -502,6 +536,12 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     arguments: { projectAlias: "mcp", operation: "project_replace_text" }
   }));
   assert.deepEqual(textEditPermissionExplanation.requiredPermissions, ["writeFiles"]);
+
+  const commandPermissionExplanation = resultOf(await client.callTool({
+    name: "policy_explain_permissions",
+    arguments: { projectAlias: "mcp", operation: "project_run_command" }
+  }));
+  assert.deepEqual(commandPermissionExplanation.requiredPermissions, ["allowedCommands"]);
 
   const permExplain = resultOf(await client.callTool({
     name: "policy_explain_permissions",

@@ -67,7 +67,6 @@ function normalizePartialPermissions(input: PartialPermissionConfig | Record<str
   copyLegacy(raw, chatgpt, "moveFiles", "moveFiles");
   copyLegacy(raw, chatgpt, "deleteFiles", "deleteFiles");
   copyLegacy(raw, chatgpt, "readGitIgnoredFiles", "readGitIgnoredFiles");
-  copyLegacy(raw, chatgpt, "gitCommands", "gitCommands");
   copyLegacy(raw, chatgpt, "runPackageManager", "runPackageScripts");
 
   copyLegacy(raw, agents, "network", "network");

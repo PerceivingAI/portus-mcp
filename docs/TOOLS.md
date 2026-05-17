@@ -8,7 +8,7 @@ The exact tool names shown in your client may include the MCP server name as a p
 
 Project tools operate inside registered project roots.
 
-They cover file reads, writes, copies, moves, deletes, directory creation/deletion, file info, existence checks, tree/list/search operations, text edits, patch application, git status/diff tools, package script discovery, and approved script execution.
+They cover file reads, writes, copies, moves, deletes, directory creation/deletion, file info, existence checks, tree/list/search operations, text edits, patch application, allowlisted project commands, package script discovery, and approved script execution.
 
 Main controls:
 
@@ -32,6 +32,8 @@ Project text search and symbol search scan at most `limits.search.maxScanEntries
 
 Skill folder reads are capped by `limits.skills.maxReadChars`.
 
+`project_run_command` runs one command from `chatgpt.permissions.allowedCommands` inside the registered project root.
+
 ## Agent Tools
 
 Agent tools start or inspect spawned Flue agent sessions.
@@ -50,7 +52,7 @@ agent_templates
 agent_template_describe
 ```
 
-Agent tools are gated by `permissions.chatgpt.spawnAgents` and the `agents` policy settings.
+Agent tools are gated by `chatgpt.permissions.spawnAgents` and the `agents` policy settings.
 
 ## Session Tools
 
@@ -95,10 +97,11 @@ They do not return provider credential values.
 - `project_delete_file`: Deletes one file inside a registered project and requires `confirm=true`.
 - `project_delete_directory`: Deletes one directory inside a registered project and requires `confirm=true`.
 - `project_apply_patch`: Applies a unified diff patch; `confirm=true` is required when the patch deletes files.
+- `project_run_command`: Runs one allowlisted project command; non-read-only Git commands and non-Git commands require `confirm=true`.
 
 Move and write tools are permission-gated, but they do not ask for delete-style confirmation.
 
-Users can disable move/delete capability in `portus-mcp.policy.json`.
+Users can disable move/delete capability and remove command access in `portus-mcp.policy.json`.
 
 ## Agent Session Cleanup
 

@@ -8,6 +8,12 @@ export type AgentCommandConfig = {
   allowedCommands: string[];
 };
 
+export type ChatGptCommandConfig = {
+  allowedCommands: string[];
+};
+
+const safeCommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/);
+
 const policySchema = z.object({
   agents: z.object({
     concurrency: z.object({
@@ -25,13 +31,13 @@ const policySchema = z.object({
       killEscalationDelayMs: z.number().int().positive(),
       queueDrainDelayMs: z.number().int().positive()
     }).strict(),
-    capabilities: z.object({
+    permissions: z.object({
       networkAccess: z.boolean(),
-      allowedCommands: z.array(z.string().min(1))
+      allowedCommands: z.array(safeCommandNameSchema)
     }).strict()
   }).strict(),
-  permissions: z.object({
-    chatgpt: z.object({
+  chatgpt: z.object({
+    permissions: z.object({
       registerProjects: z.boolean(),
       updatePermissions: z.boolean(),
       spawnAgents: z.boolean(),
@@ -41,7 +47,7 @@ const policySchema = z.object({
       deleteFiles: z.boolean(),
       readGitIgnoredFiles: z.boolean(),
       runPackageScripts: z.boolean(),
-      gitCommands: z.boolean()
+      allowedCommands: z.array(safeCommandNameSchema)
     }).strict()
   }).strict(),
   pathPolicy: z.object({
@@ -64,10 +70,6 @@ const policySchema = z.object({
     search: z.object({
       maxScanEntries: z.number().int().positive(),
       maxTextFileChars: z.number().int().positive()
-    }).strict(),
-    git: z.object({
-      maxDiffChars: z.number().int().positive(),
-      maxUntrackedFileChars: z.number().int().positive()
     }).strict(),
     skills: z.object({
       maxReadChars: z.number().int().positive()
@@ -118,9 +120,9 @@ export function loadPolicyConfig(): PortusPolicyConfig {
 
 export function policyPermissions(policy = loadPolicyConfig()): PermissionConfig {
   return {
-    chatgpt: { ...policy.permissions.chatgpt },
+    chatgpt: { ...policy.chatgpt.permissions },
     agents: {
-      network: policy.agents.capabilities.networkAccess,
+      network: policy.agents.permissions.networkAccess,
       maxRuntimeSecs: policy.agents.lifecycle.maxRuntimeSecs
     }
   };
@@ -128,7 +130,13 @@ export function policyPermissions(policy = loadPolicyConfig()): PermissionConfig
 
 export function loadAgentCommandConfig(policy = loadPolicyConfig()): AgentCommandConfig {
   return {
-    allowedCommands: normalizeCommandList(policy.agents.capabilities.allowedCommands, "agents.capabilities.allowedCommands")
+    allowedCommands: normalizeCommandList(policy.agents.permissions.allowedCommands, "agents.permissions.allowedCommands")
+  };
+}
+
+export function loadChatGptCommandConfig(policy = loadPolicyConfig()): ChatGptCommandConfig {
+  return {
+    allowedCommands: normalizeCommandList(policy.chatgpt.permissions.allowedCommands, "chatgpt.permissions.allowedCommands")
   };
 }
 

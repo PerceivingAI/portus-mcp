@@ -6,7 +6,7 @@ import { registerTool } from "./toolUtils.js";
 import { resolveProjectPath } from "../policy/pathPolicy.js";
 import { stateStore } from "../state/StateStore.js";
 import { assertChatGptPermission } from "../policy/permissionPolicy.js";
-import { loadAgentCommandConfig, loadPolicyConfig } from "../policy/policyConfig.js";
+import { loadAgentCommandConfig, loadChatGptCommandConfig, loadPolicyConfig } from "../policy/policyConfig.js";
 
 const permissionUpdateSchema = z.object({
   chatgpt: z.object({
@@ -19,7 +19,7 @@ const permissionUpdateSchema = z.object({
     deleteFiles: z.boolean().optional(),
     readGitIgnoredFiles: z.boolean().optional(),
     runPackageScripts: z.boolean().optional(),
-    gitCommands: z.boolean().optional()
+    allowedCommands: z.array(z.string().regex(/^[A-Za-z0-9._-]+$/)).optional()
   }).optional(),
   agents: z.object({
     network: z.boolean().optional(),
@@ -37,6 +37,7 @@ type PublicAuditEvent = {
   sourceRelativePath?: string;
   destinationRelativePath?: string;
   scriptName?: string;
+  command?: string;
   exitCode?: number | null;
   bytes?: number;
   count?: number;
@@ -56,6 +57,7 @@ function toPublicAuditEvent(event: Record<string, unknown>): PublicAuditEvent | 
   if (typeof event.sourceRelativePath === "string") output.sourceRelativePath = event.sourceRelativePath;
   if (typeof event.destinationRelativePath === "string") output.destinationRelativePath = event.destinationRelativePath;
   if (typeof event.scriptName === "string") output.scriptName = event.scriptName;
+  if (typeof event.command === "string") output.command = event.command;
   if (typeof event.exitCode === "number" || event.exitCode === null) output.exitCode = event.exitCode;
   if (typeof event.bytes === "number") output.bytes = event.bytes;
   if (typeof event.count === "number") output.count = event.count;
@@ -75,9 +77,9 @@ export function registerConfigTools(server: McpServer): void {
     const config = loadConfig();
     const policy = loadPolicyConfig();
     const permissions = getEffectivePermissions(projectAlias);
-    const commandConfig = loadAgentCommandConfig(policy);
+    const agentCommandConfig = loadAgentCommandConfig(policy);
+    const chatGptCommandConfig = loadChatGptCommandConfig(policy);
     const provider = loadAgentProviderConfig(config);
-    const effectiveCommands = commandConfig.allowedCommands;
 
     return {
       projectAlias: projectAlias ?? null,
@@ -88,8 +90,13 @@ export function registerConfigTools(server: McpServer): void {
       },
       permissions,
       commands: {
-        allowedCommands: commandConfig.allowedCommands,
-        effectiveCommands
+        chatgpt: {
+          configuredAllowedCommands: chatGptCommandConfig.allowedCommands,
+          effectiveAllowedCommands: permissions.chatgpt.allowedCommands
+        },
+        agents: {
+          allowedCommands: agentCommandConfig.allowedCommands
+        }
       },
       pathPolicy: {
         blockedPatterns: policy.pathPolicy.blockedPatterns
@@ -154,10 +161,7 @@ export function registerConfigTools(server: McpServer): void {
       project_apply_patch: ["writeFiles"],
       project_replace_text: ["writeFiles"],
       project_insert_text: ["writeFiles"],
-      project_git_status: ["gitCommands"],
-      project_git_diff: ["gitCommands"],
-      project_git_diff_file: ["gitCommands"],
-      project_git_show_untracked: ["gitCommands", "readFiles"],
+      project_run_command: ["allowedCommands"],
       project_run_checks: ["runPackageScripts"],
       project_run_script: ["runPackageScripts"],
       session_cleanup: ["spawnAgents"],
@@ -165,7 +169,10 @@ export function registerConfigTools(server: McpServer): void {
     };
     const requiredPermissions = map[operation] ?? [];
     const permissions = getEffectivePermissions(projectAlias).chatgpt;
-    const missing = requiredPermissions.filter((permission) => !(permissions as any)[permission]);
+    const missing = requiredPermissions.filter((permission) => {
+      if (permission === "allowedCommands") return permissions.allowedCommands.length === 0;
+      return !(permissions as any)[permission];
+    });
     return {
       operation,
       requiredPermissions,

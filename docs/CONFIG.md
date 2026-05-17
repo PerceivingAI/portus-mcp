@@ -104,7 +104,7 @@ audit strict mode
 direct tool permissions
 spawned-agent permissions
 blocked path patterns
-allowed agent commands
+allowed ChatGPT and agent commands
 ```
 
 Default grouped policy shape:
@@ -114,10 +114,10 @@ Default grouped policy shape:
   "agents": {
     "concurrency": {},
     "lifecycle": {},
-    "capabilities": {}
+    "permissions": {}
   },
-  "permissions": {
-    "chatgpt": {}
+  "chatgpt": {
+    "permissions": {}
   },
   "pathPolicy": {
     "blockedPatterns": []
@@ -139,10 +139,6 @@ Default grouped policy shape:
     "search": {
       "maxScanEntries": 100000,
       "maxTextFileChars": 200000
-    },
-    "git": {
-      "maxDiffChars": 200000,
-      "maxUntrackedFileChars": 50000
     },
     "skills": {
       "maxReadChars": 200000
@@ -169,7 +165,7 @@ Default grouped policy shape:
 
 `limits.sessionEvents.maxEvents` and `limits.audit.maxEvents` are hard caps for session events and audit event lists.
 
-`limits.search.maxTextFileChars`, `limits.git.maxDiffChars`, and `limits.git.maxUntrackedFileChars` replace tool-level char arguments. Callers do not choose char output limits per request.
+`limits.search.maxTextFileChars` replaces tool-level char arguments. Callers do not choose char output limits per request.
 
 Text-facing limits under `limits.fileRead`, `limits.fileWrite`, `limits.patch`, and `limits.textEdit` count Unicode code points. `limits.process.maxOutputBufferMb` is the only size-based limit because it protects process buffer memory rather than user text.
 
@@ -188,7 +184,7 @@ Agent timing defaults:
 }
 ```
 
-Direct tool permissions under `permissions.chatgpt`:
+Direct tool permissions under `chatgpt.permissions`:
 
 ```text
 registerProjects
@@ -200,10 +196,10 @@ moveFiles
 deleteFiles
 readGitIgnoredFiles
 runPackageScripts
-gitCommands
+allowedCommands
 ```
 
-Spawned-agent settings under `agents.capabilities` and `agents.lifecycle`:
+Spawned-agent settings under `agents.permissions` and `agents.lifecycle`:
 
 ```text
 networkAccess
@@ -237,7 +233,7 @@ or:
 
 ## Default Permissions
 
-The shipped policy enables file writes, moves, deletes, package scripts, and git commands for registered projects.
+The shipped policy enables file writes, moves, deletes, package scripts, and `git` command access for registered projects.
 
 Deletes still require confirmation.
 
@@ -245,11 +241,12 @@ If you want read/write-only project access, set:
 
 ```json
 {
-  "permissions": {
-    "chatgpt": {
+  "chatgpt": {
+    "permissions": {
       "runPackageScripts": false,
       "moveFiles": false,
-      "deleteFiles": false
+      "deleteFiles": false,
+      "allowedCommands": []
     }
   }
 }
