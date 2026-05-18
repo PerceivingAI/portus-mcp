@@ -36,11 +36,8 @@ process.exit(0);
 `, "utf8");
 
 writeFileSync(configPath, JSON.stringify({
-  projects: { allowedRootMode: "registered-only" },
   agents: {
     defaultTemplate: "ephemeral-project-agent",
-    allowPersistentSessions: false,
-    useFlueCli: true,
     retry: {
       enabled: true,
       maxAttempts: 3,
@@ -52,7 +49,18 @@ writeFileSync(configPath, JSON.stringify({
       maxRetryWindowSecs: 1
     }
   },
-  blockedPathPatterns: [".env"],
+  traversal: {
+    excludedPatterns: [
+      ".git",
+      "node_modules",
+      "dist",
+      ".portus-mcp",
+      ".flue",
+      "coverage",
+      ".next",
+      ".cache"
+    ]
+  },
   skills: { directory: "skills" }
 }, null, 2), "utf8");
 
@@ -73,16 +81,13 @@ writeFileSync(policyPath, JSON.stringify({
       killEscalationDelayMs: 1200,
       queueDrainDelayMs: 50,
     },
-    capabilities: {
+    permissions: {
       networkAccess: true,
-      grantCommands: true,
-      gitCommand: true,
-      packageManagerCommand: true,
-      nodeCommand: true
+      allowedCommands: ["git"]
     }
   },
-  permissions: {
-    chatgpt: {
+  chatgpt: {
+    permissions: {
       registerProjects: true,
       updatePermissions: true,
       spawnAgents: true,
@@ -92,8 +97,11 @@ writeFileSync(policyPath, JSON.stringify({
       deleteFiles: true,
       readGitIgnoredFiles: false,
       runPackageScripts: true,
-      gitCommands: true
+      allowedCommands: ["git"]
     }
+  },
+  pathPolicy: {
+    blockedPatterns: [".env"]
   },
   limits: {
     fileRead: {
@@ -112,10 +120,6 @@ writeFileSync(policyPath, JSON.stringify({
     search: {
       maxScanEntries: 100000,
       maxTextFileChars: 200000,
-    },
-    git: {
-      maxDiffChars: 200000,
-      maxUntrackedFileChars: 50000,
     },
     skills: {
       maxReadChars: 200000,
