@@ -18,6 +18,8 @@ Then confirm dependencies are installed:
 npm install
 ```
 
+CI runs on Node.js 20 with npm 10. If GitHub Actions fails at `npm ci` with a missing package from `package-lock.json`, regenerate the lockfile with npm 10 semantics before committing it. A newer local npm version can produce a lockfile that installs locally but still fails in CI.
+
 If config paths were changed, confirm these files exist:
 
 ```text

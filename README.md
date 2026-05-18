@@ -22,6 +22,8 @@ Run:
 npm install
 ```
 
+CI runs on Node.js 20 with npm 10. When updating dependencies or regenerating `package-lock.json`, use npm 10 semantics so the committed lockfile stays compatible with `npm ci` in GitHub Actions.
+
 Copy `.env.example` to `.env` and set the values you need.
 
 At minimum, set the project list:
