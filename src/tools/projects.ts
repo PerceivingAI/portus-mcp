@@ -21,6 +21,21 @@ import { registerTool } from "./toolUtils.js";
 
 const execFileAsync = promisify(execFile);
 const TEXT_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json", ".md", ".txt", ".yaml", ".yml", ".toml", ".env", ".html", ".css", ".scss", ".xml", ".sh", ".ps1", ".sql"]);
+const SAFE_RANGE_ERROR_MESSAGES: Record<string, true> = {
+  "startLine must be a positive integer": true,
+  "endLine must be a positive integer": true,
+  "endLine must be greater than or equal to startLine": true,
+  "Requested line range exceeds maximum of 2000 lines": true,
+  "Path is not allowed": true
+};
+const SAFE_RELATIVE_ERROR_PREFIXES = [
+  "Path escapes project root",
+  "File does not exist",
+  "Path is not a file",
+  "File is not likely text",
+  "Unable to inspect file",
+  "Unable to read text file"
+];
 
 function assertInputChars(name: string, value: string, limit: number): void {
   const chars = countChars(value);
@@ -68,12 +83,25 @@ async function readProjectTextFile(input: { projectAlias: string; relativePath: 
   return { projectAlias: input.projectAlias, relativePath: input.relativePath, content: limited.text, truncated: limited.truncated, chars: limited.chars, totalChars: limited.totalChars, omittedChars: limited.omittedChars, limit: limited.limit };
 }
 
+function assertValidLineRange(startLine: number, endLine: number): void {
+  if (!Number.isInteger(startLine) || startLine <= 0) throw new Error("startLine must be a positive integer");
+  if (!Number.isInteger(endLine) || endLine <= 0) throw new Error("endLine must be a positive integer");
+  if (endLine < startLine) throw new Error("endLine must be greater than or equal to startLine");
+  if (endLine - startLine + 1 > 2000) throw new Error("Requested line range exceeds maximum of 2000 lines");
+}
+
+function sanitizeRangeReadError(error: unknown, relativePath: string): string {
+  const message = error instanceof Error ? error.message : "";
+  if (SAFE_RANGE_ERROR_MESSAGES[message] || SAFE_RELATIVE_ERROR_PREFIXES.some((prefix) => message === `${prefix}: ${relativePath}`) || (message.startsWith("Blocked path pattern ") && message.endsWith(` matched ${relativePath}`))) {
+    return message;
+  }
+  return `Unable to read text file: ${relativePath}`;
+}
+
 async function readProjectTextFileRange(input: { projectAlias: string; relativePath: string; startLine?: number; endLine?: number }) {
   const startLine = input.startLine ?? 1;
   const endLine = input.endLine ?? startLine + 199;
-  if (endLine < startLine) throw new Error(`endLine must be greater than or equal to startLine`);
-  const requestedLineCount = endLine - startLine + 1;
-  if (requestedLineCount > 2000) throw new Error(`Requested line range exceeds maximum of 2000 lines`);
+  assertValidLineRange(startLine, endLine);
 
   const target = resolveReadableTextFile(input.projectAlias, input.relativePath);
   const stream = createReadStream(target, { encoding: "utf8" });
@@ -355,6 +383,48 @@ export function registerProjectTools(server: McpServer): void {
   registerTool(server, "project_read_file", "Use this when ChatGPT needs to read a text file inside a registered project. The path must be relative to the registered project root and cannot read outside that project.", { projectAlias: z.string(), relativePath: z.string() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath }) => readProjectTextFile({ projectAlias, relativePath }));
   registerTool(server, "project_read_text_file", "Use this when ChatGPT needs to read a text file inside a registered project. The path must be relative to the registered project root and cannot read outside that project.", { projectAlias: z.string(), relativePath: z.string() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath }) => readProjectTextFile({ projectAlias, relativePath }));
   registerTool(server, "project_read_file_range", "Read a 1-based inclusive line range from a text file inside a registered project without loading the entire file.", { projectAlias: z.string(), relativePath: z.string(), startLine: z.number().int().positive().default(1), endLine: z.number().int().positive().optional() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath, startLine, endLine }) => readProjectTextFileRange({ projectAlias, relativePath, startLine, endLine }));
+  registerTool(server, "project_read_files", "Read up to 20 text-file line ranges from a registered project in one request, preserving file request order and reporting failures per item.", {
+    projectAlias: z.string(),
+    files: z.array(z.object({
+      relativePath: z.string().min(1),
+      startLine: z.number().optional(),
+      endLine: z.number().optional()
+    })).min(1).max(20)
+  }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, files }) => {
+    assertChatGptPermission("readFiles", projectAlias);
+    const results = [];
+    let successCount = 0;
+    for (const [index, file] of files.entries()) {
+      try {
+        const result = await readProjectTextFileRange({ projectAlias, ...file });
+        results.push({
+          ok: true,
+          index,
+          relativePath: result.relativePath,
+          requested: result.requested,
+          actual: result.actual,
+          content: result.content,
+          hasMore: result.hasMore,
+          truncated: result.truncated,
+          chars: result.chars,
+          totalChars: result.totalChars,
+          omittedChars: result.omittedChars,
+          limit: result.limit
+        });
+        successCount += 1;
+      } catch (error) {
+        const publicRelativePath = path.posix.isAbsolute(file.relativePath) || path.win32.isAbsolute(file.relativePath) ? "[invalid path]" : file.relativePath;
+        results.push({ ok: false, index, relativePath: publicRelativePath, error: sanitizeRangeReadError(error, file.relativePath) });
+      }
+    }
+    return {
+      projectAlias,
+      requestedCount: files.length,
+      successCount,
+      errorCount: files.length - successCount,
+      results
+    };
+  });
   registerTool(server, "project_list_files", "Use this when ChatGPT needs to list files inside a registered project.", { projectAlias: z.string(), relativePath: z.string().default("."), maxEntries: z.number().int().positive().max(1000).default(200) }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath, maxEntries }) => {
     assertChatGptPermission("readFiles", projectAlias);
     const root = resolveProjectPath(projectAlias, relativePath);

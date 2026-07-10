@@ -32,6 +32,10 @@ Returned text is hard cut at the configured char limit. Char counts use Unicode 
 
 The server's `limits.fileRead.maxChars` setting is authoritative; callers cannot supply a per-request character limit. `truncated` means the requested interval's content was cut by that character limit, with the returned character counters and `limit` describing the cut. `hasMore` means a line exists after the requested `endLine`, determined with one-line lookahead.
 
+`project_read_files` reads 1–20 file requests in one call and returns one result per request in the same order, including duplicate requests. Each request contains `relativePath` and optional `startLine` and `endLine`: ranges are 1-based and inclusive, `startLine` defaults to 1, and `endLine` defaults to `startLine + 199` (a 200-line window). A range may span at most 2,000 lines.
+
+The tool requires only `readFiles` and is read-only and unaudited. Each successful result is independently subject to the server's `limits.fileRead.maxChars`; callers have no output-size controls. Project-root, blocked-path, Git-ignore, directory, and binary-file protections match the single-file read tools. Invalid or unreadable requests produce per-item errors without preventing other requests from succeeding.
+
 Project text search and symbol search scan at most `limits.search.maxScanEntries` files.
 
 Skill folder reads are capped by `limits.skills.maxReadChars`.

@@ -146,6 +146,7 @@ export function registerConfigTools(server: McpServer): void {
       project_read_file: ["readFiles"],
       project_read_text_file: ["readFiles"],
       project_read_file_range: ["readFiles"],
+      project_read_files: ["readFiles"],
       project_list_files: ["readFiles"],
       project_write_file: ["writeFiles"],
       project_tree: ["readFiles"],
