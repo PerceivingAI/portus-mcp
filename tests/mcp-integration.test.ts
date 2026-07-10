@@ -201,6 +201,7 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     "project_status",
     "project_list_files",
     "project_read_file",
+    "project_read_file_range",
     "project_read_text_file",
     "project_write_file",
     "project_copy_file",

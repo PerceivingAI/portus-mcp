@@ -28,6 +28,10 @@ Callers cannot override char output limits per request.
 
 Returned text is hard cut at the configured char limit. Char counts use Unicode code points. Limited responses return `chars`, `totalChars`, `omittedChars`, `truncated`, and `limit` metadata when applicable.
 
+`project_read_file_range` reads a 1-based, inclusive line interval from a project text file. It requires only `readFiles`, is read-only and unaudited, and applies the same project-root, blocked-path, and Git-ignore policy as `project_read_text_file`. A request may span at most 2,000 lines.
+
+The server's `limits.fileRead.maxChars` setting is authoritative; callers cannot supply a per-request character limit. `truncated` means the requested interval's content was cut by that character limit, with the returned character counters and `limit` describing the cut. `hasMore` means a line exists after the requested `endLine`, determined with one-line lookahead.
+
 Project text search and symbol search scan at most `limits.search.maxScanEntries` files.
 
 Skill folder reads are capped by `limits.skills.maxReadChars`.

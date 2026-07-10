@@ -1,5 +1,6 @@
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, createReadStream, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { createInterface } from "node:readline";
 import crypto from "node:crypto";
 import os from "node:os";
 import { execFile, execFileSync } from "node:child_process";
@@ -26,13 +27,97 @@ function assertInputChars(name: string, value: string, limit: number): void {
   if (chars > limit) throw new Error(`Input exceeds ${name}: ${chars} > ${limit} chars`);
 }
 
+function resolveReadableTextFile(projectAlias: string, relativePath: string): string {
+  assertChatGptPermission("readFiles", projectAlias);
+  if (path.posix.isAbsolute(relativePath) || path.win32.isAbsolute(relativePath)) {
+    throw new Error("Path is not allowed");
+  }
+  let target: string;
+  try {
+    target = resolveProjectPath(projectAlias, relativePath);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const matchedAt = message.indexOf(" matched ");
+    if (message.startsWith("Blocked path pattern ") && matchedAt !== -1) {
+      throw new Error(`${message.slice(0, matchedAt)} matched ${relativePath}`);
+    }
+    throw error;
+  }
+  assertCanReadProjectPath(projectAlias, target, relativePath);
+  if (!existsSync(target)) throw new Error(`File does not exist: ${relativePath}`);
+  try {
+    if (!statSync(target).isFile()) throw new Error(`Path is not a file: ${relativePath}`);
+    if (!isTextLikely(target)) throw new Error(`File is not likely text: ${relativePath}`);
+  } catch (error) {
+    if (error instanceof Error && (error.message === `Path is not a file: ${relativePath}` || error.message === `File is not likely text: ${relativePath}`)) throw error;
+    throw new Error(`Unable to inspect file: ${relativePath}`);
+  }
+  return target;
+}
+
 async function readProjectTextFile(input: { projectAlias: string; relativePath: string }) {
-  assertChatGptPermission("readFiles", input.projectAlias);
   const readLimit = loadPolicyConfig().limits.fileRead.maxChars;
-  const target = resolveProjectPath(input.projectAlias, input.relativePath);
-  assertCanReadProjectPath(input.projectAlias, target, input.relativePath);
-  const limited = limitText(readFileSync(target, "utf8"), readLimit);
+  const target = resolveReadableTextFile(input.projectAlias, input.relativePath);
+  let content: string;
+  try {
+    content = readFileSync(target, "utf8");
+  } catch {
+    throw new Error(`Unable to read text file: ${input.relativePath}`);
+  }
+  const limited = limitText(content, readLimit);
   return { projectAlias: input.projectAlias, relativePath: input.relativePath, content: limited.text, truncated: limited.truncated, chars: limited.chars, totalChars: limited.totalChars, omittedChars: limited.omittedChars, limit: limited.limit };
+}
+
+async function readProjectTextFileRange(input: { projectAlias: string; relativePath: string; startLine?: number; endLine?: number }) {
+  const startLine = input.startLine ?? 1;
+  const endLine = input.endLine ?? startLine + 199;
+  if (endLine < startLine) throw new Error(`endLine must be greater than or equal to startLine`);
+  const requestedLineCount = endLine - startLine + 1;
+  if (requestedLineCount > 2000) throw new Error(`Requested line range exceeds maximum of 2000 lines`);
+
+  const target = resolveReadableTextFile(input.projectAlias, input.relativePath);
+  const stream = createReadStream(target, { encoding: "utf8" });
+  const lines: string[] = [];
+  let lineNumber = 0;
+  let hasMore = false;
+  const reader = createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    for await (const line of reader) {
+      lineNumber += 1;
+      if (lineNumber < startLine) continue;
+      if (lineNumber <= endLine) {
+        lines.push(line);
+        continue;
+      }
+      hasMore = true;
+      break;
+    }
+  } catch {
+    throw new Error(`Unable to read text file: ${input.relativePath}`);
+  } finally {
+    reader.close();
+    stream.destroy();
+  }
+
+  const lineCount = lines.length;
+  const limited = limitText(lines.join("\n"), loadPolicyConfig().limits.fileRead.maxChars);
+  return {
+    projectAlias: input.projectAlias,
+    relativePath: input.relativePath,
+    requested: { startLine, endLine },
+    actual: {
+      startLine: lineCount > 0 ? startLine : null,
+      endLine: lineCount > 0 ? startLine + lineCount - 1 : null,
+      lineCount
+    },
+    content: limited.text,
+    hasMore,
+    truncated: limited.truncated,
+    chars: limited.chars,
+    totalChars: limited.totalChars,
+    omittedChars: limited.omittedChars,
+    limit: limited.limit
+  };
 }
 
 function hashSha256(input: Buffer | string): string {
@@ -42,9 +127,15 @@ function hashSha256(input: Buffer | string): string {
 function isTextLikely(filePath: string): boolean {
   const ext = path.extname(filePath).toLowerCase();
   if (TEXT_EXTS.has(ext)) return true;
-  const buf = readFileSync(filePath);
-  const sample = buf.subarray(0, Math.min(buf.length, 1024));
-  for (const byte of sample) if (byte === 0) return false;
+  const sample = Buffer.allocUnsafe(1024);
+  const descriptor = openSync(filePath, "r");
+  let bytesRead: number;
+  try {
+    bytesRead = readSync(descriptor, sample, 0, sample.length, 0);
+  } finally {
+    closeSync(descriptor);
+  }
+  for (let index = 0; index < bytesRead; index += 1) if (sample[index] === 0) return false;
   return true;
 }
 
@@ -263,6 +354,7 @@ export function registerProjectTools(server: McpServer): void {
   }));
   registerTool(server, "project_read_file", "Use this when ChatGPT needs to read a text file inside a registered project. The path must be relative to the registered project root and cannot read outside that project.", { projectAlias: z.string(), relativePath: z.string() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath }) => readProjectTextFile({ projectAlias, relativePath }));
   registerTool(server, "project_read_text_file", "Use this when ChatGPT needs to read a text file inside a registered project. The path must be relative to the registered project root and cannot read outside that project.", { projectAlias: z.string(), relativePath: z.string() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath }) => readProjectTextFile({ projectAlias, relativePath }));
+  registerTool(server, "project_read_file_range", "Read a 1-based inclusive line range from a text file inside a registered project without loading the entire file.", { projectAlias: z.string(), relativePath: z.string(), startLine: z.number().int().positive().default(1), endLine: z.number().int().positive().optional() }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath, startLine, endLine }) => readProjectTextFileRange({ projectAlias, relativePath, startLine, endLine }));
   registerTool(server, "project_list_files", "Use this when ChatGPT needs to list files inside a registered project.", { projectAlias: z.string(), relativePath: z.string().default("."), maxEntries: z.number().int().positive().max(1000).default(200) }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, relativePath, maxEntries }) => {
     assertChatGptPermission("readFiles", projectAlias);
     const root = resolveProjectPath(projectAlias, relativePath);
