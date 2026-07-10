@@ -17,9 +17,7 @@
     },
     "permissions": {
       "networkAccess": true,
-      "allowedCommands": [
-        "git"
-      ]
+      "allowedCommands": ["git"]
     }
   },
   "chatgpt": {
@@ -33,9 +31,7 @@
       "deleteFiles": true,
       "readGitIgnoredFiles": false,
       "runPackageScripts": true,
-      "allowedCommands": [
-        "git"
-      ]
+      "allowedCommands": ["git"]
     }
   },
   "pathPolicy": {

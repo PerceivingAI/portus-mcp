@@ -2,6 +2,8 @@ node_modules/
 dist/
 portus-agents/
 portus-mcp/
+.portus-mcp/
+notes/
 .env
 .portus-agents/
 .flue/

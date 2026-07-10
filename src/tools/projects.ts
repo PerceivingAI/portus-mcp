@@ -154,18 +154,98 @@ function ensureExpectedHash(projectAlias: string, expectedSha256: string | undef
   if (actual !== expectedSha256) throw new Error(`stale_file:${relativePath}`);
 }
 
+const MAX_PATCH_PATHS = 100;
+const PATCH_PATH_ESCAPE_BYTES: Record<string, number> = {
+  a: 0x07,
+  b: 0x08,
+  t: 0x09,
+  n: 0x0a,
+  v: 0x0b,
+  f: 0x0c,
+  r: 0x0d,
+  "\"": 0x22,
+  "\\": 0x5c
+};
+
+function decodeQuotedPatchPath(value: string): string | null {
+  if (!value.startsWith("\"")) return null;
+  const bytes: number[] = [];
+  let index = 1;
+  for (; index < value.length; index += 1) {
+    const codePoint = value.codePointAt(index)!;
+    const character = String.fromCodePoint(codePoint);
+    if (character === "\"") break;
+    if (character !== "\\") {
+      bytes.push(...Buffer.from(character));
+      if (codePoint > 0xffff) index += 1;
+      continue;
+    }
+    index += 1;
+    if (index >= value.length) return null;
+    const escaped = value[index]!;
+    if (escaped in PATCH_PATH_ESCAPE_BYTES) {
+      bytes.push(PATCH_PATH_ESCAPE_BYTES[escaped]!);
+      continue;
+    }
+    if (!/[0-7]/.test(escaped)) return null;
+    let octal = escaped;
+    while (octal.length < 3 && index + 1 < value.length && /[0-7]/.test(value[index + 1]!)) {
+      index += 1;
+      octal += value[index]!;
+    }
+    const byte = Number.parseInt(octal, 8);
+    if (byte > 0xff) return null;
+    bytes.push(byte);
+  }
+  if (value[index] !== "\"") return null;
+  const suffix = value.slice(index + 1);
+  if (suffix !== "" && !suffix.startsWith("\t")) return null;
+  const decoded = Buffer.from(bytes).toString("utf8");
+  return decoded.includes("\uFFFD") ? null : decoded;
+}
+
+function parsePatchHeaderPath(line: string, marker: "--- " | "+++ "): string | null {
+  if (!line.startsWith(marker)) return null;
+  const value = line.slice(marker.length);
+  const rawPath = value.startsWith("\"") ? decodeQuotedPatchPath(value) : value.split("\t", 1)[0] ?? "";
+  if (!rawPath) return null;
+  if (rawPath === "/dev/null") return rawPath;
+  const relativePath = rawPath.replace(/^\.\//, "").replace(/^(?:a|b)\//, "");
+  if (
+    !relativePath ||
+    relativePath.includes("\0") ||
+    path.posix.isAbsolute(relativePath) ||
+    path.win32.isAbsolute(relativePath) ||
+    relativePath.split(/[\\/]/).some((part) => part === "..")
+  ) {
+    return null;
+  }
+  return path.posix.normalize(relativePath.replace(/\\/g, "/"));
+}
+
 function parsePatchPaths(patch: string): { files: string[]; deleted: Set<string> } {
   const files = new Set<string>();
   const deleted = new Set<string>();
   const lines = patch.split(/\r?\n/);
-  for (const line of lines) {
-    if (line.startsWith("+++ b/")) files.add(line.slice(6));
-    if (line.startsWith("--- a/")) files.add(line.slice(6));
+  const addPath = (relativePath: string): void => {
+    files.add(relativePath);
+    if (files.size > MAX_PATCH_PATHS) throw new Error(`Patch affects more than ${MAX_PATCH_PATHS} unique paths`);
+  };
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const oldLine = lines[index]!;
+    const newLine = lines[index + 1]!;
+    if (!oldLine.startsWith("--- ") || !newLine.startsWith("+++ ")) continue;
+    const oldPath = parsePatchHeaderPath(oldLine, "--- ");
+    const newPath = parsePatchHeaderPath(newLine, "+++ ");
+    if (!oldPath || !newPath || (oldPath === "/dev/null" && newPath === "/dev/null")) {
+      throw new Error("Patch contains an invalid file header");
+    }
+    if (oldPath !== "/dev/null") addPath(oldPath);
+    if (newPath !== "/dev/null") addPath(newPath);
+    if (newPath === "/dev/null") deleted.add(oldPath);
+    index += 1;
   }
-  for (let i = 0; i < lines.length - 1; i += 1) {
-    if (lines[i]?.startsWith("--- a/") && lines[i + 1] === "+++ /dev/null") deleted.add(lines[i]!.slice(6));
-  }
-  return { files: Array.from(files).filter((file) => file !== "/dev/null").map((file) => file.replace(/^\.\//, "")), deleted };
+  return { files: Array.from(files), deleted };
 }
 
 export function registerProjectTools(server: McpServer): void {
@@ -338,7 +418,47 @@ export function registerProjectTools(server: McpServer): void {
     }
     return { projectAlias, query, matches, truncated: matches.length >= maxResults, maxResults };
   });
-  registerTool(server, "project_apply_patch", "Apply a unified diff patch inside a registered project.", { projectAlias: z.string(), patch: z.string(), dryRun: z.boolean().default(false), expectedFiles: z.array(z.object({ relativePath: z.string(), sha256: z.string().optional(), sizeBytes: z.number().int().positive().optional(), modifiedAt: z.string().optional() })).default([]), conflictPolicy: z.enum(["fail", "attempt-fuzzy"]).default("fail"), confirm: z.boolean().default(false) }, { readOnlyHint: false, destructiveHint: true, openWorldHint: false }, async ({ projectAlias, patch, dryRun, expectedFiles, conflictPolicy, confirm }) => {
+  registerTool(server, "project_prepare_patch", "Prepare safe file metadata for applying a unified diff patch.", { projectAlias: z.string(), patch: z.string(), includeHash: z.boolean().default(true) }, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async ({ projectAlias, patch, includeHash }) => {
+    assertChatGptPermission("readFiles", projectAlias);
+    assertInputChars("limits.patch.maxChars", patch, loadPolicyConfig().limits.patch.maxChars);
+    getProject(projectAlias);
+    const parsed = parsePatchPaths(patch);
+    const expectedFiles = parsed.files.map((relativePath) => {
+      let target: string;
+      try {
+        target = resolveProjectPath(projectAlias, relativePath);
+      } catch {
+        throw new Error("Patch contains a path that is not allowed");
+      }
+      if (!existsSync(target)) return { relativePath, exists: false as const };
+      try {
+        assertCanReadProjectPath(projectAlias, target, relativePath);
+      } catch {
+        throw new Error("Permission denied: patch path is not readable");
+      }
+      try {
+        const stat = statSync(target);
+        return {
+          relativePath,
+          exists: true as const,
+          sizeBytes: stat.size,
+          modifiedAt: stat.mtime.toISOString(),
+          isTextLikely: stat.isFile() ? isTextLikely(target) : false,
+          ...(includeHash ? { sha256: hashSha256(readFileSync(target)) } : {})
+        };
+      } catch {
+        throw new Error("Unable to read patch path metadata");
+      }
+    });
+    return {
+      projectAlias,
+      changedFiles: parsed.files,
+      deletedFiles: Array.from(parsed.deleted),
+      expectedFiles,
+      readyForApply: true
+    };
+  });
+  registerTool(server, "project_apply_patch", "Apply a unified diff patch inside a registered project.", { projectAlias: z.string(), patch: z.string(), dryRun: z.boolean().default(false), expectedFiles: z.array(z.object({ relativePath: z.string(), sha256: z.string().optional(), sizeBytes: z.number().int().nonnegative().optional(), modifiedAt: z.string().optional() })).default([]), conflictPolicy: z.enum(["fail", "attempt-fuzzy"]).default("fail"), confirm: z.boolean().default(false) }, { readOnlyHint: false, destructiveHint: true, openWorldHint: false }, async ({ projectAlias, patch, dryRun, expectedFiles, conflictPolicy, confirm }) => {
     assertChatGptPermission("writeFiles", projectAlias);
     assertInputChars("limits.patch.maxChars", patch, loadPolicyConfig().limits.patch.maxChars);
     const project = getProject(projectAlias);
@@ -361,7 +481,7 @@ export function registerProjectTools(server: McpServer): void {
       if (!existsSync(target)) continue;
       assertCanReadProjectPath(projectAlias, target, expected.relativePath);
       const st = statSync(target);
-      if (expected.sizeBytes && expected.sizeBytes !== st.size) throw new Error(`stale_file:${expected.relativePath}`);
+      if (expected.sizeBytes !== undefined && expected.sizeBytes !== st.size) throw new Error(`stale_file:${expected.relativePath}`);
       if (expected.modifiedAt && expected.modifiedAt !== st.mtime.toISOString()) throw new Error(`stale_file:${expected.relativePath}`);
       ensureExpectedHash(projectAlias, expected.sha256, expected.relativePath);
     }

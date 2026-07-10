@@ -213,6 +213,7 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     "project_search_text",
     "project_search_symbols",
     "project_apply_patch",
+    "project_prepare_patch",
     "project_replace_text",
     "project_insert_text",
     "project_create_directory",

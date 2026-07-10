@@ -158,6 +158,7 @@ export function registerConfigTools(server: McpServer): void {
       project_delete_file: ["deleteFiles"],
       project_create_directory: ["writeFiles"],
       project_delete_directory: ["deleteFiles"],
+      project_prepare_patch: ["readFiles"],
       project_apply_patch: ["writeFiles"],
       project_replace_text: ["writeFiles"],
       project_insert_text: ["writeFiles"],

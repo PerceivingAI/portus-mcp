@@ -34,6 +34,12 @@ Skill folder reads are capped by `limits.skills.maxReadChars`.
 
 `project_run_command` runs one command from `chatgpt.permissions.allowedCommands` inside the registered project root.
 
+`project_prepare_patch` inspects a unified diff before application. It accepts `projectAlias`, `patch`, and optional `includeHash` (default `true`), requires the `readFiles` permission, and is read-only: it neither applies the patch nor writes an audit event.
+
+The tool parses at most 100 unique patch paths. Every path must pass project-root and blocked-path policy; existing files must also pass the Git-ignore read policy, while new or otherwise missing files are reported with `exists: false`.
+
+It returns `projectAlias`, deduplicated `changedFiles` and `deletedFiles`, `expectedFiles`, and `readyForApply`. Each existing-file entry in `expectedFiles` includes `relativePath`, `exists: true`, `sizeBytes`, `modifiedAt`, `isTextLikely`, and, unless `includeHash` is `false`, `sha256`; missing-file entries include `relativePath` and `exists: false`. Pass `expectedFiles` to `project_apply_patch` to check that the inspected files have not changed before application.
+
 ## Agent Tools
 
 Agent tools start or inspect spawned Flue agent sessions.
