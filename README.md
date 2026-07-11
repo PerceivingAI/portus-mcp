@@ -141,23 +141,24 @@ Click your account button at the bottom-left of the screen
 -> Settings
 -> Plugins
 -> Browse plugins
--> Click the + button next to the Search plugins box
 ```
 
-The `+` button opens the new plugin modal.
+![Opening ChatGPT settings, selecting Plugins, and scrolling to Browse plugins](./assets/1_setup.png)
 
-In the new plugin modal:
+Create and connect the plugin:
 
 ```text
-1. Add a name for the plugin. Use a name that identifies the device, machine, or VM you are connecting to.
-2. Select the Tunnel option.
-3. From the tunnel dropdown, pick the tunnel for the device you want to use.
-4. In the authentication dropdown, select No Auth.
-5. Tick the disclaimer checkbox.
-6. Click Create.
+1. On the Browse plugins screen, click the + button next to the Search plugins box.
+2. In the new plugin modal, add a name that identifies the device, machine, or VM you are connecting to.
+3. Select the Tunnel option.
+4. From the tunnel dropdown, pick the tunnel for the device you want to use.
+5. In the authentication dropdown, select No Auth.
+6. Tick the disclaimer checkbox.
+7. Click Create.
+8. In the connection modal, click Connect.
 ```
 
-After clicking `Create`, ChatGPT opens another modal. Click `Connect` to connect the MCP.
+![Creating a ChatGPT plugin, selecting the Portus MCP tunnel, and connecting it](./assets/2_config.png)
 
 After discovery, ChatGPT should see the Portus MCP tool surface. The default broad profile exposes:
 
@@ -189,6 +190,8 @@ Click your account button at the bottom-left of the screen
 -> Select the permission option you want
 -> Close the settings modal
 ```
+
+![Opening the Portus MCP plugin settings and selecting one of ChatGPT's four permission policies](./assets/3_permissions.png)
 
 The plugin settings menu also lets you connect, disconnect, or delete the Portus MCP plugin at any time.
 
