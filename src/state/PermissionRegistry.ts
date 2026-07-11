@@ -55,28 +55,28 @@ export function updatePermissions(input: {
 }
 
 function normalizePartialPermissions(input: PartialPermissionConfig | Record<string, unknown>): PartialPermissionConfig {
-  const raw = input as Record<string, any>;
-  const chatgpt: Partial<ChatGptPermissionConfig> = { ...(raw.chatgpt ?? {}) };
-  const agents: Partial<AgentPermissionConfig> = { ...(raw.agents ?? {}) };
-
-  copyLegacy(raw, chatgpt, "registerProjects", "registerProjects");
-  copyLegacy(raw, chatgpt, "updatePermissions", "updatePermissions");
-  copyLegacy(raw, chatgpt, "spawnAgents", "spawnAgents");
-  copyLegacy(raw, chatgpt, "readFiles", "readFiles");
-  copyLegacy(raw, chatgpt, "writeFiles", "writeFiles");
-  copyLegacy(raw, chatgpt, "moveFiles", "moveFiles");
-  copyLegacy(raw, chatgpt, "deleteFiles", "deleteFiles");
-  copyLegacy(raw, chatgpt, "readGitIgnoredFiles", "readGitIgnoredFiles");
-  copyLegacy(raw, chatgpt, "runPackageManager", "runPackageScripts");
-
-  copyLegacy(raw, agents, "network", "network");
-  copyLegacy(raw, agents, "maxRuntimeSecs", "maxRuntimeSecs");
-
-  return { chatgpt, agents };
-}
-
-function copyLegacy<T extends Record<string, unknown>>(raw: Record<string, unknown>, target: T, from: string, to: keyof T): void {
-  if (raw[from] !== undefined) target[to] = raw[from] as T[keyof T];
+  const raw = input as Record<string, unknown>;
+  const allowedTopLevel: Record<string, true> = { chatgpt: true, agents: true };
+  const allowedChatGpt: Record<string, true> = {
+    registerProjects: true, updatePermissions: true, spawnAgents: true,
+    projectContext: true, projectRead: true, projectSearch: true, projectEdit: true,
+    projectPatch: true, projectRun: true, projectPolicy: true,
+    readGitIgnoredFiles: true, allowedCommands: true
+  };
+  const allowedAgents: Record<string, true> = { network: true, maxRuntimeSecs: true };
+  const rejectUnknown = (value: unknown, allowed: Record<string, true>, scope: string): void => {
+    if (value === undefined) return;
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${scope} permissions must be an object`);
+    const unknown = Object.keys(value).filter((key) => !(key in allowed));
+    if (unknown.length > 0) throw new Error(`Unknown ${scope} permission: ${unknown.join(", ")}`);
+  };
+  rejectUnknown(raw, allowedTopLevel, "top-level");
+  rejectUnknown(raw.chatgpt, allowedChatGpt, "chatgpt");
+  rejectUnknown(raw.agents, allowedAgents, "agents");
+  return {
+    chatgpt: { ...((raw.chatgpt as Partial<ChatGptPermissionConfig> | undefined) ?? {}) },
+    agents: { ...((raw.agents as Partial<AgentPermissionConfig> | undefined) ?? {}) }
+  };
 }
 
 function mergePartialPermissions(current: PartialPermissionConfig, next: PartialPermissionConfig): PartialPermissionConfig {

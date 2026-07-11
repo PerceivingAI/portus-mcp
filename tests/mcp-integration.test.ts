@@ -22,6 +22,7 @@ mkdirSync(path.join(skillsDir, "sample", "agents"), { recursive: true });
 mkdirSync(path.join(skillsDir, "sample", "references"), { recursive: true });
 mkdirSync(path.join(skillsDir, "no-entrypoint"), { recursive: true });
 writeFileSync(path.join(projectRoot, "README.md"), "# MCP Test\n", "utf8");
+writeFileSync(path.join(projectRoot, "pathological-regex.txt"), `${"a".repeat(40)}X\n`, "utf8");
 writeFileSync(path.join(projectRoot, "package.json"), JSON.stringify({
   scripts: {
     check: "node -e \"console.log('check-ok')\""
@@ -76,12 +77,14 @@ writeFileSync(policyPath, JSON.stringify({
       registerProjects: true,
       updatePermissions: true,
       spawnAgents: true,
-      readFiles: true,
-      writeFiles: true,
-      moveFiles: false,
-      deleteFiles: false,
+      projectContext: true,
+      projectRead: true,
+      projectSearch: true,
+      projectEdit: true,
       readGitIgnoredFiles: false,
-      runPackageScripts: false,
+      projectPatch: true,
+      projectRun: false,
+      projectPolicy: true,
       allowedCommands: ["git"]
     }
   },
@@ -105,6 +108,7 @@ writeFileSync(policyPath, JSON.stringify({
     search: {
       maxScanEntries: 100000,
       maxTextFileChars: 200000,
+      maxRegexExecutionMs: 250
     },
     skills: {
       maxReadChars: 200000,
@@ -145,7 +149,8 @@ writeFileSync(configPath, JSON.stringify({
   traversal: {
     excludedPatterns: [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"]
   },
-  skills: { directory: skillsDir }
+  skills: { directory: skillsDir },
+  toolSurface: "full"
 }, null, 2), "utf8");
 
 process.env.DOTENV_CONFIG_PATH = dotenvPath;
@@ -155,13 +160,15 @@ process.env.PORTUS_MCP_STATE_DIR = stateDir;
 process.env.PORTUS_MCP_DEFAULT_PROVIDER = "cerebras";
 process.env.PORTUS_MCP_CEREBRAS_MODEL = "llama3.1-8b";
 process.env.CEREBRAS_API_KEY = "test-key";
+process.env.npm_execpath ??= path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
 
 const { createHttpServer } = await import("../src/server.js");
 const { formatSkillForPrompt, parseSkillFrontmatter, readFullSkill } = await import("../src/tools/skills.js");
 const { updatePermissions } = await import("../src/state/PermissionRegistry.js");
-const { upsertSession } = await import("../src/state/SessionRegistry.js");
+const { upsertProject } = await import("../src/state/ProjectRegistry.js");
+const { getSession, upsertSession } = await import("../src/state/SessionRegistry.js");
 
-updatePermissions({ permissions: { chatgpt: { runPackageScripts: true } } });
+updatePermissions({ permissions: { chatgpt: { projectRun: true } } });
 
 function resultOf(response: any): any {
   assert.equal(response.isError, undefined, JSON.stringify(response.structuredContent));
@@ -196,63 +203,10 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   const tools = await client.listTools();
   const toolNames = new Set(tools.tools.map((tool) => tool.name));
   for (const expected of [
-    "project_register",
-    "project_list",
-    "project_status",
-    "project_list_files",
-    "project_read_file",
-    "project_read_file_range",
-    "project_read_files",
-    "project_read_text_file",
-    "project_write_file",
-    "project_copy_file",
-    "project_move_file",
-    "project_delete_file",
-    "project_file_info",
-    "project_exists",
-    "project_tree",
-    "project_search_files",
-    "project_search_text",
-    "project_search_symbols",
-    "project_apply_patch",
-    "project_prepare_patch",
-    "project_replace_text",
-    "project_insert_text",
-    "project_create_directory",
-    "project_delete_directory",
-    "project_run_command",
-    "project_run_checks",
-    "project_list_scripts",
-    "project_run_script",
-    "agent_run_task",
-    "agent_spawn",
-    "agent_run_skill",
-    "agent_limits",
-    "agent_templates",
-    "agent_template_describe",
-    "agent_status",
-    "agent_collect_result",
-    "agent_stop",
-    "session_list",
-    "session_list_active",
-    "session_status",
-    "session_collect_artifacts",
-    "session_read_log",
-    "session_read_events",
-    "session_stop_all",
-    "session_cleanup",
-    "session_cleanup_completed",
-    "skill_list",
-    "skill_read",
-    "skill_run",
-    "config_show_safe",
-    "effective_config_show",
-    "permission_get",
-    "permission_update",
-    "policy_check_path",
-    "policy_explain_permissions",
-    "audit_list",
-    "audit_read"
+    "project_context", "project_read", "project_search", "project_edit", "project_patch", "project_run", "project_policy",
+    "project_register", "project_list",
+    "agent_run_task", "agent_spawn", "skill_list", "skill_read",
+    "permission_update", "audit_list", "audit_read"
   ]) {
     assert.equal(toolNames.has(expected), true, `missing tool: ${expected}`);
   }
@@ -267,139 +221,132 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     assert.equal(typeof tool.annotations?.openWorldHint, "boolean", `${tool.name} missing openWorldHint`);
   }
 
-  resultOf(await client.callTool({ name: "project_register", arguments: { projectAlias: "mcp", rootPath: projectRoot } }));
-  const listFiles = resultOf(await client.callTool({ name: "project_list_files", arguments: { projectAlias: "mcp" } }));
-  assert(listFiles.files.includes("README.md"));
+  upsertProject({ projectAlias: "mcp", rootPath: projectRoot });
+  const context = resultOf(await client.callTool({
+    name: "project_context",
+    arguments: { projectAlias: "mcp", include: { status: true, files: { maxEntries: 50 }, tree: { maxDepth: 3, format: "json" } } }
+  }));
+  assert(context.sections.files.value.files.some((file: any) => file.relativePath === "README.md"));
+  assert.equal(context.sections.tree.value.format, "json");
+  assert.equal(Array.isArray(context.sections.tree.value.entries), true);
+  assert.equal(context.sections.status.value.project.projectAlias, "mcp");
+  assert.equal("rootPath" in context.sections.status.value.project, false);
+  assert.equal(JSON.stringify(context).includes(projectRoot), false);
 
   const read = resultOf(await client.callTool({
-    name: "project_read_text_file",
-    arguments: {
-      projectAlias: "mcp",
-      relativePath: "README.md"
-    }
-  }));
+    name: "project_read",
+    arguments: { projectAlias: "mcp", requests: [{ relativePath: "README.md", mode: "content" }] }
+  })).results[0];
   assert.match(read.content, /MCP Test/);
   assert.equal(read.projectAlias, "mcp");
   assert.equal(read.relativePath, "README.md");
   assert.equal("path" in read, false);
 
-  const write = resultOf(await client.callTool({
-    name: "project_write_file",
-    arguments: { projectAlias: "mcp", relativePath: "generated.txt", content: "written through MCP\n" }
+  const writes = resultOf(await client.callTool({
+    name: "project_edit",
+    arguments: { projectAlias: "mcp", operations: [
+      { type: "write", relativePath: "generated.txt", content: "written through MCP\n" },
+      { type: "write", relativePath: "unicode.txt", content: "�\n" },
+      { type: "copy", sourceRelativePath: "generated.txt", destinationRelativePath: "copy/generated-copy.txt" }
+    ] }
   }));
-  assert.equal(write.projectAlias, "mcp");
-  assert.equal(write.relativePath, "generated.txt");
-  assert.equal(write.bytes, "written through MCP\n".length);
-  assert.equal("path" in write, false);
+  assert.equal(writes.successCount, 3);
+  assert.equal(writes.results[0].bytes, Buffer.byteLength("written through MCP\n", "utf8"));
+  assert.equal(writes.results[1].bytes, Buffer.byteLength("�\n", "utf8"));
+  assert.equal(writes.results[2].ok, true);
 
-  const unicodeWrite = resultOf(await client.callTool({
-    name: "project_write_file",
-    arguments: { projectAlias: "mcp", relativePath: "unicode.txt", content: "á\n" }
-  }));
-  assert.equal(unicodeWrite.bytes, Buffer.byteLength("á\n", "utf8"));
-
-  const copy = resultOf(await client.callTool({
-    name: "project_copy_file",
-    arguments: { projectAlias: "mcp", sourceRelativePath: "generated.txt", destinationRelativePath: "copy/generated-copy.txt" }
-  }));
-  assert.equal(copy.bytes > 0, true);
-
-  const fileInfo = resultOf(await client.callTool({
-    name: "project_file_info",
-    arguments: { projectAlias: "mcp", relativePath: "copy/generated-copy.txt", includeHash: true }
-  }));
-  assert.equal(fileInfo.kind, "file");
-  assert.equal(typeof fileInfo.sha256, "string");
+  const metadata = resultOf(await client.callTool({
+    name: "project_context",
+    arguments: { projectAlias: "mcp", include: { paths: [{ relativePath: "copy/generated-copy.txt", includeHash: true }] } }
+  })).sections.paths.value[0];
+  assert.equal(metadata.kind, "file");
+  assert.equal(typeof metadata.sha256, "string");
 
   const searchFiles = resultOf(await client.callTool({
-    name: "project_search_files",
-    arguments: { projectAlias: "mcp", query: "generated", maxResults: 10 }
-  }));
+    name: "project_search",
+    arguments: { projectAlias: "mcp", mode: "files", query: "generated", maxResults: 10 }
+  })).sections.files;
   assert.equal(searchFiles.matches.length > 0, true);
 
   const broadSearchFiles = resultOf(await client.callTool({
-    name: "project_search_files",
-    arguments: { projectAlias: "mcp", query: "generated readme", maxResults: 10 }
-  }));
-  assert.deepEqual(broadSearchFiles.tokens, ["generated", "readme"]);
+    name: "project_search",
+    arguments: { projectAlias: "mcp", mode: "files", query: "generated readme", maxResults: 10 }
+  })).sections.files;
   assert.equal(broadSearchFiles.matches.some((match: { relativePath: string; matchedTokens: string[] }) => match.relativePath === "generated.txt" && match.matchedTokens.includes("generated")), true);
   assert.equal(broadSearchFiles.matches.some((match: { relativePath: string; matchedTokens: string[] }) => match.relativePath === "README.md" && match.matchedTokens.includes("readme")), true);
 
   const searchText = resultOf(await client.callTool({
-    name: "project_search_text",
-    arguments: { projectAlias: "mcp", query: "written through MCP", maxResults: 10 }
-  }));
+    name: "project_search",
+    arguments: { projectAlias: "mcp", mode: "text", query: "written through MCP", maxResults: 10 }
+  })).sections.text;
   assert.equal(searchText.matches.length > 0, true);
 
-  const tree = resultOf(await client.callTool({
-    name: "project_tree",
-    arguments: { projectAlias: "mcp", maxDepth: 3, format: "json" }
-  }));
-  assert.equal(tree.tree.kind, "directory");
+  const regexSearch = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: { projectAlias: "mcp", mode: "text", query: "written\\s+through\\s+MCP", regex: true, maxResults: 10 }
+  })).sections.text;
+  assert.equal(regexSearch.ok, true);
+  assert.equal(regexSearch.matches.some((match: { relativePath: string }) => match.relativePath === "generated.txt"), true);
 
-  const replace = resultOf(await client.callTool({
-    name: "project_replace_text",
-    arguments: { projectAlias: "mcp", relativePath: "generated.txt", search: "written", replace: "updated", expectedOccurrences: 1 }
-  }));
-  assert.equal(replace.ok, true);
+  // This deliberately exercises the real worker deadline: fake timers cannot interrupt
+  // catastrophic backtracking inside a worker thread.
+  const pathologicalRegexSearch = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: { projectAlias: "mcp", mode: "text", query: "(a+)+$", regex: true, maxResults: 10 }
+  })).sections.text;
+  assert.equal(pathologicalRegexSearch.ok, false);
+  assert.equal(pathologicalRegexSearch.error, "regex_search_timeout");
 
-  const insert = resultOf(await client.callTool({
-    name: "project_insert_text",
-    arguments: { projectAlias: "mcp", relativePath: "generated.txt", marker: "updated", content: "new-", position: "before", expectedOccurrences: 1 }
+  const healthAfterRegexTimeout = await fetch(`http://127.0.0.1:${address.port}/`);
+  assert.equal(healthAfterRegexTimeout.status, 200);
+
+  const edits = resultOf(await client.callTool({
+    name: "project_edit",
+    arguments: { projectAlias: "mcp", operations: [
+      { type: "replace", relativePath: "generated.txt", search: "written", replace: "updated", expectedOccurrences: 1 },
+      { type: "insert", relativePath: "generated.txt", marker: "updated", content: "new-", position: "before", expectedOccurrences: 1 }
+    ] }
   }));
-  assert.equal(insert.ok, true);
+  assert.equal(edits.successCount, 2);
 
   const patchMissingExpected = await client.callTool({
-    name: "project_apply_patch",
+    name: "project_patch",
     arguments: {
-      projectAlias: "mcp",
-      patch: [
-        "diff --git a/generated.txt b/generated.txt",
-        "--- a/generated.txt",
-        "+++ b/generated.txt",
-        "@@ -1 +1 @@",
-        "-new-updated through MCP",
-        "+new-updated through MCP!"
-      ].join("\n"),
+      projectAlias: "mcp", mode: "apply",
+      patch: ["diff --git a/generated.txt b/generated.txt", "--- a/generated.txt", "+++ b/generated.txt", "@@ -1 +1 @@", "-new-updated through MCP", "+new-updated through MCP!"].join("\n"),
       dryRun: true
     }
   });
   assert.equal(patchMissingExpected.isError, true);
 
-  const permissions = resultOf(await client.callTool({ name: "permission_get", arguments: { projectAlias: "mcp" } }));
-  assert.equal(permissions.permissions.chatgpt.readFiles, true);
+  const permissions = resultOf(await client.callTool({ name: "project_policy", arguments: { checks: [{ type: "permissions", projectAlias: "mcp", operation: "project_read" }] } }));
+  assert.deepEqual(permissions.results[0].requiredPermissions, ["projectRead"]);
 
-  const effectiveConfig = resultOf(await client.callTool({ name: "effective_config_show", arguments: { projectAlias: "mcp" } }));
-  assert.equal(effectiveConfig.provider.name, "cerebras");
-  assert.equal(effectiveConfig.provider.model, "cerebras/llama3.1-8b");
-  assert.deepEqual(effectiveConfig.provider.credentialEnvNames, ["CEREBRAS_API_KEY"]);
-  assert.equal("CEREBRAS_API_KEY" in effectiveConfig.provider, false);
-  assert.equal(effectiveConfig.permissions.chatgpt.readFiles, true);
-  assert.deepEqual(effectiveConfig.commands.chatgpt.configuredAllowedCommands, ["git"]);
-  assert.deepEqual(effectiveConfig.commands.chatgpt.effectiveAllowedCommands, ["git"]);
-  assert.deepEqual(effectiveConfig.commands.agents.allowedCommands, ["git", "npm", "node"]);
+  const effectiveConfig = resultOf(await client.callTool({
+    name: "project_policy",
+    arguments: { checks: [{ type: "config", projectAlias: "mcp" }] }
+  })).results[0];
+  assert.equal(effectiveConfig.toolSurface, "full");
+  assert.equal(effectiveConfig.permissions.chatgpt.projectRead, true);
   assert.deepEqual(effectiveConfig.pathPolicy.blockedPatterns, [".env"]);
   assert.deepEqual(effectiveConfig.traversal.excludedPatterns, [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"]);
 
-  const updated = resultOf(await client.callTool({
-    name: "permission_update",
-    arguments: { projectAlias: "mcp", permissions: { agents: { network: true }, chatgpt: { moveFiles: true, deleteFiles: true } } }
-  }));
+  const updated = resultOf(await client.callTool({ name: "permission_update", arguments: { projectAlias: "mcp", permissions: { agents: { network: true }, chatgpt: { } } } }));
   assert.equal(updated.permissions.agents.network, true);
-  assert.equal(updated.permissions.chatgpt.moveFiles, true);
-  assert.equal(updated.permissions.chatgpt.deleteFiles, true);
+  assert.equal(updated.permissions.chatgpt.projectEdit, true);
+  const obsoletePermission = await client.callTool({ name: "permission_update", arguments: { projectAlias: "mcp", permissions: { chatgpt: { readFiles: true } } } });
+  assert.equal(obsoletePermission.isError, true);
 
-  const move = resultOf(await client.callTool({
-    name: "project_move_file",
-    arguments: { projectAlias: "mcp", sourceRelativePath: "copy/generated-copy.txt", destinationRelativePath: "copy/generated-moved.txt" }
+  const movedAndDeleted = resultOf(await client.callTool({
+    name: "project_edit",
+    arguments: { projectAlias: "mcp", operations: [
+      { type: "move", sourceRelativePath: "copy/generated-copy.txt", destinationRelativePath: "copy/generated-moved.txt" },
+      { type: "delete", relativePath: "copy/generated-moved.txt", confirm: true }
+    ] }
   }));
-  assert.equal(move.destinationRelativePath, "copy/generated-moved.txt");
-
-  const del = resultOf(await client.callTool({
-    name: "project_delete_file",
-    arguments: { projectAlias: "mcp", relativePath: "copy/generated-moved.txt", confirm: true }
-  }));
-  assert.equal(del.deleted, true);
+  assert.equal(movedAndDeleted.successCount, 2);
+  assert.equal(movedAndDeleted.results[0].destinationRelativePath, "copy/generated-moved.txt");
+  assert.equal(movedAndDeleted.results[1].deleted, true);
 
   const skills = resultOf(await client.callTool({ name: "skill_list", arguments: {} }));
   assert.equal(skills.skills.some((listedSkill: any) => listedSkill.name === "sample"), true);
@@ -453,192 +400,89 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   }));
 
   const check = resultOf(await client.callTool({
-    name: "project_run_checks",
-    arguments: { projectAlias: "mcp", scriptName: "check" }
+    name: "project_run",
+    arguments: { projectAlias: "mcp", type: "check", name: "check" }
   }));
   assert.equal(check.exitCode, 0);
   assert.match(check.stdout, /check-ok/);
 
   const scripts = resultOf(await client.callTool({
-    name: "project_list_scripts",
-    arguments: { projectAlias: "mcp" }
-  }));
+    name: "project_context",
+    arguments: { projectAlias: "mcp", include: { scripts: true } }
+  })).sections.scripts.value;
   assert.equal(Array.isArray(scripts.scripts), true);
   assert.equal(scripts.scripts.includes("check"), true);
 
   const runScript = resultOf(await client.callTool({
-    name: "project_run_script",
-    arguments: { projectAlias: "mcp", scriptName: "check" }
+    name: "project_run",
+    arguments: { projectAlias: "mcp", type: "script", name: "check" }
   }));
   assert.equal(runScript.exitCode, 0);
 
   const gitStatus = resultOf(await client.callTool({
-    name: "project_run_command",
-    arguments: { projectAlias: "mcp", command: "git", args: ["status", "--short"] }
+    name: "project_run", arguments: { projectAlias: "mcp", type: "command", command: "git", args: ["status", "--short"] }
   }));
   assert.equal(gitStatus.exitCode, 0);
   assert.equal(gitStatus.requiresConfirmation, false);
-
-  const deniedNodeCommand = await client.callTool({
-    name: "project_run_command",
-    arguments: { projectAlias: "mcp", command: "node", args: ["--version"] }
-  });
+  const deniedNodeCommand = await client.callTool({ name: "project_run", arguments: { projectAlias: "mcp", type: "command", command: "node", args: ["--version"] } });
   assert.equal(deniedNodeCommand.isError, true);
   assert.match(JSON.stringify(deniedNodeCommand.structuredContent), /allowedCommands/);
-
-  const deniedGitAdd = await client.callTool({
-    name: "project_run_command",
-    arguments: { projectAlias: "mcp", command: "git", args: ["add", "README.md"] }
-  });
+  const deniedGitAdd = await client.callTool({ name: "project_run", arguments: { projectAlias: "mcp", type: "command", command: "git", args: ["add", "README.md"] } });
   assert.equal(deniedGitAdd.isError, true);
   assert.match(JSON.stringify(deniedGitAdd.structuredContent), /Confirmation required/);
-
-  const deniedGitRedirect = await client.callTool({
-    name: "project_run_command",
-    arguments: { projectAlias: "mcp", command: "git", args: ["-C", "..", "status"] }
-  });
+  const deniedGitRedirect = await client.callTool({ name: "project_run", arguments: { projectAlias: "mcp", type: "command", command: "git", args: ["-C", "..", "status"] } });
   assert.equal(deniedGitRedirect.isError, true);
   assert.match(JSON.stringify(deniedGitRedirect.structuredContent), /Git option not allowed/);
-
-  const gitAdd = resultOf(await client.callTool({
-    name: "project_run_command",
-    arguments: { projectAlias: "mcp", command: "git", args: ["add", "README.md"], confirm: true }
-  }));
+  const gitAdd = resultOf(await client.callTool({ name: "project_run", arguments: { projectAlias: "mcp", type: "command", command: "git", args: ["add", "README.md"], confirm: true } }));
   assert.equal(gitAdd.exitCode, 0);
   assert.equal(gitAdd.requiresConfirmation, true);
-
-  resultOf(await client.callTool({
-    name: "permission_update",
-    arguments: { projectAlias: "mcp", permissions: { chatgpt: { runPackageScripts: false } } }
-  }));
-  const deniedScript = await client.callTool({
-    name: "project_run_script",
-    arguments: { projectAlias: "mcp", scriptName: "check" }
-  });
+  resultOf(await client.callTool({ name: "permission_update", arguments: { projectAlias: "mcp", permissions: { chatgpt: { projectRun: false } } } }));
+  const deniedScript = await client.callTool({ name: "project_run", arguments: { projectAlias: "mcp", type: "script", name: "check" } });
   assert.equal(deniedScript.isError, true);
-  resultOf(await client.callTool({
-    name: "permission_update",
-    arguments: { projectAlias: "mcp", permissions: { chatgpt: { runPackageScripts: true } } }
-  }));
-
-  const pathCheck = resultOf(await client.callTool({
-    name: "policy_check_path",
-    arguments: { projectAlias: "mcp", relativePath: "README.md", operation: "read" }
-  }));
-  assert.equal(pathCheck.allowed, true);
-  assert.equal("resolvedPath" in pathCheck, false);
-
-  const writePermissionExplanation = resultOf(await client.callTool({
-    name: "policy_explain_permissions",
-    arguments: { projectAlias: "mcp", operation: "project_write_file" }
-  }));
-  assert.deepEqual(writePermissionExplanation.requiredPermissions, ["writeFiles"]);
-
-  const textEditPermissionExplanation = resultOf(await client.callTool({
-    name: "policy_explain_permissions",
-    arguments: { projectAlias: "mcp", operation: "project_replace_text" }
-  }));
-  assert.deepEqual(textEditPermissionExplanation.requiredPermissions, ["writeFiles"]);
-
-  const commandPermissionExplanation = resultOf(await client.callTool({
-    name: "policy_explain_permissions",
-    arguments: { projectAlias: "mcp", operation: "project_run_command" }
-  }));
-  assert.deepEqual(commandPermissionExplanation.requiredPermissions, ["allowedCommands"]);
-
-  const permExplain = resultOf(await client.callTool({
-    name: "policy_explain_permissions",
-    arguments: { projectAlias: "mcp", operation: "project_delete_file" }
-  }));
-  assert.equal(Array.isArray(permExplain.requiredPermissions), true);
-
-  const limits = resultOf(await client.callTool({
-    name: "agent_limits",
-    arguments: { projectAlias: "mcp" }
-  }));
-  assert.equal(typeof limits.maxConcurrentAgents, "number");
-
-  const templates = resultOf(await client.callTool({
-    name: "agent_templates",
-    arguments: {}
-  }));
-  assert.equal(Array.isArray(templates.templates), true);
+  resultOf(await client.callTool({ name: "permission_update", arguments: { projectAlias: "mcp", permissions: { chatgpt: { projectRun: true } } } }));
 
   const completedSessionDir = path.join(stateDir, "sessions", "mcp_completed_public");
   mkdirSync(completedSessionDir, { recursive: true });
   const completedSession = upsertSession({
-    sessionId: "mcp_completed_public",
-    projectAlias: "mcp",
-    agentTemplate: "ephemeral-project-agent",
-    task: "SECRET TASK SHOULD NOT BE RETURNED",
-    status: "completed",
-    startedAt: "2026-05-15T00:00:00.000Z",
-    completedAt: "2026-05-15T00:00:01.000Z",
-    stdoutPath: path.join(completedSessionDir, "stdout.log"),
-    stderrPath: path.join(completedSessionDir, "stderr.log"),
-    resultPath: path.join(completedSessionDir, "result.md"),
-    metadataPath: path.join(completedSessionDir, "metadata.json"),
-    eventsPath: path.join(completedSessionDir, "events.jsonl"),
-    exitCode: 0
+    sessionId: "mcp_completed_public", projectAlias: "mcp", agentTemplate: "ephemeral-project-agent", task: "SECRET TASK SHOULD NOT BE RETURNED",
+    status: "completed", startedAt: "2026-05-15T00:00:00.000Z", completedAt: "2026-05-15T00:00:01.000Z",
+    stdoutPath: path.join(completedSessionDir, "stdout.log"), stderrPath: path.join(completedSessionDir, "stderr.log"), resultPath: path.join(completedSessionDir, "result.md"),
+    metadataPath: path.join(completedSessionDir, "metadata.json"), eventsPath: path.join(completedSessionDir, "events.jsonl"), exitCode: 0
   });
-  writeFileSync(completedSession.stdoutPath, "session stdout\n", "utf8");
-  writeFileSync(completedSession.stderrPath, "session stderr\n", "utf8");
-  writeFileSync(completedSession.resultPath, JSON.stringify({ status: "completed", changedFiles: ["generated.txt"] }, null, 2), "utf8");
-  writeFileSync(completedSession.metadataPath, JSON.stringify({ rawInternalMetadata: true, summary: { status: "completed" } }, null, 2), "utf8");
-  writeFileSync(completedSession.eventsPath!, "", "utf8");
-
+  writeFileSync(completedSession.stdoutPath, "session stdout\n", "utf8"); writeFileSync(completedSession.stderrPath, "session stderr\n", "utf8");
+  writeFileSync(completedSession.resultPath, JSON.stringify({ status: "completed" }), "utf8"); writeFileSync(completedSession.metadataPath, JSON.stringify({ rawInternalMetadata: true }), "utf8"); writeFileSync(completedSession.eventsPath!, "", "utf8");
   const runningSessionDir = path.join(stateDir, "sessions", "mcp_running_public");
   mkdirSync(runningSessionDir, { recursive: true });
   const runningSession = upsertSession({
-    sessionId: "mcp_running_public",
-    projectAlias: "mcp",
-    agentTemplate: "ephemeral-project-agent",
-    task: "RUNNING SECRET TASK SHOULD NOT BE RETURNED",
-    status: "running",
-    startedAt: "2026-05-15T00:00:02.000Z",
-    stdoutPath: path.join(runningSessionDir, "stdout.log"),
-    stderrPath: path.join(runningSessionDir, "stderr.log"),
-    resultPath: path.join(runningSessionDir, "result.md"),
-    metadataPath: path.join(runningSessionDir, "metadata.json"),
-    eventsPath: path.join(runningSessionDir, "events.jsonl")
+    sessionId: "mcp_running_public", projectAlias: "mcp", agentTemplate: "ephemeral-project-agent", task: "RUNNING SECRET TASK SHOULD NOT BE RETURNED", status: "running", startedAt: "2026-05-15T00:00:02.000Z",
+    stdoutPath: path.join(runningSessionDir, "stdout.log"), stderrPath: path.join(runningSessionDir, "stderr.log"), resultPath: path.join(runningSessionDir, "result.md"), metadataPath: path.join(runningSessionDir, "metadata.json"), eventsPath: path.join(runningSessionDir, "events.jsonl")
   });
-  writeFileSync(runningSession.stdoutPath, "", "utf8");
-  writeFileSync(runningSession.stderrPath, "", "utf8");
-  writeFileSync(runningSession.resultPath, "", "utf8");
-  writeFileSync(runningSession.metadataPath, JSON.stringify({ rawInternalMetadata: true }, null, 2), "utf8");
-  writeFileSync(runningSession.eventsPath!, "", "utf8");
+  for (const file of [runningSession.stdoutPath, runningSession.stderrPath, runningSession.resultPath, runningSession.eventsPath!]) writeFileSync(file, "", "utf8");
+  writeFileSync(runningSession.metadataPath, JSON.stringify({ rawInternalMetadata: true }), "utf8");
+  const agentStatus = resultOf(await client.callTool({ name: "agent_status", arguments: { sessionId: completedSession.sessionId } })); assertPublicSession(agentStatus);
+  const sessions = resultOf(await client.callTool({ name: "session_list", arguments: {} })); assert.equal(sessions.some((session: any) => session.sessionId === completedSession.sessionId), true); for (const session of sessions) assertPublicSession(session);
+  const activeSessions = resultOf(await client.callTool({ name: "session_list_active", arguments: { projectAlias: "mcp" } })); assert.equal(activeSessions.some((session: any) => session.sessionId === runningSession.sessionId), true);
+  const collected = resultOf(await client.callTool({ name: "agent_collect_result", arguments: { sessionId: completedSession.sessionId } })); assertPublicSession(collected.session); assert.match(collected.outputs.stdout, /session stdout/);
+  const artifacts = resultOf(await client.callTool({ name: "session_collect_artifacts", arguments: { sessionId: completedSession.sessionId } })); assertPublicSession(artifacts.session); assert.equal("metadata" in artifacts, false);
+  const stopped = await client.callTool({ name: "agent_stop", arguments: { sessionId: runningSession.sessionId } });
+  assert.equal(stopped.isError, true);
+  assert.equal(getSession(runningSession.sessionId).status, "running");
 
-  const agentStatus = resultOf(await client.callTool({ name: "agent_status", arguments: { sessionId: completedSession.sessionId } }));
-  assertPublicSession(agentStatus);
-  assert.equal(agentStatus.status, "completed");
-
-  const sessionStatus = resultOf(await client.callTool({ name: "session_status", arguments: { sessionId: completedSession.sessionId } }));
-  assertPublicSession(sessionStatus);
-
-  const sessions = resultOf(await client.callTool({ name: "session_list", arguments: {} }));
-  assert(Array.isArray(sessions));
-  assert.equal(sessions.some((session: any) => session.sessionId === completedSession.sessionId), true);
-  for (const session of sessions) assertPublicSession(session);
-
-  const activeSessions = resultOf(await client.callTool({ name: "session_list_active", arguments: { projectAlias: "mcp" } }));
-  assert(Array.isArray(activeSessions));
-  assert.equal(activeSessions.some((session: any) => session.sessionId === runningSession.sessionId), true);
-  for (const session of activeSessions) assertPublicSession(session);
-
-  const collected = resultOf(await client.callTool({ name: "agent_collect_result", arguments: { sessionId: completedSession.sessionId } }));
-  assertPublicSession(collected.session);
-  assert.equal("artifacts" in collected, false);
-  assert.match(collected.outputs.stdout, /session stdout/);
-
-  const artifacts = resultOf(await client.callTool({ name: "session_collect_artifacts", arguments: { sessionId: completedSession.sessionId } }));
-  assertPublicSession(artifacts.session);
-  assert.equal("artifacts" in artifacts, false);
-  assert.equal("metadata" in artifacts, false);
-  assert.match(artifacts.outputs.stderr, /session stderr/);
-
-  const stopped = resultOf(await client.callTool({ name: "agent_stop", arguments: { sessionId: runningSession.sessionId } }));
-  assertPublicSession(stopped);
-  assert.equal(stopped.status, "stopped");
+  const policyChecks = resultOf(await client.callTool({
+    name: "project_policy",
+    arguments: { checks: [
+      { type: "path", projectAlias: "mcp", relativePath: "README.md", operation: "read" },
+      { type: "permissions", projectAlias: "mcp", operation: "project_edit" },
+      { type: "permissions", projectAlias: "mcp", operation: "project_patch" },
+      { type: "permissions", projectAlias: "mcp", operation: "project_run" },
+      { type: "permissions", projectAlias: "mcp", operation: "project_policy" }
+    ] }
+  })).results;
+  assert.equal(policyChecks[0].allowed, true);
+  assert.deepEqual(policyChecks[1].requiredPermissions, ["projectEdit"]);
+  assert.deepEqual(policyChecks[2].requiredPermissions, ["projectPatch"]);
+  assert.deepEqual(policyChecks[3].requiredPermissions, ["projectRun"]);
+  assert.deepEqual(policyChecks[4].requiredPermissions, ["projectPolicy"]);
 
   const audit = resultOf(await client.callTool({
     name: "audit_list",

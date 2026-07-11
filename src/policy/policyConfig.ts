@@ -41,12 +41,14 @@ const policySchema = z.object({
       registerProjects: z.boolean(),
       updatePermissions: z.boolean(),
       spawnAgents: z.boolean(),
-      readFiles: z.boolean(),
-      writeFiles: z.boolean(),
-      moveFiles: z.boolean(),
-      deleteFiles: z.boolean(),
+      projectContext: z.boolean(),
+      projectRead: z.boolean(),
+      projectSearch: z.boolean(),
+      projectEdit: z.boolean(),
+      projectPatch: z.boolean(),
+      projectRun: z.boolean(),
+      projectPolicy: z.boolean(),
       readGitIgnoredFiles: z.boolean(),
-      runPackageScripts: z.boolean(),
       allowedCommands: z.array(safeCommandNameSchema)
     }).strict()
   }).strict(),
@@ -69,7 +71,8 @@ const policySchema = z.object({
     }).strict(),
     search: z.object({
       maxScanEntries: z.number().int().positive(),
-      maxTextFileChars: z.number().int().positive()
+      maxTextFileChars: z.number().int().positive(),
+      maxRegexExecutionMs: z.number().int().positive().default(120000)
     }).strict(),
     skills: z.object({
       maxReadChars: z.number().int().positive()

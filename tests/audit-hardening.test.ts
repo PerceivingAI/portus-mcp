@@ -42,12 +42,14 @@ function writePolicy(strictMode: boolean): void {
         registerProjects: false,
         updatePermissions: true,
         spawnAgents: true,
-        readFiles: true,
-        writeFiles: true,
-        moveFiles: false,
-        deleteFiles: false,
+        projectContext: true,
+        projectRead: true,
+        projectSearch: true,
+        projectEdit: true,
         readGitIgnoredFiles: false,
-        runPackageScripts: false,
+        projectPatch: true,
+        projectRun: false,
+        projectPolicy: true,
         allowedCommands: ["git"]
       }
     },
@@ -144,22 +146,37 @@ async function withClient(t: any): Promise<Client> {
   return client;
 }
 
+function resultOf(response: unknown): Record<string, unknown> {
+  assert(response && typeof response === "object" && "structuredContent" in response);
+  assert.equal("isError" in response ? response.isError : undefined, undefined);
+  const structuredContent = response.structuredContent;
+  assert(structuredContent && typeof structuredContent === "object" && "result" in structuredContent);
+  const result = structuredContent.result;
+  assert(result && typeof result === "object");
+  return result as Record<string, unknown>;
+}
+
 test("strict audit mode blocks selected mutations when audit log is not writable", async (t) => {
   writePolicy(true);
   const client = await withClient(t);
   try {
-    const writeDenied = await client.callTool({
-      name: "project_write_file",
-      arguments: { projectAlias: "audit", relativePath: "created.txt", content: "should not write\n" }
-    });
-    assert.equal(writeDenied.isError, true);
+    const writeDenied = resultOf(await client.callTool({
+      name: "project_edit",
+      arguments: {
+        projectAlias: "audit",
+        operations: [{ type: "write", relativePath: "created.txt", content: "should not write\n" }]
+      }
+    }));
+    assert.equal(writeDenied.results[0].ok, false);
+    assert.match(writeDenied.results[0].error, /Operation failed: created\.txt/);
     assert.equal(existsSync(path.join(projectRoot, "created.txt")), false);
 
     const permissionDenied = await client.callTool({
       name: "permission_update",
-      arguments: { projectAlias: "audit", permissions: { chatgpt: { deleteFiles: true } } }
+      arguments: { projectAlias: "audit", permissions: { chatgpt: { } } }
     });
     assert.equal(permissionDenied.isError, true);
+    assert.match(JSON.stringify(permissionDenied), /Tool permission_update not found/);
   } finally {
     writePolicy(false);
   }

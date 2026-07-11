@@ -1,6 +1,12 @@
 # Configuration
 
-Portus MCP uses three main configuration surfaces:
+## What This Document Covers
+
+This document describes the active environment, application, tool-surface, and policy configuration. The broad-mobility release is a hard cutover: configuration selects among current profiles and cannot enable removed tools. (`src/config.ts:10-11`, `src/config.ts:70-82`)
+
+## Overview
+
+The connection is the product; tools are adapters whose availability is selected independently from the policy that bounds their behavior. Portus MCP uses three configuration surfaces:
 
 ```text
 .env
@@ -8,13 +14,61 @@ portus-mcp.config.json
 portus-mcp.policy.json
 ```
 
-`.env` is the user facing setup file and the JSON files ship with the app and control structured behavior.
+`.env` selects process, project, provider, and file locations. `portus-mcp.config.json` controls the tool surface and structured application behavior. `portus-mcp.policy.json` owns permissions and runtime limits. Unknown application-config keys and invalid profile values fail validation rather than being ignored. (`src/config.ts:70-103`, `src/policy/policyConfig.ts:99-102`)
 
-## `.env`
+## Tool-Surface Profile
 
-Start by copying `.env.example` to `.env`.
+`portus-mcp.config.json` accepts one `toolSurface` value. It defaults to `broad` when omitted. (`src/config.ts:10-11`, `src/config.ts:36-37`, `src/config.ts:70-82`)
 
-Server settings:
+| Value | Surface |
+|---|---|
+| `broad` | Default; exactly `project_context`, `project_read`, `project_search`, `project_edit`, `project_patch`, `project_run`, and `project_policy`. |
+| `management` | Only `project_register`, `project_list`, `permission_update`, `audit_list`, and `audit_read`. |
+| `agent` | Existing agent, session, and skill registrations only. |
+| `full` | Every tool that remains after the hard cutover. |
+
+Example:
+
+```json
+{
+  "toolSurface": "broad",
+  "agents": {
+    "defaultTemplate": "ephemeral-project-agent",
+    "retry": {
+      "enabled": true,
+      "maxAttempts": 3,
+      "baseDelayMs": 1000,
+      "maxDelayMs": 10000,
+      "jitterRatio": 0.2,
+      "retryOn": ["rate_limit", "timeout", "server_error"],
+      "respectRetryAfter": true,
+      "maxRetryWindowSecs": 120
+    }
+  },
+  "traversal": { "excludedPatterns": [] },
+  "skills": { "directory": "./skills" }
+}
+```
+
+There is no `legacy` profile. A replaced name cannot be restored by configuration, compatibility wrapper, alias, or hidden registration. Agent/session/skill behavior is unchanged; profile selection only controls exposure. (`src/config.ts:10-11`, `src/config.ts:59-82`)
+
+## Migration From Removed Tools
+
+The following names are retired migration identifiers, not available tools. Clients must update in the same release; there is no alias window. (`src/config.ts:10-11`, `src/config.ts:70-82`)
+
+| Removed tool family | Broad operation |
+|---|---|
+| `project_read_file`, `project_read_text_file`, `project_read_file_range`, `project_read_files` | `project_read.requests[]` |
+| `project_status`, `project_tree`, `project_list_files`, `project_file_info`, `project_exists`, `project_list_scripts` | `project_context.include` |
+| `project_search_files`, `project_search_text`, `project_search_symbols` | `project_search.mode` |
+| `project_prepare_patch`, `project_apply_patch` | `project_patch.mode` |
+| `project_run_checks`, `project_run_script`, `project_run_command` | `project_run.type` |
+| `project_write_file`, `project_replace_text`, `project_insert_text`, `project_copy_file`, `project_move_file`, `project_delete_file`, `project_create_directory`, `project_delete_directory` | `project_edit.operations[]` |
+| `policy_check_path`, `policy_explain_permissions`, `permission_get`, `effective_config_show`, `config_show_safe` | `project_policy.checks[]` |
+
+## Environment Variables
+
+Server and authentication variables:
 
 ```text
 PORTUS_MCP_PORT=8789
@@ -22,246 +76,79 @@ PORTUS_MCP_PATH=/mcp
 PORTUS_MCP_BEARER_TOKEN=
 ```
 
-Provider settings are only necessary if you use spawned agents:
+The port defaults to `8789`, the MCP route defaults to `/mcp`, and an empty bearer token disables static bearer authentication. (`src/server.ts:38-41`, `src/server.ts:167-171`)
 
-```text
-PORTUS_MCP_DEFAULT_PROVIDER=cloudflare
-PORTUS_MCP_OPENAI_MODEL=gpt-5.4-mini
-PORTUS_MCP_CEREBRAS_MODEL=llama3.1-8b
-PORTUS_MCP_GEMINI_MODEL=gemini-3.1-flash-lite-preview
-PORTUS_MCP_CLOUDFLARE_MODEL=@cf/google/gemma-4-26b-a4b-it
-PORTUS_MCP_OPENROUTER_MODEL=nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
-OPENAI_API_KEY=
-CEREBRAS_API_KEY=
-GEMINI_API_KEY=
-CLOUDFLARE_API_KEY=
-CLOUDFLARE_ACCOUNT_ID=
-OPENROUTER_API_KEY=
-```
-
-Project list:
+Pre-register projects with semicolon-separated `alias=absolute/path` entries:
 
 ```text
 PORTUS_MCP_PROJECTS=app=C:/path/to/app;api=C:/path/to/api
 ```
 
-Use semicolons between projects. The first `=` separates the alias from the path.
+Malformed entries fail with an actionable error. (`src/state/ProjectRegistry.ts:48-63`)
 
-File paths:
+Configuration and state locations:
 
 ```text
 PORTUS_MCP_CONFIG_PATH=./portus-mcp.config.json
 PORTUS_MCP_POLICY_PATH=./portus-mcp.policy.json
 PORTUS_MCP_STATE_DIR=.portus-mcp
-PORTUS_MCP_FLUE_CLI_PATH=./node_modules/@flue/cli/dist/flue.js
 ```
 
-## Bearer Token
+Those values resolve the application config, policy config, and durable state directory respectively. (`src/config.ts:84-93`, `src/policy/policyConfig.ts:99-102`, `src/state/StateStore.ts:8-12`)
 
-`PORTUS_MCP_BEARER_TOKEN` is optional.
+Provider variables are needed only for non-default agent/session/skill work. `PORTUS_MCP_DEFAULT_PROVIDER` selects the provider; the selected provider determines its model and credential variables. The seven broad project tools do not need provider credentials. (`src/config.ts:106-109`)
 
-Use it only with MCP clients that support static bearer auth.
+## Application Configuration
 
-For the tested ChatGPT custom connector flow, leave it empty on ChatGPT since they don't support static bearer tokens.
+Beyond `toolSurface`, `portus-mcp.config.json` contains the default agent template and retry policy, traversal exclusions, and skills directory. The schema is strict: retry counts and delays must be positive, jitter is between 0 and 1, retry reasons are non-empty strings, exclusions are non-empty strings, and the skills directory is non-empty. (`src/config.ts:36-57`, `src/config.ts:59-82`)
 
-## `portus-mcp.config.json`
+Agent/session/skill settings do not alter the seven broad adapters. They apply only when the `agent` or `full` surface exposes the unchanged agent group. (`src/config.ts:38-56`, `src/config.ts:70-82`)
 
-This file controls structured app behavior:
+## Policy Configuration
+
+`portus-mcp.policy.json` controls grouped agent lifecycle/concurrency policy, seven broad-tool permissions, independent management/agent permissions, blocked paths, command and Git-ignore constraints, and server-owned limits. Each broad tool checks its matching permission once at entry; operation subtypes do not add authorization gates. (`src/config.ts:13-26`, `src/policy/policyConfig.ts:39-53`)
+
+ChatGPT broad-tool permissions are:
 
 ```text
-default agent template
-retry policy
-traversal exclusions
-skills directory
+projectContext
+projectRead
+projectSearch
+projectEdit
+projectPatch
+projectRun
+projectPolicy
 ```
 
-Skills live in folders like:
+`registerProjects`, `updatePermissions`, and `spawnAgents` remain independent management/agent permissions. `readGitIgnoredFiles` and `allowedCommands` are internal constraints enforced inside relevant broad tools, not substitutes for their broad permission. `project_policy` is read-only and reports the matching broad permission for each requested broad operation. The strict policy and permission-update schemas reject obsolete operation-level fields. (`src/config.ts:13-26`, `src/tools/config.ts:13-70`)
 
-```text
-skills/security-pass/SKILL.md
-skills/security-pass/agents/openai.yaml
-```
+Server policy owns file-read, file-write, patch, text-edit, search, skill, agent-output, session-event, audit, timeout, and process bounds. Caller bounds may narrow an authoritative maximum but cannot raise it; callers cannot override blocked paths, Git-ignore handling, permissions, confirmation, or audit. (`src/policy/policyConfig.ts:99-102`)
 
-`skill_list` returns names and descriptions from skill frontmatter.
+`limits.search.maxRegexExecutionMs` is the cumulative JavaScript-regex execution budget for one `project_search` section. The default is `120000` ms. Regex matching runs in a worker thread, so pathological backtracking cannot block other MCP work; expiration terminates the worker and returns `regex_search_timeout`. The budget covers regex execution rather than traversal or file I/O and should remain generous enough for legitimate remote model work.
 
-`skill_read` reads the full selected skill folder.
+Filesystem authorization uses the canonical registered project root, not lexical path prefixes alone. Registration canonicalizes root paths. Every target or nearest existing creation parent is resolved canonically before access, and mutation, patch, and command boundaries revalidate immediately before side effects. Symlinks and Windows junctions are supported when they resolve inside the same registered root; links that escape the root and broken links that cannot be resolved safely are rejected. Blocked-path policy applies to both the requested path and its canonical destination.
 
-`skill_run` passes the full selected skill contents to a spawned-agent task.
+## Security and Audit Semantics
 
-And you can add your own on the `skills/` folder.
+All project access remains confined to registered roots and subject to blocked-path and Git-ignore policy. Destructive or protected operations retain confirmation. Mutation and execution retain durable, redacted audit behavior; read, context, search, policy inspection, and patch preparation are unaudited. Safe projections and errors must not disclose absolute roots, bearer tokens, provider credentials, environment details, file contents, or command environments. (`src/config.ts:13-24`, `src/server.ts:38-41`, `src/state/StateStore.ts:8-12`)
 
-## `portus-mcp.policy.json`
+Management operations are non-default so ordinary broad discovery does not expose project registration, permission mutation, or audit reads. Agent/session/skill tools are likewise non-default and remain behaviorally outside the broad refactor. (`src/config.ts:10-11`, `src/config.ts:70-82`)
 
-This file controls permission and runtime policy:
+## Defaults and Resolution
 
-```text
-max concurrent agents
-max concurrent agents per project
-queue settings
-project lock timeout
-grouped limits
-audit strict mode
-direct tool permissions
-spawned-agent permissions
-blocked path patterns
-allowed ChatGPT and agent commands
-```
+1. `PORTUS_MCP_CONFIG_PATH` selects the application JSON; otherwise `./portus-mcp.config.json` is used.
+2. `toolSurface` defaults to `broad`; an unknown value or unknown application-config key fails closed.
+3. `PORTUS_MCP_POLICY_PATH` selects policy JSON; otherwise `./portus-mcp.policy.json` is used.
+4. `PORTUS_MCP_PROJECTS` adds pre-registered roots.
+5. `PORTUS_MCP_STATE_DIR` selects durable local state; otherwise `.portus-mcp` is used.
 
-Default grouped policy shape:
+Missing or invalid JSON configuration fails startup with file and validation details. (`src/config.ts:70-103`, `src/policy/policyConfig.ts:99-102`, `src/state/ProjectRegistry.ts:48-63`, `src/state/StateStore.ts:8-12`)
 
-```json
-{
-  "agents": {
-    "concurrency": {},
-    "lifecycle": {},
-    "permissions": {}
-  },
-  "chatgpt": {
-    "permissions": {}
-  },
-  "pathPolicy": {
-    "blockedPatterns": []
-  },
-  "limits": {
-    "fileRead": {
-      "maxChars": 500000
-    },
-    "fileWrite": {
-      "maxChars": 1000000
-    },
-    "patch": {
-      "maxChars": 1000000
-    },
-    "textEdit": {
-      "maxOperationChars": 200000,
-      "maxSearchOrMarkerChars": 20000
-    },
-    "search": {
-      "maxScanEntries": 100000,
-      "maxTextFileChars": 200000
-    },
-    "skills": {
-      "maxReadChars": 200000
-    },
-    "agentOutput": {
-      "maxStdoutChars": 200000,
-      "maxStderrChars": 200000
-    },
-    "sessionEvents": {
-      "maxEvents": 500,
-      "maxChunkChars": 4000
-    },
-    "audit": {
-      "maxEvents": 1000
-    },
-    "process": {
-      "maxOutputBufferMb": 10
-    }
-  }
-}
-```
+## Codebase References
 
-`limits.fileRead.maxChars` is the hard cap for project file read output.
-
-`limits.sessionEvents.maxEvents` and `limits.audit.maxEvents` are hard caps for session events and audit event lists.
-
-`limits.search.maxTextFileChars` replaces tool-level char arguments. Callers do not choose char output limits per request.
-
-Text-facing limits under `limits.fileRead`, `limits.fileWrite`, `limits.patch`, and `limits.textEdit` count Unicode code points. `limits.process.maxOutputBufferMb` is the only size-based limit because it protects process buffer memory rather than user text.
-
-Agent timing defaults:
-
-```json
-{
-  "agents": {
-    "lifecycle": {
-      "startupWatchdogMs": 15000,
-      "forcedCloseGraceMs": 8000,
-      "killEscalationDelayMs": 1200,
-      "queueDrainDelayMs": 50
-    }
-  }
-}
-```
-
-Direct tool permissions under `chatgpt.permissions`:
-
-```text
-registerProjects
-updatePermissions
-spawnAgents
-readFiles
-writeFiles
-moveFiles
-deleteFiles
-readGitIgnoredFiles
-runPackageScripts
-allowedCommands
-```
-
-Spawned-agent settings under `agents.permissions` and `agents.lifecycle`:
-
-```text
-networkAccess
-allowedCommands
-maxRuntimeSecs
-```
-
-Set either agent limit to `0` to disable spawned-agent runs:
-
-```json
-{
-  "agents": {
-    "concurrency": {
-      "maxConcurrent": 0
-    }
-  }
-}
-```
-
-or:
-
-```json
-{
-  "agents": {
-    "concurrency": {
-      "maxConcurrentPerProject": 0
-    }
-  }
-}
-```
-
-## Default Permissions
-
-The shipped policy enables file writes, moves, deletes, package scripts, and `git` command access for registered projects.
-
-Deletes still require confirmation.
-
-If you want read/write-only project access, set:
-
-```json
-{
-  "chatgpt": {
-    "permissions": {
-      "runPackageScripts": false,
-      "moveFiles": false,
-      "deleteFiles": false,
-      "allowedCommands": []
-    }
-  }
-}
-```
-
-## Providers
-
-Only the selected provider needs credentials.
-
-Currently, the supported providers:
-
-```text
-openai
-cerebras
-gemini
-cloudflare
-openrouter
-```
+- Tool-surface values and strict application schema: `src/config.ts:10-11`, `src/config.ts:59-103`
+- Direct permission model: `src/config.ts:13-34`
+- HTTP path, bearer token, and port: `src/server.ts:38-41`, `src/server.ts:167-171`
+- Project pre-registration: `src/state/ProjectRegistry.ts:48-63`
+- Policy path: `src/policy/policyConfig.ts:99-102`
+- Durable state path: `src/state/StateStore.ts:8-12`

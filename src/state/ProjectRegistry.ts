@@ -1,4 +1,5 @@
 import path from "node:path";
+import { lstatSync, realpathSync } from "node:fs";
 import { stateStore } from "./StateStore.js";
 import { optionalEnv } from "../env.js";
 
@@ -12,6 +13,23 @@ export type ProjectRecord = {
 type ProjectState = {
   projects: ProjectRecord[];
 };
+
+function normalizeProjectRoot(rootPath: string): string {
+  const resolved = path.resolve(rootPath);
+  let canonical: string;
+  try {
+    canonical = realpathSync.native(resolved);
+  } catch {
+    throw new Error("Project root must be an existing directory.");
+  }
+  try {
+    if (!lstatSync(canonical).isDirectory()) throw new Error("Project root must be an existing directory.");
+  } catch (error) {
+    if (error instanceof Error && error.message === "Project root must be an existing directory.") throw error;
+    throw new Error("Project root cannot be resolved safely.");
+  }
+  return canonical;
+}
 
 const FILE = "projects.json";
 
@@ -36,6 +54,7 @@ export function upsertProject(input: Omit<ProjectRecord, "createdAt" | "updatedA
   const now = new Date().toISOString();
   const record: ProjectRecord = {
     ...input,
+    rootPath: normalizeProjectRoot(input.rootPath),
     createdAt: existing?.createdAt ?? now,
     updatedAt: now
   };
@@ -62,7 +81,7 @@ export function listPreRegisteredProjects(): ProjectRecord[] {
     }
     return {
       projectAlias,
-      rootPath: path.resolve(rootPath),
+      rootPath: normalizeProjectRoot(rootPath),
       createdAt: now,
       updatedAt: now
     };

@@ -40,20 +40,19 @@ Portus MCP blocks reads, metadata checks, copy sources, overwrites, deletes, dir
 
 ## Permission Gates
 
-Direct permissions include:
+Broad project-tool permissions are:
 
 ```text
-registerProjects
-updatePermissions
-readFiles
-writeFiles
-moveFiles
-deleteFiles
-readGitIgnoredFiles
-runPackageScripts
-allowedCommands
-spawnAgents
+projectContext
+projectRead
+projectSearch
+projectEdit
+projectPatch
+projectRun
+projectPolicy
 ```
+
+Each broad tool checks its corresponding permission once at entry. `registerProjects`, `updatePermissions`, and `spawnAgents` remain independent. `readGitIgnoredFiles` and `allowedCommands` remain internal constraints of relevant tools rather than broad-tool permissions.
 
 Spawned-agent permissions include:
 
@@ -101,6 +100,6 @@ Keep `.env` and private paths blocked.
 
 Keep `readGitIgnoredFiles=false` unless the current session needs ignored-file access.
 
-Disable `deleteFiles`, `runPackageScripts`, `allowedCommands`, or spawned agents when a session should not use them.
+Disable `projectEdit`, `projectRun`, `allowedCommands`, or spawned agents when a session should not use them.
 
 Use separate MCP entries per machine and disable entries that should not be active in the current session.

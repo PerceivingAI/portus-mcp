@@ -1,66 +1,88 @@
 # Portus MCP
 
-Portus MCP is an MCP server for AI assisted project work.
+Portus MCP is an MCP server for AI-assisted project work across local machines, remote machines, and VMs. **The connection is the product; tools are policy-bounded adapters.** A client connects to a registered project through one server and uses a small broad surface for ordinary project mobility.
 
-It lets MCP clients like ChatGPT, Codex, and other AI harnesses work with registered projects on your local or remote machines, including VMs, through direct project tools. It can also spawn Flue agents when you enable that capability.
+## Default Tool Surface
 
-You can configure several machines in different locations to run their own Portus MCP servers, with their own configuration and permission policies, allowing clients to connect to their registered projects separately or within the same conversation.
+The default `broad` profile exposes exactly seven tools:
+
+```text
+project_context
+project_read
+project_search
+project_edit
+project_patch
+project_run
+project_policy
+```
+
+Together they provide bounded project context, ordered reads, search, file and directory edits, patch preparation/application, approved execution, and read-only policy inspection.
+
+Administrative and delegated-agent capabilities are deliberately non-default:
+
+- `management` exposes project registration/listing, permission mutation, and audit inspection only.
+- `agent` exposes the existing agent, session, and skill tools only.
+- `full` exposes every tool that remains after the hard cutover.
+
+There is no `legacy` profile. Agent/session/skill implementation and behavior are unchanged by the broad refactor; profile selection only controls whether those existing tools are exposed.
 
 ## Requirements
 
 You need Node.js 20 or newer, npm, and Git.
 
-If you want to connect from another machine or from a hosted client, use Tailscale Funnel, Cloudflare Tunnel, or another exposure layer that can reach your MCP server.
+For access from another machine or hosted client, use Tailscale Funnel, Cloudflare Tunnel, or another exposure layer that can reach the MCP server.
 
-Spawned agents also need credentials for the selected provider. Direct project tools do not need provider credentials unless they spawn agents.
+Provider credentials are needed only when using the non-default agent/session/skill capability. The seven broad project tools do not require provider credentials.
 
 ## Install
-
-Run:
 
 ```text
 npm install
 ```
 
-CI runs on Node.js 20 with npm 10. When updating dependencies or regenerating `package-lock.json`, use npm 10 semantics so the committed lockfile stays compatible with `npm ci` in GitHub Actions.
+CI uses Node.js 20 with npm 10. Use npm 10 semantics when updating dependencies or regenerating `package-lock.json` so it stays compatible with `npm ci` in GitHub Actions.
 
-Copy `.env.example` to `.env` and set the values you need.
-
-At minimum, set the project list:
+Copy `.env.example` to `.env`. At minimum, register a project:
 
 ```text
 PORTUS_MCP_PROJECTS=app=C:/path/to/project
 ```
 
-For several projects, separate entries with semicolons:
+Separate several projects with semicolons:
 
 ```text
 PORTUS_MCP_PROJECTS=app=C:/path/to/app;api=C:/path/to/api
 ```
 
-Only add credentials for the providers you plan to use.
+The shipped `portus-mcp.config.json` selects the default broad surface:
+
+```json
+{
+  "toolSurface": "broad"
+}
+```
+
+Keep the remaining required application-config fields from the shipped file. Only add provider credentials when selecting agent functionality.
 
 ## Start
-
-Run:
 
 ```text
 npm start
 ```
 
-The local MCP endpoint is:
+Local MCP endpoint:
 
 ```text
 http://127.0.0.1:8789/mcp
 ```
 
-The health endpoint is:
+Health endpoint:
 
 ```text
 http://127.0.0.1:8789/
 ```
 
-## Use It From Another Client
+## Use From Another Client
 
 Expose the server through Tailscale:
 
@@ -68,33 +90,27 @@ Expose the server through Tailscale:
 tailscale funnel 8789
 ```
 
-On some Linux systems:
+On systems where Tailscale requires elevation:
 
 ```text
 sudo tailscale funnel 8789
 ```
 
-Tailscale prints a root URL like:
+Tailscale prints a root URL such as:
 
 ```text
 https://machine.tailnet.ts.net/
 ```
 
-Add `mcp` manually:
+Add the MCP path and configure the client for Streamable HTTP:
 
 ```text
 https://machine.tailnet.ts.net/mcp
 ```
 
-And use Streamable HTTP in the client.
-
 ## Multi-Machine Use
 
-Run Portus MCP on each machine you want to access.
-
-You can reuse one MCP entry by changing the URL, but the better workflow is one MCP entry per machine.
-
-Example names:
+Run Portus MCP on each machine you want to access. One MCP entry per machine keeps project roots and policies independently selectable:
 
 ```text
 Portus_LinuxVM
@@ -102,33 +118,49 @@ Portus_WinRemote
 Portus_Workstation
 ```
 
-This lets the same ChatGPT, Codex, or other MCP client work with several machines in one conversation/session. It also lets you disable one machine without uninstalling it.
+The same conversation can use multiple connections while each server retains its own registered roots, permissions, limits, and availability boundary.
 
 ## Security
 
-Direct project tools stay inside registered project roots and enforce blocked paths, gitignored-file policy, permission gates, output caps, input caps, and audit behavior.
+Broad tools remain bounded by layered enforcement:
 
-Spawned Flue agents are local command-capable processes. They are useful for delegated work, but they are not a hard OS/container/filesystem sandbox. Only grant commands you are comfortable letting an agent use.
+- connector, tunnel, MCP server, and process availability;
+- registered project-root confinement;
+- blocked-path, traversal, and Git-ignore policy;
+- capability permissions and approved command policy;
+- server-owned request, input, output, scan, patch, edit, timeout, and process limits;
+- explicit confirmation for destructive or protected operations;
+- durable, redacted audit for mutation and execution;
+- operating-system permissions; and
+- strict schemas and safe, project-relative errors.
 
-Configuration values and permission policies can be fine tuned in:
+Callers cannot raise server maxima or override path, Git-ignore, permission, confirmation, or audit policy. Read, context, search, policy inspection, and patch preparation remain unaudited; mutation and execution retain audit behavior. Errors and safe policy projections do not expose absolute roots, secrets, command environments, or file contents.
 
-`portus-mcp.config.json`
+Spawned agents are local command-capable processes, not a hard OS/container/filesystem sandbox. Only enable the `agent` or `full` profile and grant commands you are comfortable allowing.
 
-and
+Fine-tune surface and behavior in `portus-mcp.config.json`, and permissions/limits in `portus-mcp.policy.json`. `PORTUS_MCP_BEARER_TOKEN` is optional for clients that support static bearer authentication; leave it empty for clients that do not.
 
-`portus-mcp.policy.json`
+## Migrating Tool Clients
 
-On clients that support static bearer tokens like Codex you can use the optional `PORTUS_MCP_BEARER_TOKEN`. On clients like ChatGPT custom connector flow, leave it empty.
+Retired names have no alias window. Migrate calls by operation family:
+
+| Previous operation | Current adapter |
+|---|---|
+| Single, whole, ranged, or batch read | `project_read.requests[]` |
+| Status, tree, files, path metadata/existence, or scripts | `project_context.include` |
+| File, text, or symbol search | `project_search.mode` |
+| Patch prepare or apply | `project_patch.mode` |
+| Check, script, or command execution | `project_run.type` |
+| Write, replace, insert, copy, move, delete, mkdir, or rmdir | `project_edit.operations[]` |
+| Permission, path, or safe effective-config inspection | `project_policy.checks[]` |
+
+See `docs/TOOLS.md` for the explicit retired-name map and `docs/BROAD_MOBILITY_SURFACE.md` for the architectural decision.
 
 ## Platforms
 
-Windows and Linux were verified for the initial release.
-
-macOS is intended to work through the same Node.js workflow, but it was not verified.
+Windows and Linux were verified for the initial release. macOS is intended to use the same Node.js workflow but was not verified.
 
 ## Validation
-
-Run:
 
 ```text
 npm run check
@@ -139,11 +171,14 @@ npm run smoke:health
 npm run smoke:flue-lifecycle
 ```
 
-`npm run smoke:flue-write` needs real credentials for the selected provider.
+`npm run smoke:flue-write` requires real credentials for the selected provider.
 
-## More Docs
+The broad-surface acceptance suite must also prove exact seven-tool default discovery, profile isolation, absence of retired names, strict schemas, normal workflows, permission and confirmation boundaries, Git-ignore and root policy, server limits, audit behavior, and safe errors without absolute-path or secret leakage.
+
+## More Documentation
 
 ```text
+docs/BROAD_MOBILITY_SURFACE.md
 docs/CLIENTS.md
 docs/CONFIG.md
 docs/MULTI_MACHINE.md
@@ -153,8 +188,8 @@ docs/VALIDATION.md
 SECURITY.md
 ```
 
-I would recommend that you read them, especially `docs/CLIENTS.md` and `docs/MULTI_MACHINE.md`.
+Start with `docs/BROAD_MOBILITY_SURFACE.md`, `docs/TOOLS.md`, `docs/CLIENTS.md`, and `docs/MULTI_MACHINE.md`.
 
-Flue is used for spawned-agent support. Direct MCP project tools still work without using spawned agents.
+Flue provides spawned-agent support. Direct broad MCP project tools work without spawned agents.
 
 Flue: https://github.com/withastro/flue

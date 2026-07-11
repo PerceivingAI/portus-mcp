@@ -43,12 +43,14 @@ const basePolicy = {
       registerProjects: true,
       updatePermissions: false,
       spawnAgents: true,
-      readFiles: true,
-      writeFiles: true,
-      moveFiles: false,
-      deleteFiles: false,
+      projectContext: true,
+      projectRead: true,
+      projectSearch: true,
+      projectEdit: true,
       readGitIgnoredFiles: false,
-      runPackageScripts: false,
+      projectPatch: true,
+      projectRun: false,
+      projectPolicy: true,
       allowedCommands: ["git"]
     }
   },
@@ -131,6 +133,8 @@ process.env.CEREBRAS_API_KEY = "test-key";
 
 const { createHttpServer } = await import("../src/server.js");
 const { loadPolicyConfig } = await import("../src/policy/policyConfig.js");
+// State modules read environment variables during initialization, so project setup must follow fixture configuration.
+const { upsertProject } = await import("../src/state/ProjectRegistry.js");
 
 function resultOf(response: any): any {
   assert.equal(response.isError, undefined, JSON.stringify(response.structuredContent));
@@ -152,14 +156,19 @@ async function withClient(t: any): Promise<Client> {
 }
 
 test("project reads use configured maxReadChars", async (t) => {
+  upsertProject({ projectAlias: "read-max", rootPath: projectRoot });
   const client = await withClient(t);
-  resultOf(await client.callTool({ name: "project_register", arguments: { projectAlias: "read-max", rootPath: projectRoot } }));
 
-  const read = resultOf(await client.callTool({
-    name: "project_read_text_file",
-    arguments: { projectAlias: "read-max", relativePath: "README.md" }
+  const response = resultOf(await client.callTool({
+    name: "project_read",
+    arguments: {
+      projectAlias: "read-max",
+      requests: [{ relativePath: "README.md", mode: "content" }]
+    }
   }));
+  const read = response.results[0];
 
+  assert.equal(read.ok, true);
   assert.equal(read.limit, 5);
   assert.equal(read.truncated, true);
   assert.equal(read.chars, 5);
@@ -169,10 +178,10 @@ test("project reads use configured maxReadChars", async (t) => {
   assert.match(read.content, /^abcde/);
 });
 
-test("project read tools do not expose caller char limit arguments", async (t) => {
+test("project read does not expose caller char limit arguments", async (t) => {
   const client = await withClient(t);
   const tools = await client.listTools();
-  const readTool = tools.tools.find((tool) => tool.name === "project_read_text_file");
+  const readTool = tools.tools.find((tool) => tool.name === "project_read");
   assert(readTool);
 
   assert.equal(JSON.stringify(readTool.inputSchema).includes("maxChars"), false);
@@ -193,21 +202,28 @@ test("text input limits count Unicode code points", async (t) => {
   });
   t.after(() => writePolicy());
 
+  upsertProject({ projectAlias: "unicode-input", rootPath: projectRoot });
   const client = await withClient(t);
-  resultOf(await client.callTool({ name: "project_register", arguments: { projectAlias: "unicode-input", rootPath: projectRoot } }));
 
   const write = resultOf(await client.callTool({
-    name: "project_write_file",
-    arguments: { projectAlias: "unicode-input", relativePath: "emoji.txt", content: "🙂" }
+    name: "project_edit",
+    arguments: {
+      projectAlias: "unicode-input",
+      operations: [{ type: "write", relativePath: "emoji.txt", content: "🙂" }]
+    }
   }));
-  assert.equal(write.bytes, Buffer.byteLength("🙂", "utf8"));
+  assert.equal(write.results[0].ok, true);
+  assert.equal(write.results[0].bytes, Buffer.byteLength("🙂", "utf8"));
 
-  const rejectedWrite = await client.callTool({
-    name: "project_write_file",
-    arguments: { projectAlias: "unicode-input", relativePath: "too-many.txt", content: "🙂🙂" }
-  });
-  assert.equal(rejectedWrite.isError, true);
-  assert.match(JSON.stringify(rejectedWrite.structuredContent), /limits\.fileWrite\.maxChars/);
+  const rejectedWrite = resultOf(await client.callTool({
+    name: "project_edit",
+    arguments: {
+      projectAlias: "unicode-input",
+      operations: [{ type: "write", relativePath: "too-many.txt", content: "🙂🙂" }]
+    }
+  }));
+  assert.equal(rejectedWrite.results[0].ok, false);
+  assert.match(rejectedWrite.results[0].error, /limits\.fileWrite\.maxChars/);
 });
 
 test("policy validation rejects the removed flat policy layout", () => {
@@ -219,6 +235,21 @@ test("policy validation rejects the removed flat policy layout", () => {
   });
 
   assert.throws(() => loadPolicyConfig(), /output/);
+  writePolicy();
+});
+
+test("policy validation rejects obsolete operation-level permissions", () => {
+  writePolicy({
+    ...basePolicy,
+    chatgpt: {
+      permissions: {
+        ...basePolicy.chatgpt.permissions,
+        readFiles: true
+      }
+    }
+  });
+
+  assert.throws(() => loadPolicyConfig(), /readFiles|Unrecognized key/);
   writePolicy();
 });
 

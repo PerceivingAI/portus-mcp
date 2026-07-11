@@ -25,12 +25,14 @@
       "registerProjects": false,
       "updatePermissions": false,
       "spawnAgents": true,
-      "readFiles": true,
-      "writeFiles": true,
-      "moveFiles": true,
-      "deleteFiles": true,
+      "projectContext": true,
+      "projectRead": true,
+      "projectSearch": true,
+      "projectEdit": true,
+      "projectPatch": true,
+      "projectRun": true,
+      "projectPolicy": true,
       "readGitIgnoredFiles": false,
-      "runPackageScripts": true,
       "allowedCommands": ["git"]
     }
   },
@@ -62,7 +64,8 @@
     },
     "search": {
       "maxScanEntries": 100000,
-      "maxTextFileChars": 200000
+      "maxTextFileChars": 200000,
+      "maxRegexExecutionMs": 120000
     },
     "skills": {
       "maxReadChars": 200000

@@ -7,16 +7,21 @@ import type { AgentProvider, AgentProviderConfig, AgentProviderDefinition } from
 
 export type { AgentProvider, AgentProviderConfig, AgentProviderDefinition } from "./providers.js";
 
+export const toolSurfaceProfiles = ["broad", "management", "agent", "full"] as const;
+export type ToolSurfaceProfile = typeof toolSurfaceProfiles[number];
+
 export type ChatGptPermissionConfig = {
   registerProjects: boolean;
   updatePermissions: boolean;
   spawnAgents: boolean;
-  readFiles: boolean;
-  writeFiles: boolean;
-  moveFiles: boolean;
-  deleteFiles: boolean;
+  projectContext: boolean;
+  projectRead: boolean;
+  projectSearch: boolean;
+  projectEdit: boolean;
+  projectPatch: boolean;
+  projectRun: boolean;
+  projectPolicy: boolean;
   readGitIgnoredFiles: boolean;
-  runPackageScripts: boolean;
   allowedCommands: string[];
 };
 
@@ -31,6 +36,7 @@ export type PermissionConfig = {
 };
 
 export type PortusMcpConfig = {
+  toolSurface: ToolSurfaceProfile;
   agents: {
     defaultTemplate: string;
     retry: {
@@ -64,6 +70,7 @@ const retrySchema = z.object({
 }).strict();
 
 const configSchema = z.object({
+  toolSurface: z.enum(toolSurfaceProfiles).default("broad"),
   agents: z.object({
     defaultTemplate: z.string().min(1),
     retry: retrySchema
@@ -98,7 +105,7 @@ export function loadConfig(): PortusMcpConfig {
   return parsed.data as PortusMcpConfig;
 }
 
-export function loadAgentProviderConfig(config = loadConfig()): AgentProviderConfig {
+export function loadAgentProviderConfig(): AgentProviderConfig {
   const provider = parseAgentProvider(optionalEnv("PORTUS_MCP_DEFAULT_PROVIDER", "cerebras"));
   const definition = providerDefinitions[provider];
   const rawModel = optionalEnv(definition.modelEnv, defaultProviderModels[provider]);

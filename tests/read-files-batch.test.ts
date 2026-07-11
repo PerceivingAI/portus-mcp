@@ -37,7 +37,7 @@ const basePolicy = {
     lifecycle: { queuedTaskTtlSecs: 300, projectLockTimeoutSecs: 1800, maxRuntimeSecs: 900, startupWatchdogMs: 15000, forcedCloseGraceMs: 8000, killEscalationDelayMs: 1200, queueDrainDelayMs: 50 },
     permissions: { networkAccess: true, allowedCommands: ["git"] }
   },
-  chatgpt: { permissions: { registerProjects: true, updatePermissions: true, spawnAgents: false, readFiles: true, writeFiles: false, moveFiles: false, deleteFiles: false, readGitIgnoredFiles: false, runPackageScripts: false, allowedCommands: ["git"] } },
+  chatgpt: { permissions: { registerProjects: true, updatePermissions: true, spawnAgents: false, projectContext: true, projectRead: true, projectSearch: true, projectEdit: false, projectPatch: false, projectRun: false, projectPolicy: true, readGitIgnoredFiles: false, allowedCommands: ["git"] } },
   pathPolicy: { blockedPatterns: [".env"] },
   limits: {
     fileRead: { maxChars: 500000 }, fileWrite: { maxChars: 1000000 }, patch: { maxChars: 1000000 },
@@ -65,15 +65,17 @@ process.env.PORTUS_MCP_STATE_DIR = stateDir;
 // Configuration reads environment variables at module initialization, so this test intentionally imports after fixture setup.
 const { createHttpServer } = await import("../src/server.js");
 const { updatePermissions } = await import("../src/state/PermissionRegistry.js");
+const { upsertProject } = await import("../src/state/ProjectRegistry.js");
+const { stateStore } = await import("../src/state/StateStore.js");
 
 const requestedSchema = z.object({ startLine: z.number().int().positive(), endLine: z.number().int().positive() }).strict();
 const actualSchema = z.object({ startLine: z.number().int().positive().nullable(), endLine: z.number().int().positive().nullable(), lineCount: z.number().int().nonnegative() }).strict();
 const successSchema = z.object({
-  ok: z.literal(true), index: z.number().int().nonnegative(), relativePath: z.string(), requested: requestedSchema, actual: actualSchema, content: z.string(), hasMore: z.boolean(), truncated: z.boolean(),
-  chars: z.number().int().nonnegative(), totalChars: z.number().int().nonnegative(), omittedChars: z.number().int().nonnegative(), limit: z.number().int().positive()
+  ok: z.literal(true), index: z.number().int().nonnegative(), mode: z.literal("content"), relativePath: z.string(), requested: requestedSchema, actual: actualSchema, content: z.string(), hasMore: z.boolean(), truncated: z.boolean(),
+  chars: z.number().int().nonnegative(), totalChars: z.number().int().nonnegative(), omittedChars: z.number().int().nonnegative(), limit: z.number().int().positive(), projectAlias: z.string()
 }).strict();
-const itemErrorSchema = z.object({ ok: z.literal(false), index: z.number().int().nonnegative(), relativePath: z.string(), error: z.string() }).strict();
-const batchSchema = z.object({
+const itemErrorSchema = z.object({ ok: z.literal(false), index: z.number().int().nonnegative(), mode: z.literal("content"), relativePath: z.string(), error: z.string() }).strict();
+const readSchema = z.object({
   projectAlias: z.string(), requestedCount: z.number().int().nonnegative(), successCount: z.number().int().nonnegative(), errorCount: z.number().int().nonnegative(),
   results: z.array(z.union([successSchema, itemErrorSchema]))
 }).strict();
@@ -87,7 +89,7 @@ function assertNoRoots(value: unknown): void {
 function resultOf(response: CallToolResult) {
   assertNoRoots(response);
   assert.equal(response.isError, undefined, JSON.stringify(response.structuredContent));
-  return z.object({ result: batchSchema }).strict().parse(response.structuredContent).result;
+  return z.object({ result: readSchema }).strict().parse(response.structuredContent).result;
 }
 function errorOf(response: CallToolResult): string {
   assertNoRoots(response);
@@ -106,50 +108,50 @@ async function withClient(t: TestContext): Promise<Client> {
   t.after(async () => client.close());
   return client;
 }
-async function callBatch(client: Client, files: unknown): Promise<CallToolResult> {
-  return client.callTool({ name: "project_read_files", arguments: { projectAlias: "batch", files } });
+async function callRead(client: Client, requests: unknown): Promise<CallToolResult> {
+  const normalized = Array.isArray(requests) ? requests.map((request) => {
+    if (!request || typeof request !== "object" || Array.isArray(request)) return request;
+    const item = request as Record<string, unknown>;
+    return item.startLine === undefined && item.endLine === undefined ? { ...item, startLine: 1, endLine: 200 } : item;
+  }) : requests;
+  return client.callTool({ name: "project_read", arguments: { projectAlias: "batch", requests: normalized } });
 }
 
-test("project_read_files exposes and enforces its complete MCP batch contract", async (t) => {
+test("project_read exposes and enforces its complete MCP batch contract", async (t) => {
   t.after(() => writePolicy());
   const client = await withClient(t);
 
   const listed = await client.listTools();
-  const tool = listed.tools.find((candidate) => candidate.name === "project_read_files");
-  assert(tool, "project_read_files was not discovered");
-  assert.deepEqual(tool.annotations, { readOnlyHint: true, destructiveHint: false, openWorldHint: false });
-  assert.deepEqual(Object.keys(tool.inputSchema.properties ?? {}).sort(), ["files", "projectAlias"]);
-  const filesSchema = z.object({
-    type: z.literal("array"),
-    minItems: z.literal(1),
-    maxItems: z.literal(20),
-    items: z.object({
-      type: z.literal("object"),
-      properties: z.object({
-        relativePath: z.object({ type: z.literal("string"), minLength: z.literal(1) }).passthrough(),
-        startLine: z.object({ type: z.literal("number") }).passthrough(),
-        endLine: z.object({ type: z.literal("number") }).passthrough()
-      }).strict(),
-      required: z.tuple([z.literal("relativePath")]),
-      additionalProperties: z.literal(false)
-    }).passthrough()
-  }).passthrough().parse(tool.inputSchema.properties?.files);
-  assert.deepEqual(Object.keys(filesSchema.items.properties).sort(), ["endLine", "relativePath", "startLine"]);
+  const tool = listed.tools.find((candidate) => candidate.name === "project_read");
+  assert(tool, "project_read was not discovered");
+  assert.deepEqual(tool.annotations, { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
+  assert.deepEqual(Object.keys(tool.inputSchema.properties ?? {}).sort(), ["projectAlias", "requests"]);
+  const requestsSchema = tool.inputSchema.properties?.requests as {
+    type?: string;
+    minItems?: number;
+    maxItems?: number;
+    items?: { properties?: Record<string, unknown>; additionalProperties?: boolean };
+  };
+  assert.equal(requestsSchema.type, "array");
+  assert.equal(requestsSchema.minItems, 1);
+  assert.equal(requestsSchema.maxItems, 20);
+  assert.deepEqual(Object.keys(requestsSchema.items?.properties ?? {}).sort(), ["endLine", "mode", "relativePath", "startLine"]);
+  assert.equal(requestsSchema.items?.additionalProperties, false);
   const published = JSON.stringify(tool.inputSchema);
   for (const forbidden of ["maxChars", "limit", "maxBytes", "maxFiles", "includeHash", "includeBinary", "ignorePolicy"]) assert.equal(published.includes(`\"${forbidden}\"`), false, `published forbidden input name: ${forbidden}`);
+  assert.equal(listed.tools.some((candidate) => candidate.name === "project_read_files"), false);
 
-  const register = await client.callTool({ name: "project_register", arguments: { projectAlias: "batch", rootPath: projectRoot } });
-  assert.equal(register.isError, undefined);
+  upsertProject({ projectAlias: "batch", rootPath: projectRoot });
 
-  const explanation = await client.callTool({ name: "policy_explain_permissions", arguments: { projectAlias: "batch", operation: "project_read_files" } });
+  const explanation = await client.callTool({ name: "project_policy", arguments: { checks: [{ type: "permissions", projectAlias: "batch", operation: "project_read" }] } });
   assertNoRoots(explanation);
-  assert.deepEqual(z.object({ result: z.object({ requiredPermissions: z.array(z.string()) }).passthrough() }).parse(explanation.structuredContent).result.requiredPermissions, ["readFiles"]);
+  assert.deepEqual(z.object({ result: z.object({ results: z.array(z.object({ requiredPermissions: z.array(z.string()) }).passthrough()) }) }).parse(explanation.structuredContent).result.results[0]?.requiredPermissions, ["projectRead"]);
 
   await t.test("returns multiple successes in request order with indexes, duplicates, and per-file ranges", async () => {
-    const batch = resultOf(await callBatch(client, [
-      { relativePath: "one.txt", startLine: 2, endLine: 3 },
-      { relativePath: "two.txt" },
-      { relativePath: "one.txt", startLine: 1, endLine: 1 }
+    const batch = resultOf(await callRead(client, [
+      { relativePath: "one.txt", mode: "content", startLine: 2, endLine: 3 },
+      { relativePath: "two.txt", mode: "content" },
+      { relativePath: "one.txt", mode: "content", startLine: 1, endLine: 1 }
     ]));
     assert.deepEqual({ projectAlias: batch.projectAlias, requestedCount: batch.requestedCount, successCount: batch.successCount, errorCount: batch.errorCount }, { projectAlias: "batch", requestedCount: 3, successCount: 3, errorCount: 0 });
     assert.deepEqual(batch.results.map((item) => item.relativePath), ["one.txt", "two.txt", "one.txt"]);
@@ -165,7 +167,7 @@ test("project_read_files exposes and enforces its complete MCP batch contract", 
 
   await t.test("isolates ordinary and unsafe file failures while the batch succeeds", async () => {
     const paths = ["one.txt", "missing.txt", "binary.bin", "directory", "../outside.txt", path.join(root, "outside.txt"), ".env", "ignored.txt", "two.txt"];
-    const batch = resultOf(await callBatch(client, paths.map((relativePath) => ({ relativePath }))));
+    const batch = resultOf(await callRead(client, paths.map((relativePath) => ({ relativePath, mode: "content" }))));
     assert.equal(batch.requestedCount, paths.length);
     assert.equal(batch.successCount, 2);
     assert.equal(batch.errorCount, 7);
@@ -174,20 +176,16 @@ test("project_read_files exposes and enforces its complete MCP batch contract", 
     assert.equal(batch.results.at(-1)?.ok, true);
     const errors = batch.results.slice(1, -1).map((item) => itemErrorSchema.parse(item));
     for (const [error, expected] of errors.map((item) => item.error).entries()) {
-      assert.match(expected, [/File does not exist: missing\.txt/, /not likely text/i, /not a file/i, /escapes project root/i, /not allowed|Unable to read text file/i, /Blocked path pattern/, /readGitIgnoredFiles|Unable to read text file: ignored\.txt/][error]);
+      assert.match(expected, [/File does not exist: missing\.txt/, /not likely text/i, /not a file/i, /escapes project root/i, /Operation failed: \[invalid path\]/i, /Blocked path pattern/, /readGitIgnoredFiles|Unable to read text file: ignored\.txt/][error]);
     }
   });
 
-  await t.test("keeps invalid numeric ranges as isolated item errors", async () => {
+  await t.test("isolates semantic range failures and rejects malformed numeric ranges", async () => {
     const cases = [
-      [{ relativePath: "one.txt", startLine: 4, endLine: 2 }, "endLine must be greater than or equal to startLine"],
-      [{ relativePath: "one.txt", startLine: 0 }, "startLine must be a positive integer"],
-      [{ relativePath: "one.txt", endLine: 0 }, "endLine must be a positive integer"],
-      [{ relativePath: "one.txt", startLine: 1.5 }, "startLine must be a positive integer"],
-      [{ relativePath: "one.txt", endLine: 2.5 }, "endLine must be a positive integer"],
-      [{ relativePath: "one.txt", startLine: 1, endLine: 2001 }, "Requested line range exceeds maximum of 2000 lines"]
+      [{ relativePath: "one.txt", mode: "content", startLine: 4, endLine: 2 }, "endLine must be greater than or equal to startLine"],
+      [{ relativePath: "one.txt", mode: "content", startLine: 1, endLine: 2001 }, "Requested line range exceeds maximum of 2000 lines"]
     ] as const;
-    const batch = resultOf(await callBatch(client, [...cases.map(([file]) => file), { relativePath: "two.txt" }]));
+    const batch = resultOf(await callRead(client, [...cases.map(([request]) => request), { relativePath: "two.txt", mode: "content" }]));
     assert.equal(batch.successCount, 1);
     assert.equal(batch.errorCount, cases.length);
     for (const [index, [, expected]] of cases.entries()) {
@@ -195,23 +193,29 @@ test("project_read_files exposes and enforces its complete MCP batch contract", 
       assert.equal(error.error, expected);
     }
     assert.equal(batch.results.at(-1)?.ok, true);
+    for (const requests of [
+      [{ relativePath: "one.txt", mode: "content", startLine: 0 }],
+      [{ relativePath: "one.txt", mode: "content", endLine: 0 }],
+      [{ relativePath: "one.txt", mode: "content", startLine: 1.5 }],
+      [{ relativePath: "one.txt", mode: "content", endLine: 2.5 }]
+    ]) errorOf(await callRead(client, requests));
   });
 
   await t.test("rejects malformed and out-of-cardinality batches at the top level", async () => {
-    for (const files of [[], Array.from({ length: 21 }, () => ({ relativePath: "one.txt" })), [{ relativePath: "one.txt", startLine: "1" }]]) {
-      errorOf(await callBatch(client, files));
+    for (const requests of [[], Array.from({ length: 21 }, () => ({ relativePath: "one.txt", mode: "content" })), [{ relativePath: "one.txt", mode: "content", startLine: "1" }]]) {
+      errorOf(await callRead(client, requests));
     }
   });
 
   await t.test("checks read permission once for the whole call", async () => {
-    updatePermissions({ projectAlias: "batch", permissions: { chatgpt: { readFiles: false } } });
-    assert.equal(errorOf(await callBatch(client, [{ relativePath: "missing.txt" }, { relativePath: "one.txt" }])), "Permission denied: chatgpt.readFiles is false");
-    updatePermissions({ projectAlias: "batch", permissions: { chatgpt: { readFiles: true } } });
+    updatePermissions({ projectAlias: "batch", permissions: { chatgpt: { projectRead: false } } });
+    assert.equal(errorOf(await callRead(client, [{ relativePath: "missing.txt", mode: "content" }, { relativePath: "one.txt", mode: "content" }])), "Permission denied: chatgpt.projectRead is false");
+    updatePermissions({ projectAlias: "batch", permissions: { chatgpt: { projectRead: true } } });
   });
 
   await t.test("applies the server limit independently and counts Unicode code points", async () => {
     writePolicy(3);
-    const batch = resultOf(await callBatch(client, [{ relativePath: "unicode.txt" }, { relativePath: "two.txt" }]));
+    const batch = resultOf(await callRead(client, [{ relativePath: "unicode.txt", mode: "content" }, { relativePath: "two.txt", mode: "content" }]));
     const successes = z.array(successSchema).parse(batch.results);
     for (const item of successes) {
       assert.equal(item.limit, 3);
@@ -228,8 +232,7 @@ test("project_read_files exposes and enforces its complete MCP batch contract", 
     writePolicy();
   });
 
-  const audit = await client.callTool({ name: "audit_list", arguments: { projectAlias: "batch" } });
-  assertNoRoots(audit);
-  const events = z.object({ result: z.object({ events: z.array(z.object({ tool: z.string().optional() }).passthrough()) }) }).parse(audit.structuredContent).result.events;
+  const events = stateStore.readAudit();
+  assert.equal(events.some((event) => event.tool === "project_read"), false);
   assert.equal(events.some((event) => event.tool === "project_read_files"), false);
 });

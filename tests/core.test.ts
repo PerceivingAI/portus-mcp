@@ -41,12 +41,14 @@ writeFileSync(policyPath, JSON.stringify({
       registerProjects: false,
       updatePermissions: false,
       spawnAgents: true,
-      readFiles: true,
-      writeFiles: true,
-      moveFiles: false,
-      deleteFiles: false,
+      projectContext: true,
+      projectRead: true,
+      projectSearch: true,
+      projectEdit: true,
       readGitIgnoredFiles: false,
-      runPackageScripts: false,
+      projectPatch: true,
+      projectRun: false,
+      projectPolicy: true,
       allowedCommands: ["git"]
     }
   },
@@ -128,7 +130,7 @@ const { assertChatGptPermission } = await import("../src/policy/permissionPolicy
 const { getEffectivePermissions, updatePermissions } = await import("../src/state/PermissionRegistry.js");
 
 upsertProject({ projectAlias: "test", rootPath: projectRoot });
-updatePermissions({ projectAlias: "test", permissions: { chatgpt: { writeFiles: false } } });
+updatePermissions({ projectAlias: "test", permissions: { chatgpt: { projectEdit: false } } });
 
 test("provider config resolves default Cerebras model", () => {
   const provider = loadAgentProviderConfig();
@@ -149,10 +151,10 @@ test("path policy blocks configured sensitive paths case-insensitively", () => {
 });
 
 test("permission policy denies disabled permissions and accepts runtime updates", () => {
-  assert.throws(() => assertChatGptPermission("writeFiles", "test"), /Permission denied/);
-  updatePermissions({ projectAlias: "test", permissions: { chatgpt: { writeFiles: true } } });
-  assert.doesNotThrow(() => assertChatGptPermission("writeFiles", "test"));
-  assert.equal(getEffectivePermissions("test").chatgpt.writeFiles, true);
+  assert.throws(() => assertChatGptPermission("projectEdit", "test"), /Permission denied/);
+  updatePermissions({ projectAlias: "test", permissions: { chatgpt: { projectEdit: true } } });
+  assert.doesNotThrow(() => assertChatGptPermission("projectEdit", "test"));
+  assert.equal(getEffectivePermissions("test").chatgpt.projectEdit, true);
 });
 
 

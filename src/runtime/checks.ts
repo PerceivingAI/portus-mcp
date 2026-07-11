@@ -15,7 +15,7 @@ export async function runProjectCheck(rootPath: string, scriptName = "check", ti
   truncated: boolean;
 }> {
   const packageJsonPath = path.join(rootPath, "package.json");
-  if (!existsSync(packageJsonPath)) throw new Error("project_run_checks currently requires package.json");
+  if (!existsSync(packageJsonPath)) throw new Error("project_run check mode requires package.json");
 
   const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { scripts?: Record<string, string> };
   return runProjectScript(rootPath, scriptName, [], timeoutSecs, packageJson);

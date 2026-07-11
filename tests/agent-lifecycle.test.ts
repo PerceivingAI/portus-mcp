@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 
 const root = mkdtempSync(path.join(tmpdir(), "portus-agents-agent-test-"));
 const stateDir = path.join(root, "state");
@@ -111,12 +112,14 @@ const defaultPolicy = {
       registerProjects: false,
       updatePermissions: false,
       spawnAgents: true,
-      readFiles: true,
-      writeFiles: true,
-      moveFiles: false,
-      deleteFiles: false,
+      projectContext: true,
+      projectRead: true,
+      projectSearch: true,
+      projectEdit: true,
+      projectPatch: true,
+      projectRun: true,
+      projectPolicy: false,
       readGitIgnoredFiles: false,
-      runPackageScripts: false,
       allowedCommands: ["git"]
     }
   },
@@ -296,7 +299,7 @@ test("agent_stop stops a running mocked Flue session", async () => {
   const started = await runFlueTask({ projectAlias: "agent", task: "SLEEP TASK", agentTemplate: "ephemeral-project-agent" });
   assert.equal(getSession(started.sessionId).status, "running");
 
-  const stopped = stopFlueTask(started.sessionId);
+  const stopped = await stopFlueTask(started.sessionId);
   assert.equal(stopped.status, "stopped");
   const final = await waitForSession(started.sessionId, "stopped");
   assert.equal(final.status, "stopped");
@@ -352,7 +355,7 @@ test("queue disabled rejects when concurrency limits are reached", async () => {
     () => runFlueTask({ projectAlias: "agent", task: "SECOND TASK", agentTemplate: "ephemeral-project-agent" }),
     /queue is disabled/
   );
-  stopFlueTask(first.sessionId);
+  await stopFlueTask(first.sessionId);
   await waitForSession(first.sessionId, "stopped");
   writePolicy();
 });
@@ -407,14 +410,73 @@ test("queue enabled enqueues and eventually executes task in order", async () =>
   writePolicy();
 });
 
+test("agent_stop terminates descendants before reporting stopped", async () => {
+  writeFileSync(fakeFluePath, `
+import { spawn } from "node:child_process";
+const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+console.log("descendant:" + descendant.pid);
+await new Promise(() => {});
+`, "utf8");
+
+  const started = await runFlueTask({ projectAlias: "agent", task: "DESCENDANT TASK", agentTemplate: "ephemeral-project-agent" });
+  let descendantPid = 0;
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline && descendantPid === 0) {
+    const match = readFileSync(started.stdoutPath, "utf8").match(/descendant:(\d+)/);
+    descendantPid = match ? Number(match[1]) : 0;
+    if (descendantPid === 0) await sleep(20);
+  }
+  assert.equal(descendantPid > 0, true);
+
+  const stopped = await stopFlueTask(started.sessionId);
+  assert.equal(stopped.status, "stopped");
+  assert.throws(() => process.kill(descendantPid, 0));
+  writeDefaultFakeFlue();
+});
+
+test("termination failure retains running state and project lock", async () => {
+  writeDefaultFakeFlue();
+  const started = await runFlueTask({ projectAlias: "agent", task: "SLEEP TASK", agentTemplate: "ephemeral-project-agent" });
+  const originalPath = process.env.PATH;
+  const originalKill = process.kill;
+  if (process.platform === "win32") {
+    const failingBin = path.join(root, "failing-bin");
+    mkdirSync(failingBin, { recursive: true });
+    writeFileSync(path.join(failingBin, "taskkill.cmd"), "@exit /b 9\r\n", "utf8");
+    process.env.PATH = failingBin;
+  } else {
+    process.kill = (() => {
+      const error = new Error("injected termination failure") as NodeJS.ErrnoException;
+      error.code = "EPERM";
+      throw error;
+    }) as typeof process.kill;
+  }
+
+  await assert.rejects(() => stopFlueTask(started.sessionId), /taskkill failed|injected termination failure|ENOENT/);
+  assert.equal(getSession(started.sessionId).status, "running");
+  await assert.rejects(
+    () => runFlueTask({ projectAlias: "agent", task: "LOCK MUST REMAIN", agentTemplate: "ephemeral-project-agent" }),
+    /Project lock active/
+  );
+  assert.equal(readSessionEvents({ sessionId: started.sessionId }).events.some((event) => event.type === "termination_failed"), true);
+
+  process.env.PATH = originalPath;
+  process.kill = originalKill;
+  await stopFlueTask(started.sessionId);
+});
+
 test("stopping running session releases lock for subsequent sessions", async () => {
   writePolicy({ agents: { concurrency: { maxConcurrent: 1, maxConcurrentPerProject: 1, queueEnabled: false } } });
   writeDefaultFakeFlue();
 
   const first = await runFlueTask({ projectAlias: "agent", task: "SLEEP TASK", agentTemplate: "ephemeral-project-agent" });
-  const stopped = stopFlueTask(first.sessionId);
+  const stopPromise = stopFlueTask(first.sessionId);
+  await assert.rejects(
+    () => runFlueTask({ projectAlias: "agent", task: "TOO EARLY", agentTemplate: "ephemeral-project-agent" }),
+    /Project lock active/
+  );
+  const stopped = await stopPromise;
   assert.equal(stopped.status, "stopped");
-  await waitForSession(first.sessionId, "stopped");
 
   const second = await runFlueTask({ projectAlias: "agent", task: "SUCCESS AFTER STOP", agentTemplate: "ephemeral-project-agent" });
   const completed = await waitForSession(second.sessionId, "completed");

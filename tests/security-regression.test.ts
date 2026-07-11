@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -62,12 +62,14 @@ writeFileSync(policyPath, JSON.stringify({
       registerProjects: true,
       updatePermissions: false,
       spawnAgents: true,
-      readFiles: true,
-      writeFiles: true,
-      moveFiles: false,
-      deleteFiles: false,
+      projectContext: true,
+      projectRead: true,
+      projectSearch: true,
+      projectEdit: true,
+      projectPatch: true,
+      projectRun: true,
+      projectPolicy: true,
       readGitIgnoredFiles: false,
-      runPackageScripts: false,
       allowedCommands: ["git"]
     }
   },
@@ -145,6 +147,7 @@ process.env.CEREBRAS_API_KEY = "test-key";
 const { createHttpServer } = await import("../src/server.js");
 const { assertAgentPermission, assertChatGptPermission } = await import("../src/policy/permissionPolicy.js");
 const { getEffectivePermissions, updatePermissions } = await import("../src/state/PermissionRegistry.js");
+const { upsertProject } = await import("../src/state/ProjectRegistry.js");
 
 function resultOf(response: any): any {
   assert.equal(response.isError, undefined, JSON.stringify(response.structuredContent));
@@ -166,13 +169,12 @@ async function withClient(t: any): Promise<Client> {
 }
 
 test("permission gates cover every chatgpt and agents field", () => {
-  for (const permission of ["moveFiles", "deleteFiles", "readGitIgnoredFiles", "runPackageScripts"] as const) {
+  for (const permission of ["readGitIgnoredFiles", "updatePermissions"] as const) {
     assert.throws(() => assertChatGptPermission(permission, "missing-project"), /Permission denied/);
   }
-  for (const permission of ["registerProjects", "spawnAgents", "readFiles", "writeFiles"] as const) {
+  for (const permission of ["registerProjects", "spawnAgents", "projectContext", "projectRead", "projectSearch", "projectEdit", "projectPatch", "projectRun", "projectPolicy"] as const) {
     assert.doesNotThrow(() => assertChatGptPermission(permission, "missing-project"));
   }
-  assert.throws(() => assertChatGptPermission("updatePermissions", "missing-project"), /Permission denied/);
 
   for (const permission of ["network"] as const) {
     assert.throws(() => assertAgentPermission(permission, "missing-project"), /Permission denied/);
@@ -183,57 +185,192 @@ test("permission gates cover every chatgpt and agents field", () => {
 });
 
 test("runtime permissions override policy defaults", () => {
-  updatePermissions({ projectAlias: "runtime", permissions: { chatgpt: { deleteFiles: true }, agents: { network: true } } });
+  updatePermissions({ projectAlias: "runtime", permissions: { chatgpt: { }, agents: { network: true } } });
   const effective = getEffectivePermissions("runtime");
-  assert.equal(effective.chatgpt.deleteFiles, true);
+  assert.equal(effective.chatgpt.projectEdit, true);
   assert.equal(effective.agents.network, true);
 });
 
-test("MCP denies registration and permission updates when gated off", async (t) => {
+test("each broad project tool is gated only by its matching permission", async (t) => {
+  const client = await withClient(t);
+  const projectAlias = "broad-gates";
+  upsertProject({ projectAlias, rootPath: projectRoot });
+  const cases = [
+    { permission: "projectContext", tool: "project_context", arguments: { projectAlias, include: { status: true } } },
+    { permission: "projectRead", tool: "project_read", arguments: { projectAlias, requests: [{ relativePath: "README.md", mode: "exists" }] } },
+    { permission: "projectSearch", tool: "project_search", arguments: { projectAlias, mode: "files", query: "README" } },
+    { permission: "projectEdit", tool: "project_edit", arguments: { projectAlias, operations: [{ type: "mkdir", relativePath: "dry-run" }], dryRun: true } },
+    { permission: "projectPatch", tool: "project_patch", arguments: { projectAlias, mode: "prepare", patch: "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-project fixture\n+project fixture updated\n" } },
+    { permission: "projectRun", tool: "project_run", arguments: { projectAlias, type: "command", command: "git", args: ["status", "--short"] } },
+    { permission: "projectPolicy", tool: "project_policy", arguments: { checks: [{ type: "permissions", projectAlias, operation: "project_read" }] } }
+  ] as const;
+
+  for (const entry of cases) {
+    updatePermissions({ projectAlias, permissions: { chatgpt: { [entry.permission]: false } } });
+    const denied = await client.callTool({ name: entry.tool, arguments: entry.arguments });
+    assert.equal(denied.isError, true, `${entry.tool} should be denied`);
+    assert.match(JSON.stringify(denied.structuredContent), new RegExp(`chatgpt\\.${entry.permission}`));
+    updatePermissions({ projectAlias, permissions: { chatgpt: { [entry.permission]: true } } });
+    const allowed = await client.callTool({ name: entry.tool, arguments: entry.arguments });
+    assert.equal(allowed.isError, undefined, `${entry.tool} should be allowed: ${JSON.stringify(allowed.structuredContent)}`);
+  }
+});
+
+test("removed permission update tool is absent", async (t) => {
   const client = await withClient(t);
   const permissionDenied = await client.callTool({
     name: "permission_update",
-    arguments: { permissions: { chatgpt: { deleteFiles: true } } }
+    arguments: { permissions: { chatgpt: { } } }
   });
   assert.equal(permissionDenied.isError, true);
-  assert.match(JSON.stringify(permissionDenied.structuredContent), /updatePermissions/);
+  assert.match(JSON.stringify(permissionDenied), /Tool permission_update not found/);
+});
+
+test("canonical project boundary permits internal links and rejects external junction escapes", async (t) => {
+  const client = await withClient(t);
+  const projectAlias = "canonical-boundary";
+  const outsideRoot = path.join(root, "outside");
+  const insideRoot = path.join(projectRoot, "inside-target");
+  const outsideLink = path.join(projectRoot, "outside-link");
+  const insideLink = path.join(projectRoot, "inside-link");
+  const rootLink = path.join(root, "project-root-link");
+  mkdirSync(outsideRoot, { recursive: true });
+  mkdirSync(insideRoot, { recursive: true });
+  writeFileSync(path.join(outsideRoot, "secret.txt"), "outside secret\n", "utf8");
+  writeFileSync(path.join(insideRoot, "visible.txt"), "inside visible\n", "utf8");
+  const directoryLinkType = process.platform === "win32" ? "junction" : "dir";
+  symlinkSync(outsideRoot, outsideLink, directoryLinkType);
+  symlinkSync(insideRoot, insideLink, directoryLinkType);
+  symlinkSync(projectRoot, rootLink, directoryLinkType);
+
+  const linkedRegistration = upsertProject({ projectAlias, rootPath: rootLink });
+  updatePermissions({ projectAlias, permissions: { chatgpt: { } } });
+  assert.equal(linkedRegistration.rootPath, realpathSync.native(projectRoot));
+
+  const reads = resultOf(await client.callTool({
+    name: "project_read",
+    arguments: {
+      projectAlias,
+      requests: [
+        { relativePath: "inside-link/visible.txt", mode: "content" },
+        { relativePath: "outside-link/secret.txt", mode: "content" },
+        { relativePath: "outside-link/secret.txt", mode: "metadata" },
+        { relativePath: "outside-link/secret.txt", mode: "exists" }
+      ]
+    }
+  }));
+  assert.equal(reads.results[0].ok, true);
+  assert.match(reads.results[0].content, /inside visible/);
+  for (const escaped of reads.results.slice(1)) {
+    assert.equal(escaped.ok, false);
+    assert.match(escaped.error, /Path escapes project root/);
+  }
+
+  const search = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: { projectAlias, mode: "text", query: "outside secret", relativePath: "outside-link" }
+  }));
+  assert.equal(search.sections.text.ok, false);
+  assert.match(search.sections.text.error, /Path escapes project root/);
+
+  const edits = resultOf(await client.callTool({
+    name: "project_edit",
+    arguments: {
+      projectAlias,
+      operations: [
+        { type: "write", relativePath: "outside-link/created.txt", content: "must not escape\n" },
+        { type: "mkdir", relativePath: "outside-link/created-dir", recursive: true },
+        { type: "copy", sourceRelativePath: "README.md", destinationRelativePath: "outside-link/copied.txt" },
+        { type: "move", sourceRelativePath: "README.md", destinationRelativePath: "outside-link/moved.txt" }
+      ]
+    }
+  }));
+  for (const escaped of edits.results) {
+    assert.equal(escaped.ok, false);
+    assert.match(escaped.error, /Path escapes project root/);
+  }
+  assert.equal(existsSync(path.join(outsideRoot, "created.txt")), false);
+  assert.equal(existsSync(path.join(outsideRoot, "created-dir")), false);
+  assert.equal(existsSync(path.join(outsideRoot, "copied.txt")), false);
+  assert.equal(existsSync(path.join(outsideRoot, "moved.txt")), false);
+
+  const patch = [
+    "diff --git a/outside-link/patched.txt b/outside-link/patched.txt",
+    "new file mode 100644",
+    "--- /dev/null",
+    "+++ b/outside-link/patched.txt",
+    "@@ -0,0 +1 @@",
+    "+must not escape",
+    ""
+  ].join("\n");
+  const patchResponse = await client.callTool({
+    name: "project_patch",
+    arguments: { projectAlias, mode: "apply", patch, dryRun: true }
+  });
+  assert.equal(patchResponse.isError, true);
+  assert.match(JSON.stringify(patchResponse.structuredContent), /Path escapes project root/);
+  assert.equal(existsSync(path.join(outsideRoot, "patched.txt")), false);
 });
 
 test("MCP denies gitignored-file reads and excludes traversal patterns", async (t) => {
   const client = await withClient(t);
-  resultOf(await client.callTool({ name: "project_register", arguments: { projectAlias: "sec", rootPath: projectRoot } }));
+  upsertProject({ projectAlias: "sec", rootPath: projectRoot });
 
-  for (const call of [
-    { name: "project_read_text_file", arguments: { projectAlias: "sec", relativePath: "ignored.txt" } },
-    { name: "project_file_info", arguments: { projectAlias: "sec", relativePath: "ignored.txt" } },
-    { name: "project_exists", arguments: { projectAlias: "sec", relativePath: "ignored.txt" } },
-    { name: "project_copy_file", arguments: { projectAlias: "sec", sourceRelativePath: "ignored.txt", destinationRelativePath: "copy.txt" } }
-  ]) {
-    const response = await client.callTool(call);
-    assert.equal(response.isError, true, `${call.name} should deny ignored path`);
-    assert.match(JSON.stringify(response.structuredContent), /readGitIgnoredFiles/);
+  const reads = resultOf(await client.callTool({
+    name: "project_read",
+    arguments: {
+      projectAlias: "sec",
+      requests: [
+        { relativePath: "ignored.txt", mode: "content" },
+        { relativePath: "ignored.txt", mode: "metadata" },
+        { relativePath: "ignored.txt", mode: "exists" }
+      ]
+    }
+  }));
+  for (const denied of reads.results) {
+    assert.equal(denied.ok, false);
+    assert.match(denied.error, /readGitIgnoredFiles/);
   }
 
-  const files = resultOf(await client.callTool({ name: "project_list_files", arguments: { projectAlias: "sec", maxEntries: 50 } }));
-  assert.equal(files.files.includes("ignored.txt"), false);
-  assert.equal(files.files.some((file: string) => file.includes("ignored-dir")), false);
-  assert.equal(files.files.some((file: string) => file.includes("skip-me")), false);
-  assert.equal(files.files.some((file: string) => file.includes(".portus-mcp")), false);
+  const copied = resultOf(await client.callTool({
+    name: "project_edit",
+    arguments: {
+      projectAlias: "sec",
+      dryRun: true,
+      operations: [{ type: "copy", sourceRelativePath: "ignored.txt", destinationRelativePath: "copy.txt" }]
+    }
+  }));
+  assert.equal(copied.results[0].ok, false);
+  assert.match(copied.results[0].error, /readGitIgnoredFiles/);
 
-  const searchFiles = resultOf(await client.callTool({ name: "project_search_files", arguments: { projectAlias: "sec", query: "ignored", maxResults: 20 } }));
-  assert.equal(searchFiles.matches.length, 0);
-  const stateSearchFiles = resultOf(await client.callTool({ name: "project_search_files", arguments: { projectAlias: "sec", query: "projects", maxResults: 20 } }));
-  assert.equal(stateSearchFiles.matches.some((match: any) => match.relativePath.includes(".portus-mcp")), false);
+  const context = resultOf(await client.callTool({
+    name: "project_context",
+    arguments: {
+      projectAlias: "sec",
+      include: {
+        files: { maxEntries: 50 },
+        tree: { format: "flat", maxEntries: 50 }
+      }
+    }
+  }));
+  const files = context.sections.files.value.files;
+  assert.equal(files.some((file: { relativePath: string }) => file.relativePath.includes("ignored")), false);
+  assert.equal(files.some((file: { relativePath: string }) => file.relativePath.includes("skip-me")), false);
+  assert.equal(files.some((file: { relativePath: string }) => file.relativePath.includes(".portus-mcp")), false);
+  const entries = context.sections.tree.value.entries;
+  assert.equal(entries.some((entry: { relativePath: string }) => entry.relativePath.includes("ignored")), false);
+  assert.equal(entries.some((entry: { relativePath: string }) => entry.relativePath.includes("skip-me")), false);
+  assert.equal(entries.some((entry: { relativePath: string }) => entry.relativePath.includes(".portus-mcp")), false);
 
-  const searchText = resultOf(await client.callTool({ name: "project_search_text", arguments: { projectAlias: "sec", query: "ignored content", maxResults: 20 } }));
-  assert.equal(searchText.matches.length, 0);
-  const stateSearchText = resultOf(await client.callTool({ name: "project_search_text", arguments: { projectAlias: "sec", query: "sec", maxResults: 20 } }));
-  assert.equal(stateSearchText.matches.some((match: any) => match.relativePath.includes(".portus-mcp")), false);
-
-  const tree = resultOf(await client.callTool({ name: "project_tree", arguments: { projectAlias: "sec", format: "flat", maxEntries: 50 } }));
-  assert.equal(tree.entries.some((entry: any) => entry.relativePath.includes("ignored")), false);
-  assert.equal(tree.entries.some((entry: any) => entry.relativePath.includes("skip-me")), false);
-  assert.equal(tree.entries.some((entry: any) => entry.relativePath.includes(".portus-mcp")), false);
+  for (const [mode, query] of [["files", "ignored"], ["files", "projects"], ["text", "ignored content"], ["text", "sec"]] as const) {
+    const search = resultOf(await client.callTool({
+      name: "project_search",
+      arguments: { projectAlias: "sec", mode, query, maxResults: 20 }
+    }));
+    const matches = search.sections[mode].matches;
+    assert.equal(matches.some((match: { relativePath: string }) =>
+      match.relativePath.includes("ignored") || match.relativePath.includes(".portus-mcp") || match.relativePath.includes("skip-me")), false);
+  }
 });
 
 test("MCP package script tools cannot consume ignored package.json files when ignored reads are disabled", async (t) => {
@@ -245,87 +382,94 @@ test("MCP package script tools cannot consume ignored package.json files when ig
   execFileSync("git", ["init"], { cwd: ignoredPackageProjectRoot, stdio: "ignore" });
 
   const projectAlias = "ignored-package";
-  resultOf(await client.callTool({ name: "project_register", arguments: { projectAlias, rootPath: ignoredPackageProjectRoot } }));
-  updatePermissions({ projectAlias, permissions: { chatgpt: { runPackageScripts: true } } });
+  upsertProject({ projectAlias, rootPath: ignoredPackageProjectRoot });
+  updatePermissions({ projectAlias, permissions: { chatgpt: { projectRun: true } } });
 
-  for (const call of [
-    { name: "project_list_scripts", arguments: { projectAlias } },
-    { name: "project_run_checks", arguments: { projectAlias } },
-    { name: "project_run_script", arguments: { projectAlias, scriptName: "check" } }
+  const context = resultOf(await client.callTool({
+    name: "project_context",
+    arguments: { projectAlias, include: { scripts: true } }
+  }));
+  assert.equal(context.sections.scripts.ok, false);
+  assert.match(context.sections.scripts.error, /readGitIgnoredFiles/);
+
+  for (const arguments_ of [
+    { projectAlias, type: "check" },
+    { projectAlias, type: "script", name: "check" }
   ]) {
-    const response = await client.callTool(call);
-    assert.equal(response.isError, true, `${call.name} should deny ignored package.json`);
+    const response = await client.callTool({ name: "project_run", arguments: arguments_ });
+    assert.equal(response.isError, true);
     assert.match(JSON.stringify(response.structuredContent), /readGitIgnoredFiles/);
   }
 });
 
 test("direct file tools stay filtered while allowed git commands expose repository state", async (t) => {
   const client = await withClient(t);
-  resultOf(await client.callTool({ name: "project_register", arguments: { projectAlias: "blocked", rootPath: projectRoot } }));
+  upsertProject({ projectAlias: "blocked", rootPath: projectRoot });
 
   const diff = resultOf(await client.callTool({
-    name: "project_run_command",
-    arguments: { projectAlias: "blocked", command: "git", args: ["diff"] }
+    name: "project_run",
+    arguments: { projectAlias: "blocked", type: "command", command: "git", args: ["diff"] }
   }));
   assert.match(diff.stdout, /SECRET_TOKEN/);
 
-  const symbols = resultOf(await client.callTool({ name: "project_search_symbols", arguments: { projectAlias: "blocked", query: "SECRET_TOKEN", maxResults: 20 } }));
-  assert.equal(symbols.matches.length, 0);
-
-  const text = resultOf(await client.callTool({ name: "project_search_text", arguments: { projectAlias: "blocked", query: "SECRET_TOKEN", maxResults: 20 } }));
-  assert.equal(text.matches.length, 0);
+  for (const mode of ["symbols", "text"] as const) {
+    const search = resultOf(await client.callTool({
+      name: "project_search",
+      arguments: { projectAlias: "blocked", mode, query: "SECRET_TOKEN", maxResults: 20 }
+    }));
+    assert.equal(search.sections[mode].matches.length, 0);
+  }
 });
 
 test("MCP mutation tools cannot operate on existing gitignored files when ignored reads are disabled", async (t) => {
   const client = await withClient(t);
   const projectAlias = "ignored-mutation";
-  resultOf(await client.callTool({ name: "project_register", arguments: { projectAlias, rootPath: projectRoot } }));
-  updatePermissions({ projectAlias, permissions: { chatgpt: { moveFiles: true, deleteFiles: true } } });
+  upsertProject({ projectAlias, rootPath: projectRoot });
+  updatePermissions({ projectAlias, permissions: { chatgpt: { } } });
 
-  for (const call of [
-    { name: "project_write_file", arguments: { projectAlias, relativePath: "ignored.txt", content: "overwrite\n" } },
-    { name: "project_move_file", arguments: { projectAlias, sourceRelativePath: "ignored.txt", destinationRelativePath: "visible-from-ignored.txt" } },
-    { name: "project_move_file", arguments: { projectAlias, sourceRelativePath: "README.md", destinationRelativePath: "ignored.txt", overwrite: true } },
-    { name: "project_delete_file", arguments: { projectAlias, relativePath: "ignored.txt", confirm: true } },
-    { name: "project_delete_directory", arguments: { projectAlias, relativePath: "ignored-delete-dir", recursive: true, confirm: true } },
-    { name: "project_replace_text", arguments: { projectAlias, relativePath: "ignored.txt", search: "hidden", replace: "visible", dryRun: true } },
-    { name: "project_insert_text", arguments: { projectAlias, relativePath: "ignored.txt", marker: "hidden", content: "visible", position: "before", dryRun: true } },
-    {
-      name: "project_apply_patch",
-      arguments: {
-        projectAlias,
-        dryRun: true,
-        patch: [
-          "diff --git a/ignored.txt b/ignored.txt",
-          "--- a/ignored.txt",
-          "+++ b/ignored.txt",
-          "@@ -1 +1 @@",
-          "-hidden ignored content",
-          "+changed ignored content",
-          ""
-        ].join("\n")
-      }
-    },
-    {
-      name: "project_apply_patch",
-      arguments: {
-        projectAlias,
-        dryRun: true,
-        confirm: true,
-        patch: [
-          "diff --git a/ignored.txt b/ignored.txt",
-          "deleted file mode 100644",
-          "--- a/ignored.txt",
-          "+++ /dev/null",
-          "@@ -1 +0,0 @@",
-          "-hidden ignored content",
-          ""
-        ].join("\n")
-      }
-    }
+  const operations = [
+    { type: "write", relativePath: "ignored.txt", content: "overwrite\n" },
+    { type: "move", sourceRelativePath: "ignored.txt", destinationRelativePath: "visible-from-ignored.txt" },
+    { type: "move", sourceRelativePath: "README.md", destinationRelativePath: "ignored.txt", overwrite: true },
+    { type: "delete", relativePath: "ignored.txt", confirm: true },
+    { type: "rmdir", relativePath: "ignored-delete-dir", recursive: true, confirm: true },
+    { type: "replace", relativePath: "ignored.txt", search: "hidden", replace: "visible" },
+    { type: "insert", relativePath: "ignored.txt", marker: "hidden", content: "visible", position: "before" }
+  ];
+  const edits = resultOf(await client.callTool({
+    name: "project_edit",
+    arguments: { projectAlias, operations, dryRun: true }
+  }));
+  for (const denied of edits.results) {
+    assert.equal(denied.ok, false);
+    assert.match(denied.error, /readGitIgnoredFiles/);
+  }
+
+  for (const patch of [
+    [
+      "diff --git a/ignored.txt b/ignored.txt",
+      "--- a/ignored.txt",
+      "+++ b/ignored.txt",
+      "@@ -1 +1 @@",
+      "-hidden ignored content",
+      "+changed ignored content",
+      ""
+    ].join("\n"),
+    [
+      "diff --git a/ignored.txt b/ignored.txt",
+      "deleted file mode 100644",
+      "--- a/ignored.txt",
+      "+++ /dev/null",
+      "@@ -1 +0,0 @@",
+      "-hidden ignored content",
+      ""
+    ].join("\n")
   ]) {
-    const response = await client.callTool(call);
-    assert.equal(response.isError, true, `${call.name} should deny existing ignored path`);
+    const response = await client.callTool({
+      name: "project_patch",
+      arguments: { projectAlias, mode: "apply", patch, dryRun: true, confirm: true }
+    });
+    assert.equal(response.isError, true);
     assert.match(JSON.stringify(response.structuredContent), /readGitIgnoredFiles/);
   }
 
@@ -339,7 +483,10 @@ test("MCP mutation tools cannot operate on existing gitignored files when ignore
     "+generated ignored content",
     ""
   ].join("\n");
-  const created = resultOf(await client.callTool({ name: "project_apply_patch", arguments: { projectAlias, patch: createIgnoredFilePatch, dryRun: true } }));
+  const created = resultOf(await client.callTool({
+    name: "project_patch",
+    arguments: { projectAlias, mode: "apply", patch: createIgnoredFilePatch, dryRun: true }
+  }));
   assert.equal(created.applied, false);
   assert.equal(created.dryRun, true);
   assert.deepEqual(created.changedFiles, ["ignored-dir/generated.txt"]);
@@ -348,44 +495,29 @@ test("MCP mutation tools cannot operate on existing gitignored files when ignore
 test("MCP mutation tools reject oversized input payloads", async (t) => {
   const client = await withClient(t);
   const projectAlias = "input-limits";
-  resultOf(await client.callTool({ name: "project_register", arguments: { projectAlias, rootPath: projectRoot } }));
+  upsertProject({ projectAlias, rootPath: projectRoot });
 
-  for (const call of [
-    {
-      name: "project_write_file",
-      arguments: { projectAlias, relativePath: "large.txt", content: "x".repeat(1000001) },
-      error: /limits\.fileWrite\.maxChars/
-    },
-    {
-      name: "project_apply_patch",
-      arguments: { projectAlias, patch: "x".repeat(1000001), dryRun: true },
-      error: /limits\.patch\.maxChars/
-    },
-    {
-      name: "project_replace_text",
-      arguments: { projectAlias, relativePath: "README.md", search: "x".repeat(20001), replace: "small", dryRun: true },
-      error: /limits\.textEdit\.maxSearchOrMarkerChars/
-    },
-    {
-      name: "project_replace_text",
-      arguments: { projectAlias, relativePath: "README.md", search: "Security", replace: "x".repeat(200001), dryRun: true },
-      error: /limits\.textEdit\.maxOperationChars/
-    },
-    {
-      name: "project_insert_text",
-      arguments: { projectAlias, relativePath: "README.md", marker: "x".repeat(20001), content: "small", position: "after", dryRun: true },
-      error: /limits\.textEdit\.maxSearchOrMarkerChars/
-    },
-    {
-      name: "project_insert_text",
-      arguments: { projectAlias, relativePath: "README.md", marker: "Security", content: "x".repeat(200001), position: "after", dryRun: true },
-      error: /limits\.textEdit\.maxOperationChars/
-    }
-  ]) {
-    const response = await client.callTool(call);
-    assert.equal(response.isError, true, `${call.name} should reject oversized input`);
-    assert.match(JSON.stringify(response.structuredContent), call.error);
+  for (const [operation, error] of [
+    [{ type: "write", relativePath: "large.txt", content: "x".repeat(1000001) }, /limits\.fileWrite\.maxChars/],
+    [{ type: "replace", relativePath: "README.md", search: "x".repeat(20001), replace: "small" }, /limits\.textEdit\.maxSearchOrMarkerChars/],
+    [{ type: "replace", relativePath: "README.md", search: "Security", replace: "x".repeat(200001) }, /limits\.textEdit\.maxOperationChars/],
+    [{ type: "insert", relativePath: "README.md", marker: "x".repeat(20001), content: "small", position: "after" }, /limits\.textEdit\.maxSearchOrMarkerChars/],
+    [{ type: "insert", relativePath: "README.md", marker: "Security", content: "x".repeat(200001), position: "after" }, /limits\.textEdit\.maxOperationChars/]
+  ] as const) {
+    const response = resultOf(await client.callTool({
+      name: "project_edit",
+      arguments: { projectAlias, operations: [operation], dryRun: true }
+    }));
+    assert.equal(response.results[0].ok, false);
+    assert.match(response.results[0].error, error);
   }
+
+  const patchResponse = await client.callTool({
+    name: "project_patch",
+    arguments: { projectAlias, mode: "apply", patch: "x".repeat(1000001), dryRun: true }
+  });
+  assert.equal(patchResponse.isError, true);
+  assert.match(JSON.stringify(patchResponse.structuredContent), /limits\.patch\.maxChars/);
 });
 
 

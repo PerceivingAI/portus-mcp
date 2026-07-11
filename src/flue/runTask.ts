@@ -1,6 +1,6 @@
 import { copyFileSync, createWriteStream, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { ChildProcess, spawn, spawnSync } from "node:child_process";
+import { ChildProcess, spawn } from "node:child_process";
 import { loadAgentProviderConfig, loadConfig } from "../config.js";
 import type { AgentProviderConfig } from "../config.js";
 import { stateStore } from "../state/StateStore.js";
@@ -55,8 +55,8 @@ type QueueItem = {
 };
 
 export async function runFlueTask(input: RunFlueTaskInput): Promise<SessionRecord> {
-  const config = loadConfig();
-  const project = getProject(input.projectAlias);
+  // Reject unknown projects before admitting work to the queue.
+  getProject(input.projectAlias);
   assertAgentPermission("network", input.projectAlias);
 
   const maxRuntimeSecs = getEffectivePermissions(input.projectAlias).agents.maxRuntimeSecs;
@@ -143,7 +143,7 @@ export async function runFlueTask(input: RunFlueTaskInput): Promise<SessionRecor
 
 async function startSessionExecution(input: RunFlueTaskInput, record: SessionRecord): Promise<SessionRecord> {
   const config = loadConfig();
-  const providerConfig = loadAgentProviderConfig(config);
+  const providerConfig = loadAgentProviderConfig();
   const project = getProject(input.projectAlias);
   const maxRuntimeSecs = getEffectivePermissions(input.projectAlias).agents.maxRuntimeSecs;
   const timeoutSecs = input.timeoutSecs ?? maxRuntimeSecs;
@@ -473,7 +473,7 @@ export function getAgentLimits(projectAlias?: string): {
   };
 }
 
-export function stopFlueTask(sessionId: string): SessionRecord {
+export async function stopFlueTask(sessionId: string): Promise<SessionRecord> {
   const session = getSession(sessionId);
   if (session.status === "queued") {
     const idx = pendingQueue.findIndex((item) => item.record.sessionId === sessionId);
@@ -493,11 +493,23 @@ export function stopFlueTask(sessionId: string): SessionRecord {
   if (session.status !== "running") return session;
 
   const child = runningProcesses.get(sessionId);
-  if (child && !child.killed) child.kill();
+  if (!child) {
+    throw new Error(`Cannot confirm process-tree termination for session ${sessionId}: process is not tracked`);
+  }
+
   runningStops.add(sessionId);
+  try {
+    await terminateChildTree(child, `manual stop for session ${sessionId}`);
+  } catch (error) {
+    runningStops.delete(sessionId);
+    const message = error instanceof Error ? error.message : String(error);
+    appendSessionEventById(sessionId, "termination_failed", "Process-tree termination failed.", { message });
+    stateStore.audit({ tool: "agent_stop", sessionId, projectAlias: session.projectAlias, status: "failed", reason: "termination_failed", message });
+    throw error;
+  }
 
   const stopped: SessionRecord = {
-    ...session,
+    ...getSession(sessionId),
     status: "stopped",
     completedAt: new Date().toISOString(),
     exitCode: null
@@ -506,6 +518,7 @@ export function stopFlueTask(sessionId: string): SessionRecord {
   upsertSession(stopped);
   appendSessionEvent(stopped, "stopped", "Running session stopped.", {});
   runningProcesses.delete(sessionId);
+  runningStops.delete(sessionId);
   releaseProjectLock(session.projectAlias, sessionId);
   scheduleQueueDrain();
   stateStore.audit({ tool: "agent_stop", sessionId, projectAlias: session.projectAlias, status: "stopped" });
@@ -533,6 +546,7 @@ async function runSessionAttempts(params: {
     for (let attempt = 1; attempt <= params.retryPolicy.maxAttempts; attempt += 1) {
       if (runningStops.has(params.sessionId)) return;
       const result = await runSingleAttempt(params, attempt);
+      if (runningStops.has(params.sessionId)) return;
       const failureType = classifyFailure(result.stdout, result.stderr, result.exitCode, result.signal);
       const retryDelayMs = computeRetryDelayMs(result.stdout, result.stderr, attempt, params.retryPolicy);
       const shouldRetry = shouldRetryFailure(failureType, attempt, started, retryDelayMs, params.retryPolicy);
@@ -600,7 +614,8 @@ async function runSingleAttempt(params: {
 }, attempt: number): Promise<{ exitCode: number | null; signal: string | null; stdout: string; stderr: string; startupHang: boolean }> {
   const child = spawn(process.execPath, params.args, {
     cwd: params.projectRoot,
-    env: buildAgentChildEnv(params.providerConfig)
+    env: buildAgentChildEnv(params.providerConfig),
+    detached: process.platform !== "win32"
   });
 
   runningProcesses.set(params.sessionId, child);
@@ -638,51 +653,55 @@ async function runSingleAttempt(params: {
   child.stdout?.pipe(stdoutStream);
   child.stderr?.pipe(stderrStream);
 
-  const timeout = setTimeout(() => {
-    void terminateChildTree(child, `attempt ${attempt} timeout`);
-  }, params.timeoutSecs * 1000);
+  let requestedTermination: Promise<void> | undefined;
+  const { promise: terminationFailure, reject: rejectTerminationFailure } = deferred<never>();
+  const requestTermination = (reason: string) => {
+    requestedTermination ??= terminateChildTree(child, reason).catch((error) => {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      appendSessionEventById(params.sessionId, "termination_failed", "Process-tree termination failed.", { attempt, message: failure.message });
+      stateStore.audit({ tool: "agent_run_task", sessionId: params.sessionId, status: "failed", failureType: "termination_failed", message: failure.message });
+      rejectTerminationFailure(failure);
+      throw failure;
+    });
+    void requestedTermination.catch(() => undefined);
+  };
+  const timeout = setTimeout(() => requestTermination(`attempt ${attempt} timeout`), params.timeoutSecs * 1000);
   const startupWatchdog = setTimeout(() => {
     if (emittedOutput || child.killed || child.exitCode !== null) return;
     startupHang = true;
     stderr += "\n[portus-mcp] startup watchdog detected no output";
     appendSessionEventById(params.sessionId, "startup_watchdog", "Startup watchdog detected no output.", { attempt });
-    void terminateChildTree(child, `attempt ${attempt} startup watchdog`);
+    requestTermination(`attempt ${attempt} startup watchdog`);
   }, agentPolicy.startupWatchdogMs);
 
-  const closeResult = await new Promise<{ exitCode: number | null; signal: string | null; stdout: string; stderr: string; closed: boolean; startupHang: boolean }>((resolve) => {
-    let closed = false;
-    const forcedCloseWatchdog = setTimeout(() => {
-      if (closed) return;
-      stderr += "\n[portus-mcp] attempt watchdog forced close";
-      safeWrite(stdoutStream, `\n[attempt ${attempt} watchdog forced close]\n`);
-      safeWrite(stderrStream, `\n[attempt ${attempt} watchdog forced close]\n`);
-      appendSessionEventById(params.sessionId, "startup_watchdog", "Attempt watchdog forced close.", { attempt });
-      runningProcesses.delete(params.sessionId);
-      streamsClosed = true;
-      stdoutStream.end();
-      stderrStream.end();
-      resolve({ exitCode: 124, signal: null, stdout, stderr, closed: false, startupHang });
-    }, params.timeoutSecs * 1000 + agentPolicy.forcedCloseGraceMs);
-    child.on("error", (error) => {
-      const text = String(error);
-      stderr += text;
-      safeWrite(stderrStream, text);
-      appendSessionEventById(params.sessionId, "stderr", "child process error", { attempt, text, chars: countChars(text) });
-    });
-    child.on("close", (code, signal) => {
-      closed = true;
-      clearTimeout(timeout);
-      clearTimeout(startupWatchdog);
-      clearTimeout(forcedCloseWatchdog);
-      runningProcesses.delete(params.sessionId);
-      safeWrite(stdoutStream, `\n[attempt ${attempt} end]\n`);
-      safeWrite(stderrStream, `\n[attempt ${attempt} end]\n`);
-      streamsClosed = true;
-      stdoutStream.end();
-      stderrStream.end();
-      resolve({ exitCode: code, signal, stdout, stderr, closed, startupHang });
-    });
+  const { promise: closeResultPromise, resolve: resolveCloseResult } = deferred<{ exitCode: number | null; signal: string | null; stdout: string; stderr: string; closed: boolean; startupHang: boolean }>();
+  child.on("error", (error) => {
+    const text = String(error);
+    stderr += text;
+    safeWrite(stderrStream, text);
+    appendSessionEventById(params.sessionId, "stderr", "child process error", { attempt, text, chars: countChars(text) });
   });
+  child.on("close", (code, signal) => {
+    runningProcesses.delete(params.sessionId);
+    safeWrite(stdoutStream, `\n[attempt ${attempt} end]\n`);
+    safeWrite(stderrStream, `\n[attempt ${attempt} end]\n`);
+    streamsClosed = true;
+    stdoutStream.end();
+    stderrStream.end();
+    const result = { exitCode: code, signal, stdout, stderr, closed: true, startupHang };
+    if (requestedTermination) {
+      void requestedTermination.then(() => resolveCloseResult(result));
+    } else {
+      resolveCloseResult(result);
+    }
+  });
+  let closeResult;
+  try {
+    closeResult = await Promise.race([closeResultPromise, terminationFailure]);
+  } finally {
+    clearTimeout(timeout);
+    clearTimeout(startupWatchdog);
+  }
   return {
     exitCode: closeResult.exitCode,
     signal: closeResult.signal,
@@ -838,36 +857,123 @@ function parseRetryAfterSeconds(text: string): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-function delay(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
-async function terminateChildTree(child: ChildProcess, reason: string) {
-  if (!child.pid) return;
-  try {
-    if (!child.killed) child.kill();
-  } catch {
-    // best effort
-  }
-  await delay(loadPolicyConfig().agents.lifecycle.killEscalationDelayMs);
-  if (child.exitCode !== null) return;
+function delay(ms: number) {
+  const { promise, resolve } = deferred<void>();
+  setTimeout(resolve, ms);
+  return promise;
+}
+
+const terminationPromises = new WeakMap<ChildProcess, Promise<void>>();
+
+function terminateChildTree(child: ChildProcess, reason: string): Promise<void> {
+  const existing = terminationPromises.get(child);
+  if (existing) return existing;
+  const termination = performChildTreeTermination(child, reason).catch((error) => {
+    terminationPromises.delete(child);
+    throw error;
+  });
+  terminationPromises.set(child, termination);
+  return termination;
+}
+
+async function performChildTreeTermination(child: ChildProcess, reason: string): Promise<void> {
+  const pid = child.pid;
+  if (!pid) throw new Error("Cannot terminate process tree without a process id");
   if (process.platform === "win32") {
-    try {
-      spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
-    } catch {
-      // best effort
+    if (hasChildExited(child)) {
+      throw new Error(`Cannot confirm process-tree termination for process ${pid}: the tracked process exited before taskkill`);
     }
+    await runTaskkill(pid);
+    await confirmChildExit(child);
   } else {
-    try {
-      process.kill(-child.pid, "SIGKILL");
-    } catch {
-      try {
-        process.kill(child.pid, "SIGKILL");
-      } catch {
-        // best effort
+    if (!hasProcessGroupExited(pid)) {
+      signalProcessGroup(pid, "SIGTERM");
+      const exitedDuringGrace = await waitForProcessGroupExit(pid, loadPolicyConfig().agents.lifecycle.killEscalationDelayMs);
+      if (!exitedDuringGrace) {
+        signalProcessGroup(pid, "SIGKILL");
       }
     }
+    await confirmChildExit(child);
+    const groupExited = await waitForProcessGroupExit(pid, loadPolicyConfig().agents.lifecycle.forcedCloseGraceMs);
+    if (!groupExited) throw new Error(`Process group ${pid} remained alive after SIGKILL`);
   }
-  stateStore.audit({ tool: "agent_run_task", kill: "forced", pid: child.pid, reason });
+  stateStore.audit({ tool: "agent_run_task", kill: "confirmed", pid, reason });
+}
+
+function hasChildExited(child: ChildProcess): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+function hasProcessGroupExited(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
+}
+
+function signalProcessGroup(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(-pid, signal);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+}
+
+async function waitForProcessGroupExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    if (hasProcessGroupExited(pid)) return true;
+    await delay(20);
+  } while (Date.now() < deadline);
+  return hasProcessGroupExited(pid);
+}
+
+async function confirmChildExit(child: ChildProcess): Promise<void> {
+  if (hasChildExited(child)) return;
+  const timeoutMs = loadPolicyConfig().agents.lifecycle.forcedCloseGraceMs;
+  const { promise, resolve, reject } = deferred<void>();
+  const timeout = setTimeout(() => {
+    cleanup();
+    reject(new Error(`Process ${child.pid ?? "unknown"} did not exit after tree termination`));
+  }, timeoutMs);
+  const onExit = () => {
+    cleanup();
+    resolve();
+  };
+  const cleanup = () => {
+    clearTimeout(timeout);
+    child.off("exit", onExit);
+    child.off("close", onExit);
+  };
+  child.once("exit", onExit);
+  child.once("close", onExit);
+  await promise;
+}
+
+async function runTaskkill(pid: number): Promise<void> {
+  const { promise, resolve, reject } = deferred<void>();
+  const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+  killer.once("error", reject);
+  killer.once("close", (code) => {
+    if (code === 0) resolve();
+    else reject(new Error(`taskkill failed for process ${pid} with exit code ${code}`));
+  });
+  await promise;
 }
 

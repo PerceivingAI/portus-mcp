@@ -81,9 +81,8 @@ Common causes:
 
 ```text
 chatgpt.permissions.spawnAgents=false
-chatgpt.permissions.runPackageScripts=false
-chatgpt.permissions.moveFiles=false
-chatgpt.permissions.deleteFiles=false
+chatgpt.permissions.projectRun=false
+chatgpt.permissions.projectEdit=false
 agents.concurrency.maxConcurrent=0
 agents.concurrency.maxConcurrentPerProject=0
 ```

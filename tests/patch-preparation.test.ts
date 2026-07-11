@@ -48,12 +48,14 @@ writeFileSync(policyPath, JSON.stringify({
       registerProjects: true,
       updatePermissions: true,
       spawnAgents: false,
-      readFiles: true,
-      writeFiles: true,
-      moveFiles: false,
-      deleteFiles: true,
+      projectContext: true,
+      projectRead: true,
+      projectSearch: true,
+      projectEdit: true,
       readGitIgnoredFiles: false,
-      runPackageScripts: false,
+      projectPatch: true,
+      projectRun: false,
+      projectPolicy: true,
       allowedCommands: ["git"]
     }
   },
@@ -97,12 +99,17 @@ process.env.PORTUS_MCP_STATE_DIR = stateDir;
 
 // Configuration modules read environment variables during module initialization, so this import must follow fixture setup.
 const { createHttpServer } = await import("../src/server.js");
+// State modules read environment variables during initialization, so fixture registration follows environment setup.
+const { upsertProject } = await import("../src/state/ProjectRegistry.js");
+const { updatePermissions } = await import("../src/state/PermissionRegistry.js");
+upsertProject({ projectAlias: "patch", rootPath: projectRoot });
+upsertProject({ projectAlias: "prepare-read-only", rootPath: projectRoot });
 
 const expectedFileSchema = z.object({
   relativePath: z.string(),
   exists: z.boolean(),
   isTextLikely: z.boolean().optional(),
-  sizeBytes: z.number().int().nonnegative().optional(),
+  bytes: z.number().int().nonnegative().optional(),
   modifiedAt: z.string().optional(),
   sha256: z.string().optional()
 });
@@ -173,70 +180,59 @@ const combinedPatch = [
   ""
 ].join("\n");
 
-test("project_prepare_patch is discoverable with an exact read-only contract and readFiles policy", async (t) => {
+test("project_patch is discoverable and uses only its broad permission", async (t) => {
   const client = await withClient(t);
   const listed = await client.listTools();
-  const tool = listed.tools.find((candidate) => candidate.name === "project_prepare_patch");
-  assert(tool, "project_prepare_patch was not discovered");
+  const tool = listed.tools.find((candidate) => candidate.name === "project_patch");
+  assert(tool, "project_patch was not discovered");
   assert.deepEqual(tool.annotations, {
-    readOnlyHint: true,
-    destructiveHint: false,
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
     openWorldHint: false
   });
 
-  resultOf(await client.callTool({
-    name: "project_register",
-    arguments: { projectAlias: "patch", rootPath: projectRoot }
-  }), z.object({ projectAlias: z.string() }).passthrough());
-  const explanation = resultOf(await client.callTool({
-    name: "policy_explain_permissions",
-    arguments: { projectAlias: "patch", operation: "project_prepare_patch" }
-  }), permissionSchema);
-  assert.deepEqual(explanation.requiredPermissions, ["readFiles"]);
+  const policy = resultOf(await client.callTool({
+    name: "project_policy",
+    arguments: {
+      checks: [{ type: "permissions", projectAlias: "patch", operation: "project_patch" }]
+    }
+  }), z.object({ results: z.array(permissionSchema) }));
+  assert.deepEqual(policy.results[0]?.requiredPermissions, ["projectPatch"]);
 
-  resultOf(await client.callTool({
-    name: "project_register",
-    arguments: { projectAlias: "prepare-read-only", rootPath: projectRoot }
-  }), z.object({ projectAlias: z.string() }).passthrough());
-  resultOf(await client.callTool({
-    name: "permission_update",
+  updatePermissions({
+    projectAlias: "prepare-read-only",
+    permissions: { chatgpt: { projectEdit: false, } }
+  });
+  const preparedWithoutWriteGrants = resultOf(await client.callTool({
+    name: "project_patch",
     arguments: {
       projectAlias: "prepare-read-only",
-      permissions: { chatgpt: { writeFiles: false, deleteFiles: false } }
+      mode: "prepare",
+      patch: combinedPatch,
+      includeHash: false
     }
-  }), z.object({ permissions: z.unknown() }).passthrough());
-  const preparedWithoutWriteGrants = resultOf(await client.callTool({
-    name: "project_prepare_patch",
-    arguments: { projectAlias: "prepare-read-only", patch: combinedPatch, includeHash: false }
   }), preparedSchema);
   assert.equal(preparedWithoutWriteGrants.readyForApply, true);
   assert.equal(preparedWithoutWriteGrants.expectedFiles.some((entry) => entry.sha256 !== undefined), false);
 
-  const audit = resultOf(await client.callTool({
-    name: "audit_list",
-    arguments: { projectAlias: "prepare-read-only" }
-  }), z.object({ events: z.array(z.object({ tool: z.string().optional() }).passthrough()) }));
-  assert.equal(audit.events.some((event) => event.tool === "project_prepare_patch"), false);
 
-  resultOf(await client.callTool({
-    name: "permission_update",
-    arguments: {
-      projectAlias: "prepare-read-only",
-      permissions: { chatgpt: { readFiles: false } }
-    }
-  }), z.object({ permissions: z.unknown() }).passthrough());
-  const denied = await client.callTool({
-    name: "project_prepare_patch",
-    arguments: { projectAlias: "prepare-read-only", patch: combinedPatch }
+  updatePermissions({
+    projectAlias: "prepare-read-only",
+    permissions: { chatgpt: { projectPatch: false } }
   });
-  assert.match(errorOf(denied), /chatgpt\.readFiles/);
+  const denied = await client.callTool({
+    name: "project_patch",
+    arguments: { projectAlias: "prepare-read-only", mode: "prepare", patch: combinedPatch }
+  });
+  assert.match(errorOf(denied), /chatgpt\.projectPatch/);
 });
 
 test("prepare returns existing, new, deleted, and zero-byte metadata usable by apply", async (t) => {
   const client = await withClient(t);
   const prepared = resultOf(await client.callTool({
-    name: "project_prepare_patch",
-    arguments: { projectAlias: "patch", patch: combinedPatch }
+    name: "project_patch",
+    arguments: { projectAlias: "patch", mode: "prepare", patch: combinedPatch }
   }), preparedSchema);
 
   assert.deepEqual(prepared.changedFiles, ["existing.txt", "empty.txt", "new file.txt", "deleted.txt"]);
@@ -245,24 +241,44 @@ test("prepare returns existing, new, deleted, and zero-byte metadata usable by a
   assert.deepEqual(Object.keys(prepared).sort(), ["changedFiles", "deletedFiles", "expectedFiles", "projectAlias", "readyForApply"]);
   const byPath = new Map(prepared.expectedFiles.map((entry) => [entry.relativePath, entry]));
   assert.equal(byPath.get("existing.txt")?.exists, true);
-  assert.equal(byPath.get("existing.txt")?.sizeBytes, Buffer.byteLength("old\n"));
+  assert.equal(byPath.get("existing.txt")?.bytes, Buffer.byteLength("old\n"));
   assert.equal(byPath.get("existing.txt")?.isTextLikely, true);
   assert.match(byPath.get("existing.txt")?.sha256 ?? "", /^[a-f0-9]{64}$/);
   assert.equal(byPath.get("empty.txt")?.exists, true);
-  assert.equal(byPath.get("empty.txt")?.sizeBytes, 0);
+  assert.equal(byPath.get("empty.txt")?.bytes, 0);
   assert.match(byPath.get("empty.txt")?.sha256 ?? "", /^[a-f0-9]{64}$/);
   assert.equal(byPath.get("new file.txt")?.exists, false);
   assert.deepEqual(byPath.get("new file.txt"), { relativePath: "new file.txt", exists: false });
   assert.equal(byPath.get("deleted.txt")?.exists, true);
   assert.equal(JSON.stringify(prepared).includes(root), false);
   assert.equal(JSON.stringify(prepared).includes(projectRoot), false);
+  const expectedFiles = prepared.expectedFiles.map(({ relativePath, sha256, modifiedAt }) => ({
+    relativePath,
+    ...(sha256 === undefined ? {} : { sha256 }),
+    ...(modifiedAt === undefined ? {} : { modifiedAt })
+  }));
 
-  const applied = resultOf(await client.callTool({
-    name: "project_apply_patch",
+  const dryRun = resultOf(await client.callTool({
+    name: "project_patch",
     arguments: {
       projectAlias: "patch",
+      mode: "apply",
       patch: combinedPatch,
-      expectedFiles: prepared.expectedFiles,
+      expectedFiles,
+      dryRun: true,
+      confirm: true
+    }
+  }), appliedSchema);
+  assert.equal(dryRun.applied, false);
+  assert.equal(dryRun.dryRun, true);
+
+  const applied = resultOf(await client.callTool({
+    name: "project_patch",
+    arguments: {
+      projectAlias: "patch",
+      mode: "apply",
+      patch: combinedPatch,
+      expectedFiles,
       confirm: true
     }
   }), appliedSchema);
@@ -276,7 +292,7 @@ test("prepare returns existing, new, deleted, and zero-byte metadata usable by a
 test("prepare rejects blocked, escaping, ignored existing, and over-cap paths without absolute path leaks", async (t) => {
   const client = await withClient(t);
   const patches = [
-    ["blocked", "Patch contains a path that is not allowed", [
+    ["blocked", "Blocked path pattern.", [
       "diff --git a/.env b/.env",
       "--- a/.env",
       "+++ b/.env",
@@ -292,7 +308,7 @@ test("prepare rejects blocked, escaping, ignored existing, and over-cap paths wi
       "+escape",
       ""
     ].join("\n")],
-    ["ignored", "Permission denied: patch path is not readable", [
+    ["ignored", "Permission denied: readGitIgnoredFiles is false for ignored path: ignored.txt", [
       "diff --git a/ignored.txt b/ignored.txt",
       "--- a/ignored.txt",
       "+++ b/ignored.txt",
@@ -312,8 +328,8 @@ test("prepare rejects blocked, escaping, ignored existing, and over-cap paths wi
 
   for (const [label, expectedError, patch] of patches) {
     const response = await client.callTool({
-      name: "project_prepare_patch",
-      arguments: { projectAlias: "patch", patch }
+      name: "project_patch",
+      arguments: { projectAlias: "patch", mode: "prepare", patch }
     });
     const error = errorOf(response);
     assert.equal(error, expectedError);

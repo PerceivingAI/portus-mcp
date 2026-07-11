@@ -90,7 +90,7 @@ export function registerAgentTools(server: McpServer): void {
   }, { readOnlyHint: false, destructiveHint: false, openWorldHint: false }, async ({ sessionId }) => {
     const session = getSession(sessionId);
     assertChatGptPermission("spawnAgents", session.projectAlias);
-    return toPublicSession(stopFlueTask(sessionId));
+    return toPublicSession(await stopFlueTask(sessionId));
   });
 
   registerTool(server, "session_list", "Use this when ChatGPT needs to list known Portus agent sessions.", {}, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async () => listSessions().map(toPublicSession));
@@ -140,7 +140,7 @@ export function registerAgentTools(server: McpServer): void {
     for (const session of active) {
       assertChatGptPermission("spawnAgents", session.projectAlias);
     }
-    const stopped = active.map((session) => stopFlueTask(session.sessionId));
+    const stopped = await Promise.all(active.map((session) => stopFlueTask(session.sessionId)));
     stateStore.audit({ tool: "session_stop_all", projectAlias: projectAlias ?? null, stopped: stopped.map((item) => item.sessionId) });
     return { projectAlias: projectAlias ?? null, stoppedSessionIds: stopped.map((item) => item.sessionId) };
   });

@@ -48,12 +48,14 @@ const basePolicy = {
       registerProjects: true,
       updatePermissions: true,
       spawnAgents: false,
-      readFiles: true,
-      writeFiles: false,
-      moveFiles: false,
-      deleteFiles: false,
+      projectContext: true,
+      projectRead: true,
+      projectSearch: true,
+      projectEdit: false,
       readGitIgnoredFiles: false,
-      runPackageScripts: false,
+      projectPatch: true,
+      projectRun: false,
+      projectPolicy: true,
       allowedCommands: ["git"]
     }
   },
@@ -107,6 +109,8 @@ process.env.PORTUS_MCP_STATE_DIR = stateDir;
 // Configuration modules read environment variables during module initialization, so these imports must follow fixture setup.
 const { createHttpServer } = await import("../src/server.js");
 const { updatePermissions } = await import("../src/state/PermissionRegistry.js");
+const { upsertProject } = await import("../src/state/ProjectRegistry.js");
+const { stateStore } = await import("../src/state/StateStore.js");
 
 const rangeResultSchema = z.object({
   projectAlias: z.string(),
@@ -129,14 +133,27 @@ const errorSchema = z.object({ error: z.string() });
 
 function resultOf<T>(response: CallToolResult, schema: z.ZodType<T>): T {
   assert.equal(response.isError, undefined, JSON.stringify(response.structuredContent));
-  return z.object({ result: schema }).parse(response.structuredContent).result;
+  const wrapped = z.object({ result: z.unknown() }).parse(response.structuredContent).result;
+  const broad = z.object({ results: z.array(z.object({ ok: z.boolean(), index: z.number(), mode: z.string() }).passthrough()) }).safeParse(wrapped);
+  if (!broad.success) return schema.parse(wrapped);
+  const item = broad.data.results[0];
+  assert(item);
+  const { ok, index, mode, ...value } = item;
+  assert.equal(ok, true, JSON.stringify(item));
+  assert.equal(index, 0);
+  assert.equal(mode, "content");
+  return schema.parse(value);
 }
 
 function errorOf(response: CallToolResult): string {
-  assert.equal(response.isError, true);
   const serialized = JSON.stringify(response);
   assert.equal(serialized.includes(root), false, `error leaked fixture root: ${serialized}`);
   assert.equal(serialized.includes(projectRoot), false, `error leaked project root: ${serialized}`);
+  if (response.isError === undefined) {
+    const wrapped = z.object({ result: z.object({ results: z.array(z.object({ ok: z.literal(false), error: z.string() }).passthrough()) }) }).parse(response.structuredContent);
+    return wrapped.result.results[0]?.error ?? "";
+  }
+  assert.equal(response.isError, true);
   const structured = errorSchema.safeParse(response.structuredContent);
   if (structured.success) return structured.data.error;
   return response.content.map((item) => item.type === "text" ? item.text : "").join("\n");
@@ -156,31 +173,36 @@ async function withClient(t: TestContext): Promise<Client> {
 }
 
 async function callRange(client: Client, arguments_: Record<string, unknown>): Promise<CallToolResult> {
-  return client.callTool({ name: "project_read_file_range", arguments: arguments_ });
+  const { projectAlias, ...requested } = arguments_;
+  const request = requested.startLine === undefined && requested.endLine === undefined
+    ? { ...requested, startLine: 1, endLine: 200 }
+    : requested;
+  return client.callTool({ name: "project_read", arguments: { projectAlias, requests: [{ mode: "content", ...request }] } });
 }
 
-test("project_read_file_range exposes and enforces its complete MCP contract", async (t) => {
+test("project_read range operation exposes and enforces its complete MCP contract", async (t) => {
   t.after(() => writePolicy());
   const client = await withClient(t);
 
   await t.test("discovery publishes the exact read-only annotations and caller schema", async () => {
     const listed = await client.listTools();
-    const tool = listed.tools.find((candidate) => candidate.name === "project_read_file_range");
-    assert(tool, "project_read_file_range was not discovered");
+    const tool = listed.tools.find((candidate) => candidate.name === "project_read");
+    assert(tool, "project_read was not discovered");
     assert.deepEqual(tool.annotations, {
       readOnlyHint: true,
       destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false
     });
-    assert.deepEqual(Object.keys(tool.inputSchema.properties ?? {}).sort(), ["endLine", "projectAlias", "relativePath", "startLine"]);
+    assert.deepEqual(Object.keys(tool.inputSchema.properties ?? {}).sort(), ["projectAlias", "requests"]);
+    const requestProperties = (tool.inputSchema.properties?.requests as { items?: { properties?: Record<string, unknown> } } | undefined)?.items?.properties;
+    assert.deepEqual(Object.keys(requestProperties ?? {}).sort(), ["endLine", "mode", "relativePath", "startLine"]);
     assert.equal(JSON.stringify(tool.inputSchema).includes("maxChars"), false);
     assert.equal(JSON.stringify(tool.inputSchema).includes("\"limit\""), false);
+    assert.equal(listed.tools.some((candidate) => candidate.name === "project_read_file_range"), false);
   });
 
-  resultOf(await client.callTool({
-    name: "project_register",
-    arguments: { projectAlias: "range", rootPath: projectRoot }
-  }), z.unknown());
+  upsertProject({ projectAlias: "range", rootPath: projectRoot });
 
   await t.test("reads explicit and default ranges with EOF lookahead semantics", async () => {
     const basic = resultOf(await callRange(client, {
@@ -329,28 +351,26 @@ test("project_read_file_range exposes and enforces its complete MCP contract", a
     writePolicy();
   });
 
-  await t.test("requires readFiles with an actionable permission explanation", async () => {
-    const explanation = resultOf(await client.callTool({
-      name: "policy_explain_permissions",
-      arguments: { projectAlias: "range", operation: "project_read_file_range" }
-    }), z.object({ requiredPermissions: z.array(z.string()) }));
-    assert.deepEqual(explanation.requiredPermissions, ["readFiles"]);
+  await t.test("requires projectRead with an actionable permission explanation", async () => {
+    const policy = resultOf(await client.callTool({
+      name: "project_policy",
+      arguments: { checks: [{ type: "permissions", projectAlias: "range", operation: "project_read" }] }
+    }), z.object({ results: z.array(z.object({ requiredPermissions: z.array(z.string()) }).passthrough()) }));
+    assert.deepEqual(policy.results[0]?.requiredPermissions, ["projectRead"]);
 
-    const audit = resultOf(await client.callTool({
-      name: "audit_list",
-      arguments: { projectAlias: "range" }
-    }), z.object({ events: z.array(z.object({ tool: z.string().optional() }).passthrough()) }));
-    assert.equal(audit.events.some((event) => event.tool === "project_read_file_range"), false);
+    const audit = stateStore.readAudit();
+    assert.equal(audit.some((event) => event.tool === "project_read"), false);
+    assert.equal(audit.some((event) => event.tool === "project_read_file_range"), false);
 
-    updatePermissions({ projectAlias: "range", permissions: { chatgpt: { readFiles: false } } });
+    updatePermissions({ projectAlias: "range", permissions: { chatgpt: { projectRead: false } } });
     const denied = errorOf(await callRange(client, {
       projectAlias: "range",
       relativePath: "lines.txt",
       startLine: 1,
       endLine: 1
     }));
-    assert.equal(denied, "Permission denied: chatgpt.readFiles is false");
-    updatePermissions({ projectAlias: "range", permissions: { chatgpt: { readFiles: true } } });
+    assert.equal(denied, "Permission denied: chatgpt.projectRead is false");
+    updatePermissions({ projectAlias: "range", permissions: { chatgpt: { projectRead: true } } });
   });
 
   await t.test("rejects directories, binary files, and unsafe paths without absolute-path leakage", async () => {
@@ -360,7 +380,7 @@ test("project_read_file_range exposes and enforces its complete MCP contract", a
       { relativePath: "../outside.txt", expected: /escapes project root/i },
       { relativePath: "binary.bin", expected: /not likely text/i },
       { relativePath: "directory", expected: /not a file/i },
-      { relativePath: path.join(root, "outside.txt"), expected: /not allowed/i }
+      { relativePath: path.join(root, "outside.txt"), expected: /Operation failed: \[invalid path\]/i }
     ];
     for (const fixture of cases) {
       const message = errorOf(await callRange(client, {
