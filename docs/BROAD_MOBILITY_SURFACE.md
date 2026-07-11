@@ -24,28 +24,25 @@ The adapters divide work by intent:
 
 | Adapter | Responsibility |
 |---|---|
-| `project_context` | Bounded status, tree, file-list, path metadata/existence, and package-script context. |
+| `project_context` | Alias-only discovery with `include.projects=true` and no `projectAlias`; with an alias, bounded status, tree, file-list, path metadata/existence, and package-script context. Project-scoped sections require `projectAlias`. |
 | `project_read` | Ordered, bounded content, range, metadata, and existence requests. |
 | `project_search` | File, text, symbol, or combined search. |
 | `project_edit` | Ordered write, replace, insert, copy, move, delete, mkdir, and rmdir operations; batches are not atomic. |
 | `project_patch` | Patch preparation or application, including preconditions and dry runs. |
 | `project_run` | Approved checks, package scripts, or allowlisted commands. |
-| `project_policy` | Read-only permission, path-decision, and safe effective-configuration checks. |
+| `project_policy` | Ordered permission, path-decision, and safe effective-configuration checks, or one native registration, permission-update, or audit action. |
 
-Broad schemas group related behavior without moving authority into the tool layer. Registration remains thin; shared project services provide behavior; existing policy, runtime, registry, and state modules remain authoritative.
+Broad schemas group related behavior without moving authority into the tool layer. `project_policy` requires exactly one of `checks` or `action`; `action` is a nested object selected by its inner `type` discriminator, as in `{ "action": { "type": "list_audit" } }`, not a flat string. Its action types are `register_project` (`projectPolicy` plus `registerProjects`), `update_permissions` (`projectPolicy` plus `updatePermissions`), and `list_audit` or `read_audit` (`projectPolicy`). Canonical paths, confirmation, safe projections, strict schemas, and redacted audit behavior remain authoritative; new administrative audit records use `tool=project_policy` and identify the action type in `operation`.
 
 ## Profiles
 
 | Profile | Exposed groups |
 |---|---|
 | `broad` (default) | Exactly the seven broad project adapters. |
-| `management` | `project_register`, `project_list`, `permission_update`, `audit_list`, and `audit_read`. No broad or agent tools. |
 | `agent` | Existing agent, session, and skill registrations only. |
-| `full` | Every tool that remains after the hard cutover: broad, management/admin, and unchanged agent/session/skill tools. |
+| `full` | The seven broad project adapters plus unchanged agent, session, and skill tools. |
 
-Project registration, registry enumeration, permission mutation, and audit inspection remain available because no broad read-only adapter absorbs those administrative capabilities. They are deliberately non-default.
-
-There is no `legacy` profile. Unknown or malformed profile configuration fails closed rather than silently selecting another surface.
+There is no management or legacy profile. No obsolete project/admin name is registered under any profile, and there are no aliases, wrappers, deprecated paths, or compatibility registrations. Operator-owned configuration, environment pre-registration, and direct state/filesystem administration remain outside the model-facing MCP surface; retained model-accessible administration exists only as native `project_policy` actions.
 
 ## Security Model
 
@@ -66,21 +63,10 @@ Caller-supplied bounds may narrow a server maximum but cannot raise it. Broad sc
 
 Read, search, context, policy inspection, and patch preparation are unaudited. Mutations and execution retain durable audit behavior. Mixed-capability tools advertise conservative annotations based on their maximum capability.
 
-## Migration Map
+## Cold-Start Discovery
 
-The old names below are migration identifiers only; they are not available tools.
+A client with no prior alias knowledge calls `project_context` with `include.projects=true` and omits `projectAlias`. The response contains registered aliases only, never absolute roots or registry metadata. The client selects an alias, inspects it through project-scoped `project_context`, then reuses it with the other project tools. Any request that includes a project-scoped context section still requires `projectAlias`.
 
-| Removed calls | Replacement |
-|---|---|
-| `project_read_file`, `project_read_text_file`, `project_read_file_range`, `project_read_files` | `project_read` request entries |
-| `project_status`, `project_tree`, `project_list_files`, `project_file_info`, `project_exists`, `project_list_scripts` | `project_context.include` sections |
-| `project_search_files`, `project_search_text`, `project_search_symbols` | `project_search.mode` |
-| `project_prepare_patch`, `project_apply_patch` | `project_patch.mode` |
-| `project_run_checks`, `project_run_script`, `project_run_command` | `project_run.type` |
-| `project_write_file`, `project_replace_text`, `project_insert_text`, `project_copy_file`, `project_move_file`, `project_delete_file`, `project_create_directory`, `project_delete_directory` | `project_edit.operations[]` |
-| `policy_check_path`, `policy_explain_permissions`, `permission_get`, `effective_config_show`, `config_show_safe` | `project_policy.checks[]` |
-
-Clients must migrate in the same release. Name compatibility is intentionally not preserved; behavioral compatibility means retaining or strengthening the prior permission, path, Git-ignore, confirmation, limit, audit, safe-error, and result guarantees.
 
 ## Agent, Session, and Skill Boundary
 
@@ -93,7 +79,7 @@ The hard cutover is accepted only when tests prove observable behavior, not sour
 - default discovery returns exactly the seven broad tools;
 - each broad schema is strict and rejects unknown or bypass-looking fields;
 - every removed name is absent from discovery and current registrations;
-- management, agent, and full profiles expose only their defined groups;
+- agent and full profiles expose only their defined groups;
 - normal context, read, search, edit, patch, run, and policy workflows work end to end;
 - ordered batches, per-item failures, dry runs, preconditions, and mode-dependent validation behave as documented;
 - permissions, confirmations, Git-ignore handling, root confinement, blocked paths, limits, Unicode accounting, and audit semantics are preserved or strengthened;

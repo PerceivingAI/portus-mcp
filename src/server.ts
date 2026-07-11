@@ -5,10 +5,10 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { optionalEnv } from "./env.js";
-import { registerBroadProjectTools, registerProjectManagementTools } from "./tools/projects.js";
+import { registerBroadProjectTools } from "./tools/projects.js";
 import { registerAgentTools } from "./tools/agents.js";
 import { registerSkillTools } from "./tools/skills.js";
-import { registerAdminTools, registerBroadPolicyTools } from "./tools/config.js";
+import { registerBroadPolicyTools } from "./tools/config.js";
 import { readSessionEvents } from "./state/SessionEvents.js";
 import { loadConfig } from "./config.js";
 
@@ -22,10 +22,6 @@ export function createMcpServer(): McpServer {
   if (toolSurface === "broad" || toolSurface === "full") {
     registerBroadProjectTools(server);
     registerBroadPolicyTools(server);
-  }
-  if (toolSurface === "management" || toolSurface === "full") {
-    registerProjectManagementTools(server);
-    registerAdminTools(server);
   }
   if (toolSurface === "agent" || toolSurface === "full") {
     registerAgentTools(server);

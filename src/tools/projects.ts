@@ -3,17 +3,13 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { z } from "zod";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { loadConfig } from "../config.js";
-import { upsertProject, listProjects, getProject } from "../state/ProjectRegistry.js";
+import { getProject } from "../state/ProjectRegistry.js";
 import { stateStore } from "../state/StateStore.js";
 import { resolveProjectPath } from "../policy/pathPolicy.js";
 import { loadPolicyConfig } from "../policy/policyConfig.js";
-import { assertChatGptPermission } from "../policy/permissionPolicy.js";
 import { getEffectivePermissions } from "../state/PermissionRegistry.js";
 import { limitText } from "../runtime/outputLimits.js";
-import { registerStrictProjectTool } from "./projectToolUtils.js";
 export { registerBroadProjectTools } from "./projectBroad.js";
 
 const TEXT_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json", ".md", ".txt", ".yaml", ".yml", ".toml", ".env", ".html", ".css", ".scss", ".xml", ".sh", ".ps1", ".sql"]);
@@ -336,25 +332,6 @@ export function parsePatchPaths(patch: string): { files: string[]; deleted: Set<
   return { files: Array.from(files), deleted };
 }
 
-export function registerProjectManagementTools(server: McpServer): void {
-  registerStrictProjectTool(server, "project_register", "Register a local project folder for policy-bounded access.", {
-    projectAlias: z.string().min(1),
-    rootPath: z.string().min(1)
-  }, { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }, async ({ projectAlias, rootPath }) => {
-    assertChatGptPermission("registerProjects", projectAlias);
-    if (!existsSync(rootPath)) throw new Error("Project path does not exist");
-    stateStore.requireAuditWritable();
-    const record = upsertProject({ projectAlias, rootPath });
-    stateStore.audit({ tool: "project_register", projectAlias, rootPath });
-    return record;
-  });
-  registerStrictProjectTool(server, "project_list", "List registered projects.", {}, {
-    readOnlyHint: true,
-    destructiveHint: false,
-    idempotentHint: true,
-    openWorldHint: false
-  }, async () => listProjects());
-}
 
 const READ_ONLY_GIT_SUBCOMMANDS = new Set(["status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame", "describe", "ls-tree", "cat-file"]);
 const FORBIDDEN_GIT_REPO_TARGET_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--bare", "--config-env"]);

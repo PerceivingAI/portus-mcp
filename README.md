@@ -16,15 +16,15 @@ project_run
 project_policy
 ```
 
-Together they provide bounded project context, ordered reads, search, file and directory edits, patch preparation/application, approved execution, and read-only policy inspection.
+Together they provide alias-only project discovery and bounded project context, ordered reads, search, file and directory edits, patch preparation/application, approved execution, and policy inspection or administration within explicit permission boundaries.
 
-Administrative and delegated-agent capabilities are deliberately non-default:
+The only tool-surface profiles are:
 
-- `management` exposes project registration/listing, permission mutation, and audit inspection only.
-- `agent` exposes the existing agent, session, and skill tools only.
-- `full` exposes every tool that remains after the hard cutover.
+- `broad`, the default seven project tools above;
+- `agent`, the existing agent, session, and skill tools only; and
+- `full`, the seven broad tools plus those unchanged agent/session/skill tools.
 
-There is no `legacy` profile. Agent/session/skill implementation and behavior are unchanged by the broad refactor; profile selection only controls whether those existing tools are exposed.
+There is no management or legacy profile. The obsolete project/admin MCP names have no registrations, aliases, wrappers, or compatibility paths.
 
 ## Requirements
 
@@ -81,6 +81,129 @@ Health endpoint:
 ```text
 http://127.0.0.1:8789/
 ```
+
+## Connect to ChatGPT with `tunnel-client`
+
+Portus MCP can be connected to ChatGPT through OpenAI Secure MCP Tunnel using `tunnel-client`.
+
+This section assumes you have already downloaded `tunnel-client`, created an OpenAI Platform tunnel, and set `CONTROL_PLANE_API_KEY`. It then creates the local `tunnel-client` profile used for Portus MCP. For the full setup, see `docs/TUNNEL_CLIENT.md`.
+
+The local Portus MCP endpoint is:
+
+```text
+http://127.0.0.1:8789/mcp
+```
+
+### One-time tunnel profile setup
+
+After creating a tunnel in OpenAI Platform and copying the tunnel ID, create a local `tunnel-client` profile that points to the Portus MCP HTTP endpoint:
+
+```powershell
+cd C:\tools\tunnel-client
+
+.\tunnel-client.exe init `
+  --profile portus-local `
+  --tunnel-id tunnel_your_tunnel_id `
+  --mcp-server-url "http://127.0.0.1:8789/mcp"
+```
+
+`CONTROL_PLANE_API_KEY` must be a regular OpenAI Platform API key used by `tunnel-client`. It is not the tunnel ID and it is not `PORTUS_MCP_BEARER_TOKEN`.
+
+### Daily startup
+
+Run Portus MCP in one terminal:
+
+```powershell
+cd C:\path\to\portus-mcp
+npm start
+```
+
+Run `tunnel-client` in a second terminal:
+
+```powershell
+cd C:\tools\tunnel-client
+.\tunnel-client.exe run --profile portus-local
+```
+
+Keep both terminals open while ChatGPT is using Portus MCP:
+
+```text
+Terminal 1: Portus MCP
+Terminal 2: tunnel-client
+```
+
+### Add the plugin in ChatGPT
+
+In ChatGPT web:
+
+```text
+Click your account button at the bottom-left of the screen
+-> Settings
+-> Plugins
+-> Browse plugins
+-> Click the + button next to the Search plugins box
+```
+
+The `+` button opens the new plugin modal.
+
+In the new plugin modal:
+
+```text
+1. Add a name for the plugin. Use a name that identifies the device, machine, or VM you are connecting to.
+2. Select the Tunnel option.
+3. From the tunnel dropdown, pick the tunnel for the device you want to use.
+4. In the authentication dropdown, select No Auth.
+5. Tick the disclaimer checkbox.
+6. Click Create.
+```
+
+After clicking `Create`, ChatGPT opens another modal. Click `Connect` to connect the MCP.
+
+After discovery, ChatGPT should see the Portus MCP tool surface. The default broad profile exposes:
+
+```text
+project_context
+project_read
+project_search
+project_edit
+project_patch
+project_run
+project_policy
+```
+
+To verify registered projects, ask ChatGPT to call `project_context` with `include.projects=true` and no `projectAlias`.
+
+### Optional: change ChatGPT permission behavior
+
+The MCP works without changing this setting. If you do not configure it manually, ChatGPT uses its default permission policy.
+
+To choose a more granular permission policy:
+
+```text
+Click your account button at the bottom-left of the screen
+-> Settings
+-> Plugins
+-> Find the Portus MCP plugin by the name you chose
+-> Click it
+-> Click "Choose when ChatGPT should ask for permission when using this plugin."
+-> Select the permission option you want
+-> Close the settings modal
+```
+
+The plugin settings menu also lets you connect, disconnect, or delete the Portus MCP plugin at any time.
+
+### Shut down Portus MCP and the tunnel
+
+When you want to close the MCP connection, stop both running processes:
+
+```text
+Terminal 1: stop Portus MCP
+Terminal 2: stop tunnel-client
+```
+
+On Windows, you can usually stop each process with `Ctrl+C`.
+
+Portus MCP and `tunnel-client` are separate processes. Both are required while ChatGPT is using the MCP.
 
 ## Use From Another Client
 
@@ -140,21 +263,17 @@ Spawned agents are local command-capable processes, not a hard OS/container/file
 
 Fine-tune surface and behavior in `portus-mcp.config.json`, and permissions/limits in `portus-mcp.policy.json`. `PORTUS_MCP_BEARER_TOKEN` is optional for clients that support static bearer authentication; leave it empty for clients that do not.
 
-## Migrating Tool Clients
+## Project Cold Start
 
-Retired names have no alias window. Migrate calls by operation family:
+A client that does not yet know a project alias calls `project_context` with `include.projects=true` and no `projectAlias`. The result contains registered aliases only. It then selects an alias, calls `project_context` with that `projectAlias` to inspect the project, and uses the same alias with the other project tools. Any project-scoped context section still requires `projectAlias`.
 
-| Previous operation | Current adapter |
-|---|---|
-| Single, whole, ranged, or batch read | `project_read.requests[]` |
-| Status, tree, files, path metadata/existence, or scripts | `project_context.include` |
-| File, text, or symbol search | `project_search.mode` |
-| Patch prepare or apply | `project_patch.mode` |
-| Check, script, or command execution | `project_run.type` |
-| Write, replace, insert, copy, move, delete, mkdir, or rmdir | `project_edit.operations[]` |
-| Permission, path, or safe effective-config inspection | `project_policy.checks[]` |
+Registration, permission updates, and audit inspection are native `project_policy` actions rather than separate management tools. See `docs/TOOLS.md` for their permission boundaries.
 
-See `docs/TOOLS.md` for the explicit retired-name map and `docs/BROAD_MOBILITY_SURFACE.md` for the architectural decision.
+## Tool Operations
+
+Use `project_read.requests[]` for reads, `project_context.include` for status and metadata, `project_search.mode` for search, `project_patch.mode` for patches, `project_run.type` for execution, `project_edit.operations[]` for filesystem changes, and `project_policy` for policy checks or its four native actions.
+
+See `docs/TOOLS.md` for the current tool contract and `docs/BROAD_MOBILITY_SURFACE.md` for the architectural decision.
 
 ## Platforms
 
@@ -182,13 +301,14 @@ docs/BROAD_MOBILITY_SURFACE.md
 docs/CLIENTS.md
 docs/CONFIG.md
 docs/MULTI_MACHINE.md
+docs/TUNNEL_CLIENT.md
 docs/TOOLS.md
 docs/TROUBLESHOOTING.md
 docs/VALIDATION.md
 SECURITY.md
 ```
 
-Start with `docs/BROAD_MOBILITY_SURFACE.md`, `docs/TOOLS.md`, `docs/CLIENTS.md`, and `docs/MULTI_MACHINE.md`.
+Start with `docs/BROAD_MOBILITY_SURFACE.md`, `docs/TOOLS.md`, `docs/CLIENTS.md`, `docs/MULTI_MACHINE.md`, and `docs/TUNNEL_CLIENT.md` for OpenAI Secure MCP Tunnel client setup.
 
 Flue provides spawned-agent support. Direct broad MCP project tools work without spawned agents.
 

@@ -216,14 +216,13 @@ test("each broad project tool is gated only by its matching permission", async (
   }
 });
 
-test("removed permission update tool is absent", async (t) => {
+test("obsolete project and admin tools remain unavailable", async (t) => {
   const client = await withClient(t);
-  const permissionDenied = await client.callTool({
-    name: "permission_update",
-    arguments: { permissions: { chatgpt: { } } }
-  });
-  assert.equal(permissionDenied.isError, true);
-  assert.match(JSON.stringify(permissionDenied), /Tool permission_update not found/);
+  for (const tool of ["project_register", "project_list", "permission_update", "audit_list", "audit_read"]) {
+    const denied = await client.callTool({ name: tool, arguments: {} });
+    assert.equal(denied.isError, true, `${tool} should be unavailable`);
+    assert.match(JSON.stringify(denied), new RegExp(`Tool ${tool} not found`));
+  }
 });
 
 test("canonical project boundary permits internal links and rejects external junction escapes", async (t) => {

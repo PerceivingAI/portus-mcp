@@ -7,7 +7,7 @@ import { once } from "node:events";
 import { Worker } from "node:worker_threads";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { getProject } from "../state/ProjectRegistry.js";
+import { getProject, listProjects } from "../state/ProjectRegistry.js";
 import { stateStore } from "../state/StateStore.js";
 import { resolveProjectPath } from "../policy/pathPolicy.js";
 import { assertChatGptCommandAllowed, assertChatGptPermission } from "../policy/permissionPolicy.js";
@@ -325,15 +325,20 @@ export function registerBroadProjectTools(server: McpServer): void {
   });
 
   const treeSchema = z.object({ relativePath: z.string().min(1).optional(), maxDepth: z.number().int().positive().max(12).optional(), includeFiles: z.boolean().optional(), includeDirs: z.boolean().optional(), maxEntries: z.number().int().positive().max(5000).optional(), format: z.enum(["tree", "json", "flat"]).optional() }).strict();
-  registerStrictProjectTool(server, "project_context", "Return bounded project status, tree, file listing, path metadata, and package-script context without file contents.", {
-    projectAlias: z.string().min(1), include: z.object({ status: z.boolean().optional(), tree: treeSchema.optional(), files: z.object({ relativePath: z.string().min(1).optional(), maxEntries: z.number().int().positive().max(1000).optional() }).strict().optional(), paths: z.array(z.object({ relativePath: z.string().min(1), includeHash: z.boolean().optional() }).strict()).max(20).optional(), scripts: z.boolean().optional() }).strict().optional()
+  registerStrictProjectTool(server, "project_context", "Return registered project aliases or bounded project status, tree, file listing, path metadata, and package-script context without file contents.", {
+    projectAlias: z.string().min(1).optional(), include: z.object({ projects: z.boolean().optional(), status: z.boolean().optional(), tree: treeSchema.optional(), files: z.object({ relativePath: z.string().min(1).optional(), maxEntries: z.number().int().positive().max(1000).optional() }).strict().optional(), paths: z.array(z.object({ relativePath: z.string().min(1), includeHash: z.boolean().optional() }).strict()).max(20).optional(), scripts: z.boolean().optional() }).strict().optional()
   }, readAnnotations, async ({ projectAlias, include }) => {
-    assertChatGptPermission("projectContext", projectAlias);
     const requested = include ?? { status: true, tree: { maxDepth: 2, maxEntries: 200 }, scripts: true };
+    const hasScopedRequest = requested.status === true || requested.tree !== undefined || requested.files !== undefined || requested.paths !== undefined || requested.scripts === true;
+    if (hasScopedRequest && !projectAlias) throw new Error("projectAlias is required for project-scoped context sections");
+    if (!hasScopedRequest && requested.projects !== true) throw new Error("Request at least one context section");
+    if (requested.projects) assertChatGptPermission("projectContext");
+    if (hasScopedRequest) assertChatGptPermission("projectContext", projectAlias);
     const sections: Record<string, unknown> = {};
     const isolate = (name: string, action: () => unknown) => { try { sections[name] = { ok: true, value: action() }; } catch (error) { sections[name] = { ok: false, error: safeError(error) }; } };
+    if (requested.projects) isolate("projects", () => ({ projectAliases: listProjects().map((project) => project.projectAlias) }));
     if (requested.status) isolate("status", () => {
-      const project = getProject(projectAlias);
+      const project = getProject(projectAlias!);
       return {
         project: {
           projectAlias: project.projectAlias,
@@ -342,11 +347,11 @@ export function registerBroadProjectTools(server: McpServer): void {
         }
       };
     });
-    if (requested.tree) isolate("tree", () => treeSection(projectAlias, requested.tree ?? {}));
-    if (requested.files) isolate("files", () => { const relativePath = requested.files?.relativePath ?? "."; const maxEntries = requested.files?.maxEntries ?? 200; const root = resolveProjectPath(projectAlias, relativePath); assertCanReadProjectPath(projectAlias, root, relativePath); const files = collectPaths(projectAlias, root, maxEntries, true, false).filter((entry) => entry.kind === "file"); return { relativePath, files, truncated: files.length >= maxEntries, maxEntries }; });
-    if (requested.paths) isolate("paths", () => requested.paths?.map((item) => { try { return { ok: true, ...pathMetadata(projectAlias, item.relativePath, item.includeHash ?? false) }; } catch (error) { return { ok: false, relativePath: safeRelativePath(item.relativePath), error: safeError(error, item.relativePath) }; } }) ?? []);
-    if (requested.scripts) isolate("scripts", () => ({ scripts: packageScripts(projectAlias) }));
-    return { projectAlias, sections };
+    if (requested.tree) isolate("tree", () => treeSection(projectAlias!, requested.tree ?? {}));
+    if (requested.files) isolate("files", () => { const relativePath = requested.files?.relativePath ?? "."; const maxEntries = requested.files?.maxEntries ?? 200; const root = resolveProjectPath(projectAlias!, relativePath); assertCanReadProjectPath(projectAlias!, root, relativePath); const files = collectPaths(projectAlias!, root, maxEntries, true, false).filter((entry) => entry.kind === "file"); return { relativePath, files, truncated: files.length >= maxEntries, maxEntries }; });
+    if (requested.paths) isolate("paths", () => requested.paths?.map((item) => { try { return { ok: true, ...pathMetadata(projectAlias!, item.relativePath, item.includeHash ?? false) }; } catch (error) { return { ok: false, relativePath: safeRelativePath(item.relativePath), error: safeError(error, item.relativePath) }; } }) ?? []);
+    if (requested.scripts) isolate("scripts", () => ({ scripts: packageScripts(projectAlias!) }));
+    return { projectAlias: projectAlias ?? null, sections };
   });
 
   registerStrictProjectTool(server, "project_search", "Search project file paths, text, symbols, or all three within authoritative scan and output limits.", {

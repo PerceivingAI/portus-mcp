@@ -72,15 +72,9 @@ const broadNames = [
   "project_policy"
 ].sort();
 
-const managementNames = [
-  "project_register",
-  "project_list",
-  "permission_update",
-  "audit_list",
-  "audit_read"
-].sort();
 
-const removedNames = [
+const obsoleteNames = [
+  "project_register", "project_list", "permission_update", "audit_list", "audit_read",
   "project_read_file", "project_read_text_file", "project_read_file_range", "project_read_files",
   "project_status", "project_tree", "project_list_files", "project_file_info", "project_exists", "project_list_scripts",
   "project_search_files", "project_search_text", "project_search_symbols",
@@ -95,8 +89,9 @@ test("missing toolSurface defaults to exactly the seven broad tools", async () =
   assert.deepEqual(await discoveredTools(undefined), broadNames);
 });
 
-test("management profile exposes only project management and surviving admin tools", async () => {
-  assert.deepEqual(await discoveredTools("management"), managementNames);
+test("management profile is invalid", () => {
+  writeConfig("management");
+  assert.throws(() => loadConfig(), /toolSurface.*Invalid enum value/i);
 });
 
 test("agent profile exposes unchanged agent, session, and skill groups only", async () => {
@@ -105,22 +100,19 @@ test("agent profile exposes unchanged agent, session, and skill groups only", as
   assert(names.includes("session_list"));
   assert(names.includes("skill_list"));
   for (const name of broadNames) assert.equal(names.includes(name), false, `${name} must not be in the agent profile`);
-  for (const name of managementNames) assert.equal(names.includes(name), false, `${name} must not be in the agent profile`);
+  for (const name of obsoleteNames) assert.equal(names.includes(name), false, `${name} must remain unavailable`);
 });
 
-test("full profile exposes every remaining group and no retired tools", async () => {
-  const names = await discoveredTools("full");
-  for (const name of broadNames) assert(names.includes(name), `full profile is missing ${name}`);
-  for (const name of managementNames) assert(names.includes(name), `full profile is missing ${name}`);
-  assert(names.includes("agent_run_task"));
-  assert(names.includes("session_list"));
-  assert(names.includes("skill_list"));
-  for (const name of removedNames) assert.equal(names.includes(name), false, `${name} must remain removed`);
+test("full profile is exactly broad plus the agent, session, and skill groups", async () => {
+  const agentNames = await discoveredTools("agent");
+  const fullNames = await discoveredTools("full");
+  assert.deepEqual(fullNames, [...broadNames, ...agentNames].sort());
+  for (const name of obsoleteNames) assert.equal(fullNames.includes(name), false, `${name} must remain unavailable`);
 });
 
 test("unknown and legacy profiles fail closed", () => {
-  writeConfig("legacy");
-  assert.throws(() => loadConfig(), /toolSurface.*Invalid enum value/i);
-  writeConfig("unexpected");
-  assert.throws(() => loadConfig(), /toolSurface.*Invalid enum value/i);
+  for (const profile of ["legacy", "unexpected"]) {
+    writeConfig(profile);
+    assert.throws(() => loadConfig(), /toolSurface.*Invalid enum value/i);
+  }
 });

@@ -50,7 +50,7 @@ export function updatePermissions(input: {
     state.default = mergePartialPermissions(state.default ?? {}, permissions);
   }
   stateStore.writeJson(FILE, state);
-  stateStore.audit({ tool: "permission_update", projectAlias: input.projectAlias ?? null, permissions });
+  stateStore.audit({ tool: "project_policy", operation: "update_permissions", projectAlias: input.projectAlias ?? null, permissions });
   return getEffectivePermissions(input.projectAlias);
 }
 

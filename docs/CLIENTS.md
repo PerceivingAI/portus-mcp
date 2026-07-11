@@ -79,11 +79,15 @@ Use Streamable HTTP and iff the client supports static bearer auth, you can use 
 
 If it does not, leave `PORTUS_MCP_BEARER_TOKEN` empty or use another exposure layer that handles access control.
 
-## Verification
+## Cold Start and Verification
 
-You should ask the client to list registered projects and expect to see:
+After the client discovers the seven project tools, use this sequence:
 
-1. The Portus MCP server appears in the MCP client (with your chosen name).
-2. Project tools are listed.
-3. Registered projects are visible.
-4. Direct project tools operate only inside registered project roots.
+1. Call `project_context` with `include.projects=true` and omit `projectAlias`.
+2. Choose one alias from the alias-only response. The response must not contain an absolute root or internal registry metadata.
+3. Call `project_context` again with that `projectAlias` and a project-scoped section such as status, tree, files, paths, or scripts.
+4. Reuse the alias with the other allowed project tools.
+
+Any project-scoped `project_context` section requires `projectAlias`; only alias discovery can omit it. Registration, permission updates, and audit inspection—when permitted to the model—are native `project_policy` actions. Operator configuration, environment pre-registration, and direct state administration remain operator-only.
+
+The client should show exactly the seven broad tools by default. No management profile, obsolete project/admin tool name, deprecated registration, or compatibility path should appear.

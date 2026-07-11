@@ -7,7 +7,7 @@ import type { AgentProvider, AgentProviderConfig, AgentProviderDefinition } from
 
 export type { AgentProvider, AgentProviderConfig, AgentProviderDefinition } from "./providers.js";
 
-export const toolSurfaceProfiles = ["broad", "management", "agent", "full"] as const;
+export const toolSurfaceProfiles = ["broad", "agent", "full"] as const;
 export type ToolSurfaceProfile = typeof toolSurfaceProfiles[number];
 
 export type ChatGptPermissionConfig = {

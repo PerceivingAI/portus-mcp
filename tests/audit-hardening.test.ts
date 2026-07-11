@@ -172,11 +172,11 @@ test("strict audit mode blocks selected mutations when audit log is not writable
     assert.equal(existsSync(path.join(projectRoot, "created.txt")), false);
 
     const permissionDenied = await client.callTool({
-      name: "permission_update",
-      arguments: { projectAlias: "audit", permissions: { chatgpt: { } } }
+      name: "project_policy",
+      arguments: { action: { type: "update_permissions", projectAlias: "audit", permissions: { chatgpt: { } } } }
     });
     assert.equal(permissionDenied.isError, true);
-    assert.match(JSON.stringify(permissionDenied), /Tool permission_update not found/);
+    assert.match(JSON.stringify(permissionDenied), /audit/i);
   } finally {
     writePolicy(false);
   }

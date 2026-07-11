@@ -23,9 +23,8 @@ portus-mcp.policy.json
 | Value | Surface |
 |---|---|
 | `broad` | Default; exactly `project_context`, `project_read`, `project_search`, `project_edit`, `project_patch`, `project_run`, and `project_policy`. |
-| `management` | Only `project_register`, `project_list`, `permission_update`, `audit_list`, and `audit_read`. |
 | `agent` | Existing agent, session, and skill registrations only. |
-| `full` | Every tool that remains after the hard cutover. |
+| `full` | The seven broad tools plus the unchanged agent, session, and skill registrations. |
 
 Example:
 
@@ -50,21 +49,7 @@ Example:
 }
 ```
 
-There is no `legacy` profile. A replaced name cannot be restored by configuration, compatibility wrapper, alias, or hidden registration. Agent/session/skill behavior is unchanged; profile selection only controls exposure. (`src/config.ts:10-11`, `src/config.ts:59-82`)
-
-## Migration From Removed Tools
-
-The following names are retired migration identifiers, not available tools. Clients must update in the same release; there is no alias window. (`src/config.ts:10-11`, `src/config.ts:70-82`)
-
-| Removed tool family | Broad operation |
-|---|---|
-| `project_read_file`, `project_read_text_file`, `project_read_file_range`, `project_read_files` | `project_read.requests[]` |
-| `project_status`, `project_tree`, `project_list_files`, `project_file_info`, `project_exists`, `project_list_scripts` | `project_context.include` |
-| `project_search_files`, `project_search_text`, `project_search_symbols` | `project_search.mode` |
-| `project_prepare_patch`, `project_apply_patch` | `project_patch.mode` |
-| `project_run_checks`, `project_run_script`, `project_run_command` | `project_run.type` |
-| `project_write_file`, `project_replace_text`, `project_insert_text`, `project_copy_file`, `project_move_file`, `project_delete_file`, `project_create_directory`, `project_delete_directory` | `project_edit.operations[]` |
-| `policy_check_path`, `policy_explain_permissions`, `permission_get`, `effective_config_show`, `config_show_safe` | `project_policy.checks[]` |
+There is no management or legacy profile. An obsolete project/admin name cannot be restored by configuration, compatibility wrapper, alias, or hidden registration. Agent/session/skill behavior is unchanged; profile selection only controls exposure. (`src/config.ts:10-11`, `src/config.ts:59-82`)
 
 ## Environment Variables
 
@@ -106,7 +91,7 @@ Agent/session/skill settings do not alter the seven broad adapters. They apply o
 
 ## Policy Configuration
 
-`portus-mcp.policy.json` controls grouped agent lifecycle/concurrency policy, seven broad-tool permissions, independent management/agent permissions, blocked paths, command and Git-ignore constraints, and server-owned limits. Each broad tool checks its matching permission once at entry; operation subtypes do not add authorization gates. (`src/config.ts:13-26`, `src/policy/policyConfig.ts:39-53`)
+`portus-mcp.policy.json` controls grouped agent lifecycle/concurrency policy, the seven broad-tool permissions, independent registration, permission-update, and agent permissions, blocked paths, command and Git-ignore constraints, and server-owned limits. (`src/config.ts:13-26`, `src/policy/policyConfig.ts:39-53`)
 
 ChatGPT broad-tool permissions are:
 
@@ -120,7 +105,9 @@ projectRun
 projectPolicy
 ```
 
-`registerProjects`, `updatePermissions`, and `spawnAgents` remain independent management/agent permissions. `readGitIgnoredFiles` and `allowedCommands` are internal constraints enforced inside relevant broad tools, not substitutes for their broad permission. `project_policy` is read-only and reports the matching broad permission for each requested broad operation. The strict policy and permission-update schemas reject obsolete operation-level fields. (`src/config.ts:13-26`, `src/tools/config.ts:13-70`)
+`registerProjects`, `updatePermissions`, and `spawnAgents` remain independent permissions. `project_policy` always requires `projectPolicy`; its native `register_project` action additionally requires `registerProjects`, `update_permissions` additionally requires `updatePermissions`, and `list_audit`/`read_audit` require no additional permission. Calls provide exactly one of `checks` or `action`. The latter is a nested object with an inner `type` discriminator—for example, `{ "action": { "type": "list_audit" } }`—and is not a flat action string. `readGitIgnoredFiles` and `allowedCommands` remain internal constraints rather than substitutes for a broad permission, and the action schemas are strict. (`src/config.ts:13-26`, `src/tools/config.ts:72-93`, `src/tools/config.ts:141-219`)
+
+Project discovery is not a configuration profile or permission bypass. `project_context` with `include.projects=true` and no `projectAlias` returns registered aliases only; project-scoped sections still require `projectAlias`. Environment pre-registration through `PORTUS_MCP_PROJECTS` and operator-owned configuration/state files remain operator-side facilities, while model-accessible registration, permission updates, and audit reads are confined to the native `project_policy` actions and their permission gates. (`src/tools/projectBroad.ts:328-355`, `src/state/ProjectRegistry.ts:48-63`)
 
 Server policy owns file-read, file-write, patch, text-edit, search, skill, agent-output, session-event, audit, timeout, and process bounds. Caller bounds may narrow an authoritative maximum but cannot raise it; callers cannot override blocked paths, Git-ignore handling, permissions, confirmation, or audit. (`src/policy/policyConfig.ts:99-102`)
 
@@ -130,9 +117,9 @@ Filesystem authorization uses the canonical registered project root, not lexical
 
 ## Security and Audit Semantics
 
-All project access remains confined to registered roots and subject to blocked-path and Git-ignore policy. Destructive or protected operations retain confirmation. Mutation and execution retain durable, redacted audit behavior; read, context, search, policy inspection, and patch preparation are unaudited. Safe projections and errors must not disclose absolute roots, bearer tokens, provider credentials, environment details, file contents, or command environments. (`src/config.ts:13-24`, `src/server.ts:38-41`, `src/state/StateStore.ts:8-12`)
+All project access remains confined to registered roots and subject to blocked-path and Git-ignore policy. Destructive or protected operations retain confirmation. Mutation, execution, registration, and permission updates retain durable, redacted audit behavior; reads, context, search, policy checks, audit reads, and patch preparation are unaudited. Safe projections and errors must not disclose absolute roots, bearer tokens, provider credentials, environment details, file contents, or command environments. (`src/config.ts:13-24`, `src/tools/config.ts:117-138`, `src/tools/config.ts:189-217`)
 
-Management operations are non-default so ordinary broad discovery does not expose project registration, permission mutation, or audit reads. Agent/session/skill tools are likewise non-default and remain behaviorally outside the broad refactor. (`src/config.ts:10-11`, `src/config.ts:70-82`)
+Model-accessible registration, permission mutation, and audit reads are native operations of the default `project_policy` tool and remain bounded by its permission gates. Agent/session/skill tools are non-default and remain behaviorally outside the broad refactor. (`src/config.ts:10-26`, `src/config.ts:72-82`, `src/tools/config.ts:189-217`)
 
 ## Defaults and Resolution
 

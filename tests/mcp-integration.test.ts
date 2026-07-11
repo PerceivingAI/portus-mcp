@@ -204,13 +204,14 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   const toolNames = new Set(tools.tools.map((tool) => tool.name));
   for (const expected of [
     "project_context", "project_read", "project_search", "project_edit", "project_patch", "project_run", "project_policy",
-    "project_register", "project_list",
-    "agent_run_task", "agent_spawn", "skill_list", "skill_read",
-    "permission_update", "audit_list", "audit_read"
+    "agent_run_task", "agent_spawn", "skill_list", "skill_read"
   ]) {
     assert.equal(toolNames.has(expected), true, `missing tool: ${expected}`);
   }
-  for (const removed of ["project_git_status", "project_git_diff", "project_git_diff_file", "project_git_show_untracked"]) {
+  for (const removed of [
+    "project_register", "project_list", "permission_update", "audit_list", "audit_read",
+    "project_git_status", "project_git_diff", "project_git_diff_file", "project_git_show_untracked"
+  ]) {
     assert.equal(toolNames.has(removed), false, `${removed} should not be registered`);
   }
   assert.equal(toolNames.has("skill_describe"), false, "skill_describe should not be registered");
@@ -222,6 +223,27 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   }
 
   upsertProject({ projectAlias: "mcp", rootPath: projectRoot });
+  const discovery = resultOf(await client.callTool({
+    name: "project_context",
+    arguments: { include: { projects: true } }
+  }));
+  assert.equal(discovery.sections.projects.value.projectAliases.includes("mcp"), true);
+  assert.equal(JSON.stringify(discovery).includes(projectRoot), false);
+  for (const privateField of ["rootPath", "createdAt", "updatedAt"]) {
+    assert.equal(JSON.stringify(discovery).includes(privateField), false);
+  }
+  const missingAliasContext = await client.callTool({
+    name: "project_context",
+    arguments: { include: { status: true } }
+  });
+  assert.equal(missingAliasContext.isError, true);
+  assert.match(JSON.stringify(missingAliasContext.structuredContent), /projectAlias/i);
+  const registered = resultOf(await client.callTool({
+    name: "project_policy",
+    arguments: { action: { type: "register_project", projectAlias: "policy-registered", rootPath: projectRoot } }
+  }));
+  assert.equal(registered.action, "register_project");
+  assert.equal(registered.project.projectAlias, "policy-registered");
   const context = resultOf(await client.callTool({
     name: "project_context",
     arguments: { projectAlias: "mcp", include: { status: true, files: { maxEntries: 50 }, tree: { maxDepth: 3, format: "json" } } }
@@ -321,6 +343,16 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
 
   const permissions = resultOf(await client.callTool({ name: "project_policy", arguments: { checks: [{ type: "permissions", projectAlias: "mcp", operation: "project_read" }] } }));
   assert.deepEqual(permissions.results[0].requiredPermissions, ["projectRead"]);
+  const missingPolicyMode = await client.callTool({ name: "project_policy", arguments: {} });
+  assert.equal(missingPolicyMode.isError, true);
+  const conflictingPolicyModes = await client.callTool({
+    name: "project_policy",
+    arguments: {
+      checks: [{ type: "permissions", projectAlias: "mcp", operation: "project_read" }],
+      action: { type: "list_audit" }
+    }
+  });
+  assert.equal(conflictingPolicyModes.isError, true);
 
   const effectiveConfig = resultOf(await client.callTool({
     name: "project_policy",
@@ -331,10 +363,16 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.deepEqual(effectiveConfig.pathPolicy.blockedPatterns, [".env"]);
   assert.deepEqual(effectiveConfig.traversal.excludedPatterns, [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"]);
 
-  const updated = resultOf(await client.callTool({ name: "permission_update", arguments: { projectAlias: "mcp", permissions: { agents: { network: true }, chatgpt: { } } } }));
+  const updated = resultOf(await client.callTool({
+    name: "project_policy",
+    arguments: { action: { type: "update_permissions", projectAlias: "mcp", permissions: { agents: { network: true }, chatgpt: { } } } }
+  }));
   assert.equal(updated.permissions.agents.network, true);
   assert.equal(updated.permissions.chatgpt.projectEdit, true);
-  const obsoletePermission = await client.callTool({ name: "permission_update", arguments: { projectAlias: "mcp", permissions: { chatgpt: { readFiles: true } } } });
+  const obsoletePermission = await client.callTool({
+    name: "project_policy",
+    arguments: { action: { type: "update_permissions", projectAlias: "mcp", permissions: { chatgpt: { readFiles: true } } } }
+  });
   assert.equal(obsoletePermission.isError, true);
 
   const movedAndDeleted = resultOf(await client.callTool({
@@ -385,8 +423,8 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.match(skillPrompt, /nested reference/);
 
   resultOf(await client.callTool({
-    name: "permission_update",
-    arguments: { projectAlias: "mcp", permissions: { chatgpt: { spawnAgents: false } } }
+    name: "project_policy",
+    arguments: { action: { type: "update_permissions", projectAlias: "mcp", permissions: { chatgpt: { spawnAgents: false } } } }
   }));
   const deniedSkillRun = await client.callTool({
     name: "skill_run",
@@ -395,8 +433,8 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.equal(deniedSkillRun.isError, true);
   assert.match(JSON.stringify(deniedSkillRun.structuredContent), /Permission denied: chatgpt\.spawnAgents is false/);
   resultOf(await client.callTool({
-    name: "permission_update",
-    arguments: { projectAlias: "mcp", permissions: { chatgpt: { spawnAgents: true } } }
+    name: "project_policy",
+    arguments: { action: { type: "update_permissions", projectAlias: "mcp", permissions: { chatgpt: { spawnAgents: true } } } }
   }));
 
   const check = resultOf(await client.callTool({
@@ -436,10 +474,10 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   const gitAdd = resultOf(await client.callTool({ name: "project_run", arguments: { projectAlias: "mcp", type: "command", command: "git", args: ["add", "README.md"], confirm: true } }));
   assert.equal(gitAdd.exitCode, 0);
   assert.equal(gitAdd.requiresConfirmation, true);
-  resultOf(await client.callTool({ name: "permission_update", arguments: { projectAlias: "mcp", permissions: { chatgpt: { projectRun: false } } } }));
+  resultOf(await client.callTool({ name: "project_policy", arguments: { action: { type: "update_permissions", projectAlias: "mcp", permissions: { chatgpt: { projectRun: false } } } } }));
   const deniedScript = await client.callTool({ name: "project_run", arguments: { projectAlias: "mcp", type: "script", name: "check" } });
   assert.equal(deniedScript.isError, true);
-  resultOf(await client.callTool({ name: "permission_update", arguments: { projectAlias: "mcp", permissions: { chatgpt: { projectRun: true } } } }));
+  resultOf(await client.callTool({ name: "project_policy", arguments: { action: { type: "update_permissions", projectAlias: "mcp", permissions: { chatgpt: { projectRun: true } } } } }));
 
   const completedSessionDir = path.join(stateDir, "sessions", "mcp_completed_public");
   mkdirSync(completedSessionDir, { recursive: true });
@@ -485,18 +523,20 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.deepEqual(policyChecks[4].requiredPermissions, ["projectPolicy"]);
 
   const audit = resultOf(await client.callTool({
-    name: "audit_list",
-    arguments: { projectAlias: "mcp" }
+    name: "project_policy",
+    arguments: { action: { type: "list_audit", projectAlias: "mcp" } }
   }));
   assert.equal(Array.isArray(audit.events), true);
   const auditJson = JSON.stringify(audit.events);
+  assert.match(auditJson, /"tool":"project_policy"/);
+  assert.match(auditJson, /"operation":"update_permissions"/);
   assert.equal(auditJson.includes(projectRoot), false);
   assert.equal(auditJson.includes("rootPath"), false);
   assert.equal(auditJson.includes("args"), false);
 
   const auditRead = resultOf(await client.callTool({
-    name: "audit_read",
-    arguments: { sessionId: runningSession.sessionId }
+    name: "project_policy",
+    arguments: { action: { type: "read_audit", sessionId: runningSession.sessionId } }
   }));
   assert.equal(Array.isArray(auditRead.events), true);
   assert.equal(JSON.stringify(auditRead.events).includes("metadataPath"), false);
