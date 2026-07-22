@@ -79,3 +79,41 @@ test("root health endpoint is not bearer-gated", async (t) => {
   assert.equal(body.name, "portus-mcp");
   assert.equal(body.status, "ok");
 });
+test("MCP POST route normalizes Accept header to support clients like Perplexity", async (t) => {
+  const { server, baseUrl } = await listenWithToken(undefined);
+  t.after(() => server.close());
+
+  const initPayload = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "test", version: "1.0" } }
+  });
+
+  // Perplexity-style Accept header (application/json only)
+  const jsonOnly = await fetch(`${baseUrl}/mcp`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: initPayload
+  });
+  assert.equal(jsonOnly.status, 200);
+  const jsonOnlyBody = await jsonOnly.json() as { jsonrpc: string; id: number };
+  assert.equal(jsonOnlyBody.jsonrpc, "2.0");
+  assert.equal(jsonOnlyBody.id, 1);
+
+  // Default fetch / missing Accept header
+  const noAccept = await fetch(`${baseUrl}/mcp`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: initPayload
+  });
+  assert.equal(noAccept.status, 200);
+
+  // tunnel-client style Accept header (both application/json and text/event-stream)
+  const bothAccept = await fetch(`${baseUrl}/mcp`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+    body: initPayload
+  });
+  assert.equal(bothAccept.status, 200);
+});

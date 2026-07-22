@@ -135,6 +135,28 @@ export function createHttpServer(mcpPath = optionalEnv("PORTUS_MCP_PATH", "/mcp"
       res.setHeader(key, value);
     }
 
+    if (req.method === "POST") {
+      const rawAccept = String(req.headers.accept ?? "").trim();
+      let normalizedAccept = rawAccept;
+      if (!normalizedAccept.includes("application/json")) {
+        normalizedAccept = normalizedAccept ? `${normalizedAccept}, application/json` : "application/json";
+      }
+      if (!normalizedAccept.includes("text/event-stream")) {
+        normalizedAccept = `${normalizedAccept}, text/event-stream`;
+      }
+      req.headers.accept = normalizedAccept;
+      let foundInRaw = false;
+      for (let i = 0; i < req.rawHeaders.length; i += 2) {
+        if (req.rawHeaders[i].toLowerCase() === "accept") {
+          req.rawHeaders[i + 1] = normalizedAccept;
+          foundInRaw = true;
+          break;
+        }
+      }
+      if (!foundInRaw) {
+        req.rawHeaders.push("accept", normalizedAccept);
+      }
+    }
     const server = createMcpServer();
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
