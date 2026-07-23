@@ -49,6 +49,7 @@ const policySchema = z.object({
       projectRun: z.boolean(),
       projectPolicy: z.boolean(),
       readGitIgnoredFiles: z.boolean(),
+      requireConfirmation: z.boolean().default(true),
       allowedCommands: z.array(safeCommandNameSchema)
     }).strict()
   }).strict(),

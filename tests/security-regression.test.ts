@@ -172,7 +172,7 @@ test("permission gates cover every chatgpt and agents field", () => {
   for (const permission of ["readGitIgnoredFiles", "updatePermissions"] as const) {
     assert.throws(() => assertChatGptPermission(permission, "missing-project"), /Permission denied/);
   }
-  for (const permission of ["registerProjects", "spawnAgents", "projectContext", "projectRead", "projectSearch", "projectEdit", "projectPatch", "projectRun", "projectPolicy"] as const) {
+  for (const permission of ["registerProjects", "spawnAgents", "projectContext", "projectRead", "projectSearch", "projectEdit", "projectPatch", "projectRun", "projectPolicy", "requireConfirmation"] as const) {
     assert.doesNotThrow(() => assertChatGptPermission(permission, "missing-project"));
   }
 

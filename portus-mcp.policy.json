@@ -33,6 +33,7 @@
       "projectRun": true,
       "projectPolicy": true,
       "readGitIgnoredFiles": false,
+      "requireConfirmation": true,
       "allowedCommands": ["git"]
     }
   },

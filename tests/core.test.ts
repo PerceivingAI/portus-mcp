@@ -158,6 +158,12 @@ test("permission policy denies disabled permissions and accepts runtime updates"
   assert.equal(getEffectivePermissions("test").chatgpt.projectEdit, true);
 });
 
+test("requireConfirmation defaults to true and accepts updates", () => {
+  assert.equal(getEffectivePermissions("test").chatgpt.requireConfirmation, true);
+  updatePermissions({ projectAlias: "test", permissions: { chatgpt: { requireConfirmation: false } } });
+  assert.equal(getEffectivePermissions("test").chatgpt.requireConfirmation, false);
+});
+
 test("optionalEnv returns fallback when environment variable is missing, empty, or whitespace", () => {
   delete process.env.TEST_OPTIONAL_VAR;
   assert.equal(optionalEnv("TEST_OPTIONAL_VAR", "default_val"), "default_val");

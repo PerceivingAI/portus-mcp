@@ -8,6 +8,7 @@ import { Worker } from "node:worker_threads";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getProject, listProjects } from "../state/ProjectRegistry.js";
+import { getEffectivePermissions } from "../state/PermissionRegistry.js";
 import { stateStore } from "../state/StateStore.js";
 import { resolveProjectPath } from "../policy/pathPolicy.js";
 import { assertChatGptCommandAllowed, assertChatGptPermission } from "../policy/permissionPolicy.js";
@@ -278,8 +279,9 @@ function performEdit(projectAlias: string, operation: EditOperation, dryRun: boo
     stateStore.audit({ tool: "project_edit", operation: "move", projectAlias, sourceRelativePath: operation.sourceRelativePath, destinationRelativePath: operation.destinationRelativePath, overwrite: operation.overwrite, dryRun });
     return { sourceRelativePath: operation.sourceRelativePath, destinationRelativePath: operation.destinationRelativePath, overwrote: existed, dryRun };
   }
+  const requireConfirm = getEffectivePermissions(projectAlias).chatgpt.requireConfirmation;
   if (operation.type === "delete") {
-    if (!operation.confirm) throw new Error("Confirmation required: set confirm=true");
+    if (requireConfirm && !operation.confirm) throw new Error("Confirmation required: set confirm=true");
     const target = resolveProjectPath(projectAlias, operation.relativePath); assertCanReadProjectPath(projectAlias, target, operation.relativePath); const info = statSync(target);
     if (!info.isFile()) throw new Error(`Not a file: ${operation.relativePath}`);
     if (!dryRun) { stateStore.requireAuditWritable(); resolveProjectPath(projectAlias, operation.relativePath); unlinkSync(target); }
@@ -291,7 +293,7 @@ function performEdit(projectAlias: string, operation: EditOperation, dryRun: boo
     stateStore.audit({ tool: "project_edit", operation: "mkdir", projectAlias, relativePath: operation.relativePath, recursive: operation.recursive, dryRun });
     return { relativePath: operation.relativePath, created: !dryRun, dryRun };
   }
-  if (!operation.confirm) throw new Error("Confirmation required: set confirm=true");
+  if (requireConfirm && !operation.confirm) throw new Error("Confirmation required: set confirm=true");
   const target = resolveProjectPath(projectAlias, operation.relativePath); assertCanReadProjectPath(projectAlias, target, operation.relativePath);
   if (!dryRun) { stateStore.requireAuditWritable(); resolveProjectPath(projectAlias, operation.relativePath); rmSync(target, { recursive: operation.recursive, force: false }); }
   stateStore.audit({ tool: "project_edit", operation: "rmdir", projectAlias, relativePath: operation.relativePath, recursive: operation.recursive, dryRun });
@@ -376,7 +378,7 @@ export function registerBroadProjectTools(server: McpServer): void {
     }
     if (includeHash !== undefined) throw new Error("includeHash is only valid in prepare mode"); const metadata = expectedFiles ?? []; const byPath = new Map(metadata.map((item) => [item.relativePath, item]));
     for (const file of parsed.files) { const target = resolveProjectPath(projectAlias, file); if (existsSync(target)) { assertCanReadProjectPath(projectAlias, target, file); if (!byPath.has(file)) throw new Error(`stale_file:${file}:missing_expected_metadata`); } }
-    if (parsed.deleted.size > 0) { if (!confirm) throw new Error("Confirmation required: set confirm=true for file deletions"); }
+    if (parsed.deleted.size > 0 && getEffectivePermissions(projectAlias).chatgpt.requireConfirmation) { if (!confirm) throw new Error("Confirmation required: set confirm=true for file deletions"); }
     for (const expected of metadata) { const target = resolveProjectPath(projectAlias, expected.relativePath); if (!existsSync(target)) continue; assertCanReadProjectPath(projectAlias, target, expected.relativePath); const info = statSync(target); if (expected.sizeBytes !== undefined && expected.sizeBytes !== info.size) throw new Error(`stale_file:${expected.relativePath}`); if (expected.modifiedAt && expected.modifiedAt !== info.mtime.toISOString()) throw new Error(`stale_file:${expected.relativePath}`); ensureExpectedHash(projectAlias, expected.sha256, expected.relativePath); }
     const patchPath = path.join(os.tmpdir(), `portus-mcp-${Date.now()}-${Math.random().toString(36).slice(2)}.patch`); writeFileSync(patchPath, patch, "utf8");
     try { for (const file of parsed.files) resolveProjectPath(projectAlias, file); const projectRoot = resolveProjectPath(projectAlias, "."); await execFileAsync("git", ["apply", "--check", patchPath], { cwd: projectRoot }); if (!dryRun) { stateStore.requireAuditWritable(); for (const file of parsed.files) resolveProjectPath(projectAlias, file); await execFileAsync("git", ["apply", patchPath], { cwd: resolveProjectPath(projectAlias, ".") }); } stateStore.audit({ tool: "project_patch", projectAlias, mode, dryRun: dryRun ?? false, files: parsed.files, deletedFiles: [...parsed.deleted] }); return { projectAlias, mode, applied: !dryRun, dryRun: dryRun ?? false, changedFiles: parsed.files, deletedFiles: [...parsed.deleted] }; } catch { return { projectAlias, mode, applied: false, errorType: "patch_does_not_apply", message: "Patch could not be applied" }; } finally { try { rmSync(patchPath, { force: true }); } catch { /* temporary cleanup is best effort */ } }
@@ -389,7 +391,7 @@ export function registerBroadProjectTools(server: McpServer): void {
     const timeout = Math.min(timeoutSecs ?? 120, 900); const commandArgs = args ?? [];
     if (type === "check") { if (command !== undefined || confirm !== undefined || commandArgs.length > 0) throw new Error("Command fields are not valid for check type"); assertCanReadProjectPath(projectAlias, resolveProjectPath(projectAlias, "package.json"), "package.json"); stateStore.requireAuditWritable(); const result = await runProjectCheck(resolveProjectPath(projectAlias, "."), name ?? "check", timeout); stateStore.audit({ tool: "project_run", type, projectAlias, name: name ?? "check", exitCode: result.exitCode }); return { projectAlias, type, ...result }; }
     if (type === "script") { if (!name || command !== undefined || confirm !== undefined) throw new Error("Script type requires name and forbids command fields"); assertCanReadProjectPath(projectAlias, resolveProjectPath(projectAlias, "package.json"), "package.json"); stateStore.requireAuditWritable(); const result = await runProjectScript(resolveProjectPath(projectAlias, "."), name, commandArgs, timeout); stateStore.audit({ tool: "project_run", type, projectAlias, name, args: commandArgs, exitCode: result.exitCode }); return { projectAlias, type, name, args: commandArgs, ...result }; }
-    if (!command || name !== undefined) throw new Error("Command type requires command and forbids name"); assertChatGptCommandAllowed(command, projectAlias); assertProjectCommandStaysInProject(command, commandArgs); const requiresConfirmation = commandRequiresConfirmation(command, commandArgs); if (requiresConfirmation && !confirm) throw new Error("Confirmation required: set confirm=true"); stateStore.requireAuditWritable(); const result = await runProjectCommand(resolveProjectPath(projectAlias, "."), command, commandArgs, timeout); stateStore.audit({ tool: "project_run", type, projectAlias, command, args: commandArgs, exitCode: result.exitCode, confirm: confirm ?? false }); return { projectAlias, type, requiresConfirmation, ...result };
+    if (!command || name !== undefined) throw new Error("Command type requires command and forbids name"); assertChatGptCommandAllowed(command, projectAlias); assertProjectCommandStaysInProject(command, commandArgs); const requiresConfirmation = getEffectivePermissions(projectAlias).chatgpt.requireConfirmation && commandRequiresConfirmation(command, commandArgs); if (requiresConfirmation && !confirm) throw new Error("Confirmation required: set confirm=true"); stateStore.requireAuditWritable(); const result = await runProjectCommand(resolveProjectPath(projectAlias, "."), command, commandArgs, timeout); stateStore.audit({ tool: "project_run", type, projectAlias, command, args: commandArgs, exitCode: result.exitCode, confirm: confirm ?? false }); return { projectAlias, type, requiresConfirmation, ...result };
   });
 
   registerStrictProjectTool(server, "project_edit", "Apply an ordered, non-atomic batch of policy-checked project file and directory edits.", {
