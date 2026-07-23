@@ -1,7 +1,9 @@
 import "dotenv/config";
 
 export function optionalEnv(name: string, fallback = ""): string {
-  return process.env[name] ?? fallback;
+  const value = process.env[name];
+  if (value === undefined || value.trim() === "") return fallback;
+  return value;
 }
 
 export function requireEnv(name: string): string {

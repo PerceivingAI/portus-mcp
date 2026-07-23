@@ -1,3 +1,4 @@
+import { optionalEnv } from "../src/env.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
@@ -155,6 +156,22 @@ test("permission policy denies disabled permissions and accepts runtime updates"
   updatePermissions({ projectAlias: "test", permissions: { chatgpt: { projectEdit: true } } });
   assert.doesNotThrow(() => assertChatGptPermission("projectEdit", "test"));
   assert.equal(getEffectivePermissions("test").chatgpt.projectEdit, true);
+});
+
+test("optionalEnv returns fallback when environment variable is missing, empty, or whitespace", () => {
+  delete process.env.TEST_OPTIONAL_VAR;
+  assert.equal(optionalEnv("TEST_OPTIONAL_VAR", "default_val"), "default_val");
+
+  process.env.TEST_OPTIONAL_VAR = "";
+  assert.equal(optionalEnv("TEST_OPTIONAL_VAR", "default_val"), "default_val");
+
+  process.env.TEST_OPTIONAL_VAR = "   ";
+  assert.equal(optionalEnv("TEST_OPTIONAL_VAR", "default_val"), "default_val");
+
+  process.env.TEST_OPTIONAL_VAR = "custom_path.json";
+  assert.equal(optionalEnv("TEST_OPTIONAL_VAR", "default_val"), "custom_path.json");
+
+  delete process.env.TEST_OPTIONAL_VAR;
 });
 
 

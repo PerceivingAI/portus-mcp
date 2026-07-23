@@ -8,3 +8,4 @@ notes/
 .portus-agents/
 .flue/
 *.log
+*.local.json
