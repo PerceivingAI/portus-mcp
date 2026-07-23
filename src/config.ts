@@ -23,6 +23,7 @@ export type ChatGptPermissionConfig = {
   projectPolicy: boolean;
   readGitIgnoredFiles: boolean;
   requireConfirmation: boolean;
+  useShell: boolean;
   allowedCommands: string[];
 };
 

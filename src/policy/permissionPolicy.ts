@@ -12,9 +12,10 @@ export function assertChatGptPermission(permission: ChatGptBooleanPermissionKey,
 
 export function assertChatGptCommandAllowed(command: string, projectAlias?: string): void {
   const permissions = getEffectivePermissions(projectAlias).chatgpt;
-  if (!permissions.allowedCommands.includes(command)) {
-    throw new Error(`Permission denied: chatgpt.allowedCommands does not include ${command}`);
-  }
+  if (permissions.allowedCommands.includes(command)) return;
+  const baseCommand = process.platform === "win32" ? command.replace(/\.(bat|cmd|exe)$/i, "") : command;
+  if (permissions.allowedCommands.includes(baseCommand)) return;
+  throw new Error(`Permission denied: chatgpt.allowedCommands does not include ${command}`);
 }
 
 export function assertAgentPermission(permission: keyof AgentPermissionConfig, projectAlias?: string): void {

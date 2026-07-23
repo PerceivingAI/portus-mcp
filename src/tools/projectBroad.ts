@@ -47,11 +47,24 @@ function safeRelativePath(relativePath: string): string {
 }
 
 function safeError(error: unknown, relativePath?: string): string {
-  const fallback = relativePath ? `Operation failed: ${safeRelativePath(relativePath)}` : "Project operation failed";
-  if (!(error instanceof Error)) return fallback;
-  const message = error.message;
-  const safePrefixes = ["Permission denied", "Confirmation required", "File does not exist", "Path is not a file", "File is not likely text", "Unable to read text file", "Unable to inspect file", "Path escapes project root", "Project root cannot be resolved safely", "Project path cannot be resolved safely", "Symbolic links are not allowed in project paths", "Blocked path pattern", "stale_file", "binary_file", "occurrence_mismatch", "Destination already exists", "Source file does not exist", "Not a file", "Requested line range", "startLine", "endLine", "Input exceeds", "Patch contains", "Patch affects", "Unable to read patch", "regex_search_timeout"];
-  return safePrefixes.some((prefix) => message.startsWith(prefix)) && !/[A-Za-z]:[\\/]/.test(message) && !/(?:^|\s)\/(?:Users|home|var|tmp)\//.test(message) ? message : fallback;
+  const safePath = relativePath ? safeRelativePath(relativePath) : undefined;
+  const fallback = safePath ? `Operation failed: ${safePath}` : "Project operation failed";
+  if (!(error instanceof Error) || error.message.trim() === "") return fallback;
+  if (safePath === "[invalid path]") return fallback;
+
+  const errorRecord = error as Error & { path?: unknown };
+  let message = error.message;
+  if (typeof errorRecord.path === "string" && errorRecord.path !== "") {
+    message = message.split(errorRecord.path).join(safePath ?? "[redacted path]");
+  }
+  message = message
+    .replace(/(["'])(?:(?:\\\\\?\\)?[A-Za-z]:[\\/]|\\\\[^\\/\r\n]+[\\/]|\/(?:Users|home|var|tmp)\/)[^"'\r\n]*\1/g, "$1[redacted path]$1")
+    .replace(/(?:\\\\\?\\)?[A-Za-z]:[\\/][^\r\n]*/g, "[redacted path]")
+    .replace(/\\\\[^\\/\r\n]+[\\/][^\r\n]*/g, "[redacted path]")
+    .replace(/\/(?:Users|home|var|tmp)\/[^\r\n]*/g, "[redacted path]")
+    .replace(/[\r\n\t]+/g, " ")
+    .trim();
+  return message === "" ? fallback : message.slice(0, 2000);
 }
 
 function pathMetadata(projectAlias: string, relativePath: string, includeHash: boolean): Record<string, unknown> {
@@ -391,7 +404,7 @@ export function registerBroadProjectTools(server: McpServer): void {
     const timeout = Math.min(timeoutSecs ?? 120, 900); const commandArgs = args ?? [];
     if (type === "check") { if (command !== undefined || confirm !== undefined || commandArgs.length > 0) throw new Error("Command fields are not valid for check type"); assertCanReadProjectPath(projectAlias, resolveProjectPath(projectAlias, "package.json"), "package.json"); stateStore.requireAuditWritable(); const result = await runProjectCheck(resolveProjectPath(projectAlias, "."), name ?? "check", timeout); stateStore.audit({ tool: "project_run", type, projectAlias, name: name ?? "check", exitCode: result.exitCode }); return { projectAlias, type, ...result }; }
     if (type === "script") { if (!name || command !== undefined || confirm !== undefined) throw new Error("Script type requires name and forbids command fields"); assertCanReadProjectPath(projectAlias, resolveProjectPath(projectAlias, "package.json"), "package.json"); stateStore.requireAuditWritable(); const result = await runProjectScript(resolveProjectPath(projectAlias, "."), name, commandArgs, timeout); stateStore.audit({ tool: "project_run", type, projectAlias, name, args: commandArgs, exitCode: result.exitCode }); return { projectAlias, type, name, args: commandArgs, ...result }; }
-    if (!command || name !== undefined) throw new Error("Command type requires command and forbids name"); assertChatGptCommandAllowed(command, projectAlias); assertProjectCommandStaysInProject(command, commandArgs); const requiresConfirmation = getEffectivePermissions(projectAlias).chatgpt.requireConfirmation && commandRequiresConfirmation(command, commandArgs); if (requiresConfirmation && !confirm) throw new Error("Confirmation required: set confirm=true"); stateStore.requireAuditWritable(); const result = await runProjectCommand(resolveProjectPath(projectAlias, "."), command, commandArgs, timeout); stateStore.audit({ tool: "project_run", type, projectAlias, command, args: commandArgs, exitCode: result.exitCode, confirm: confirm ?? false }); return { projectAlias, type, requiresConfirmation, ...result };
+    if (!command || name !== undefined) throw new Error("Command type requires command and forbids name"); assertChatGptCommandAllowed(command, projectAlias); assertProjectCommandStaysInProject(command, commandArgs); const requiresConfirmation = getEffectivePermissions(projectAlias).chatgpt.requireConfirmation && commandRequiresConfirmation(command, commandArgs); if (requiresConfirmation && !confirm) throw new Error("Confirmation required: set confirm=true"); stateStore.requireAuditWritable(); const result = await runProjectCommand(resolveProjectPath(projectAlias, "."), command, commandArgs, timeout, projectAlias); stateStore.audit({ tool: "project_run", type, projectAlias, command, args: commandArgs, exitCode: result.exitCode, confirm: confirm ?? false }); return { projectAlias, type, requiresConfirmation, ...result };
   });
 
   registerStrictProjectTool(server, "project_edit", "Apply an ordered, non-atomic batch of policy-checked project file and directory edits.", {

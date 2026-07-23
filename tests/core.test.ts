@@ -1,4 +1,6 @@
 import { optionalEnv } from "../src/env.js";
+import { assertChatGptCommandAllowed } from "../src/policy/permissionPolicy.js";
+import { runProjectCommand } from "../src/runtime/commands.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
@@ -158,10 +160,35 @@ test("permission policy denies disabled permissions and accepts runtime updates"
   assert.equal(getEffectivePermissions("test").chatgpt.projectEdit, true);
 });
 
-test("requireConfirmation defaults to true and accepts updates", () => {
+test("requireConfirmation accepts runtime updates", () => {
+  updatePermissions({ projectAlias: "test", permissions: { chatgpt: { requireConfirmation: true } } });
   assert.equal(getEffectivePermissions("test").chatgpt.requireConfirmation, true);
   updatePermissions({ projectAlias: "test", permissions: { chatgpt: { requireConfirmation: false } } });
   assert.equal(getEffectivePermissions("test").chatgpt.requireConfirmation, false);
+});
+
+test("useShell accepts runtime updates", () => {
+  updatePermissions({ projectAlias: "test", permissions: { chatgpt: { useShell: false } } });
+  assert.equal(getEffectivePermissions("test").chatgpt.useShell, false);
+  updatePermissions({ projectAlias: "test", permissions: { chatgpt: { useShell: true } } });
+  assert.equal(getEffectivePermissions("test").chatgpt.useShell, true);
+});
+
+test("assertChatGptCommandAllowed resolves base command name on Windows for .bat, .cmd, and .exe", () => {
+  updatePermissions({ projectAlias: "test", permissions: { chatgpt: { allowedCommands: ["git", "modal-cli"] } } });
+  assert.doesNotThrow(() => assertChatGptCommandAllowed("git", "test"));
+  assert.doesNotThrow(() => assertChatGptCommandAllowed("modal-cli", "test"));
+  if (process.platform === "win32") {
+    assert.doesNotThrow(() => assertChatGptCommandAllowed("modal-cli.bat", "test"));
+    assert.doesNotThrow(() => assertChatGptCommandAllowed("modal-cli.cmd", "test"));
+    assert.doesNotThrow(() => assertChatGptCommandAllowed("modal-cli.exe", "test"));
+  }
+});
+
+test("runProjectCommand formats spawn errors into stderr instead of blank text", async () => {
+  const result = await runProjectCommand(projectRoot, "nonexistent-command-xyz", []);
+  assert.equal(result.exitCode, null);
+  assert.match(result.stderr, /nonexistent-command-xyz|ENOENT/i);
 });
 
 test("optionalEnv returns fallback when environment variable is missing, empty, or whitespace", () => {

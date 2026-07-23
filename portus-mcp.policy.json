@@ -34,6 +34,7 @@
       "projectPolicy": true,
       "readGitIgnoredFiles": false,
       "requireConfirmation": true,
+      "useShell": false,
       "allowedCommands": ["git"]
     }
   },

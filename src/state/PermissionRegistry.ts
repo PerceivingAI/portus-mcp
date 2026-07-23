@@ -61,7 +61,7 @@ function normalizePartialPermissions(input: PartialPermissionConfig | Record<str
     registerProjects: true, updatePermissions: true, spawnAgents: true,
     projectContext: true, projectRead: true, projectSearch: true, projectEdit: true,
     projectPatch: true, projectRun: true, projectPolicy: true,
-    readGitIgnoredFiles: true, requireConfirmation: true, allowedCommands: true
+    readGitIgnoredFiles: true, requireConfirmation: true, useShell: true, allowedCommands: true
   };
   const allowedAgents: Record<string, true> = { network: true, maxRuntimeSecs: true };
   const rejectUnknown = (value: unknown, allowed: Record<string, true>, scope: string): void => {
