@@ -25,6 +25,9 @@
     "yaml": "^2.9.0",
     "zod": "^3.25.76"
   },
+  "overrides": {
+    "zod": "$zod"
+  },
   "devDependencies": {
     "@types/node": "^24.3.0",
     "tsx": "^4.19.4",
