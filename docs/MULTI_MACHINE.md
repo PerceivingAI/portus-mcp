@@ -36,9 +36,9 @@ This gives you clearer machine identity, no repeated URL/token changes, and simu
 
 It also helps security. Most MCP clients let you enable or disable specific MCP servers, so you can keep several installed and only enable the machines needed for the current session.
 
-## Tailscale
+## Network Exposure
 
-The Tailscale process is the same for a local VM and a remote computer.
+Expose target machines using Tailscale Funnel for MCP clients like Claude Desktop, Cursor, or Codex (`tailscale funnel 8789`). For ChatGPT connections, configure OpenAI `tunnel-client` profiles (`docs/TUNNEL_CLIENT.md`).
 
 On the target machine, start Portus MCP:
 

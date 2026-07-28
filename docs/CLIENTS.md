@@ -16,12 +16,11 @@ Where you have to add `/mcp` manually in the MCP client.
 
 ## ChatGPT
 
-On ChatGPT, you have to first open the Settings modal, then go to Apps, Advanced Settings, Developer Mode, and Create app.
-
-Here you will be presented by the configuration modal where you will be able to add the name and URL of the Portus MCP.
-
-Unlike Codex, ChatGPT does not accept the `PORTUS_MCP_BEARER_TOKEN` so it should be left empty on the `.env` file if you plan to use the MCP there. Select No Auth, tick the checkbox, and Create.
-
+ChatGPT connects to Portus MCP via OpenAI Secure MCP Tunnel using `tunnel-client` (`docs/TUNNEL_CLIENT.md`).
+1. Start Portus MCP locally (`npm start`) on `http://127.0.0.1:8789/mcp`.
+2. Run `tunnel-client` in a second terminal using your OpenAI Platform tunnel profile.
+3. In ChatGPT web: account button -> Settings -> Plugins -> Browse plugins -> click + to add plugin -> select Tunnel -> pick your tunnel -> select No Auth -> tick disclaimer -> Connect.
+4. `PORTUS_MCP_BEARER_TOKEN` must be left empty in `.env` for the No Auth tunnel configuration.
 ## Codex Desktop
 
 For the Codex Desktop App (Windows and Mac), go to Settings, MCP Servers, Add Server, and select `Streamable HTTP MCP server`. Add the name and URL of the Portus MCP.
@@ -81,7 +80,7 @@ If it does not, leave `PORTUS_MCP_BEARER_TOKEN` empty or use another exposure la
 
 ## Cold Start and Verification
 
-After the client discovers the seven project tools, use this sequence:
+After the client discovers the nine MCP tools, use this sequence:
 
 1. Call `project_context` with `include.projects=true` and omit `projectAlias`.
 2. Choose one alias from the alias-only response. The response must not contain an absolute root or internal registry metadata.
@@ -90,4 +89,4 @@ After the client discovers the seven project tools, use this sequence:
 
 Any project-scoped `project_context` section requires `projectAlias`; only alias discovery can omit it. Registration, permission updates, and audit inspection—when permitted to the model—are native `project_policy` actions. Operator configuration, environment pre-registration, and direct state administration remain operator-only.
 
-The client should show exactly the seven broad tools by default. No management profile, obsolete project/admin tool name, deprecated registration, or compatibility path should appear.
+The client should show exactly nine tools. No management profile, obsolete project/admin tool name, deprecated registration, or compatibility path should appear.

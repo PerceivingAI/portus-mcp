@@ -2,9 +2,9 @@
 
 Portus MCP is an MCP server for AI-assisted project work across local machines, remote machines, and VMs. **The connection is the product; tools are policy-bounded adapters.** A client connects to a registered project through one server and uses a small broad surface for ordinary project mobility.
 
-## Default Tool Surface
+## Exposed Tool Surface
 
-The default `broad` profile exposes exactly seven tools:
+Portus MCP exposes one fixed nine-tool surface:
 
 ```text
 project_context
@@ -14,17 +14,12 @@ project_edit
 project_patch
 project_run
 project_policy
+subagent_task
+subagent_context
 ```
 
-Together they provide alias-only project discovery and bounded project context, ordered reads, search, file and directory edits, patch preparation/application, approved execution, and policy inspection or administration within explicit permission boundaries.
+Together they provide alias-only project discovery, bounded project context, ordered reads, search, file and directory edits, patch preparation/application, approved execution, policy inspection/administration, and Flue subagent lifecycle management and context retrieval.
 
-The only tool-surface profiles are:
-
-- `broad`, the default seven project tools above;
-- `agent`, the agent and session tools plus the shared bounded `project_read` capability; and
-- `full`, the seven broad tools plus the agent and session tools.
-
-There is no management or legacy profile. The obsolete project/admin MCP names have no registrations, aliases, wrappers, or compatibility paths.
 
 ## Requirements
 
@@ -54,16 +49,20 @@ Separate several projects with semicolons:
 PORTUS_MCP_PROJECTS=app=C:/path/to/app;api=C:/path/to/api
 ```
 
-The shipped `portus-mcp.config.json` selects the default broad surface:
+The shipped `portus-mcp.config.json` configures default subagent retry behavior and traversal exclusions:
 
 ```json
 {
-  "toolSurface": "broad"
+  "subagents": {
+    "defaultTemplate": "ephemeral-project-subagent"
+  },
+  "traversal": {
+    "excludedPatterns": [".git", "node_modules", "dist", ".portus-mcp"]
+  }
 }
 ```
 
-Keep the remaining required application-config fields from the shipped file. Only add provider credentials when spawning agents.
-
+Keep the required application-config fields from the shipped file. Only add provider credentials when spawning subagents.
 ## Skills
 
 Portus treats skills as configured, read-only filesystem packages—not as skill-specific MCP tools. Two environment variables select independent audiences:
@@ -79,6 +78,7 @@ SUBAGENTS_SKILL_PATHS=./skills
 - Relative paths resolve from the directory containing `portus-mcp.config.json`.
 - An unset variable uses the local `./skills` catalog when it exists. An explicitly empty value disables that audience.
 - No user, system, Codex, or other host skill directory is scanned implicitly.
+- The current set of skills on the `./skills` folder are examples which should be replaced with your own skills.
 
 Skills are startup snapshots. After adding, deleting, changing, or reconfiguring a skill, restart Portus; reconnect the MCP client or start a new spawned-agent session. There are no `skill_list`, `skill_read`, `skill_run`, or `agent_run_skill` tools.
 
@@ -178,7 +178,7 @@ Create and connect the plugin:
 
 ![Creating a ChatGPT plugin, selecting the Portus MCP tunnel, and connecting it](./assets/2_config.png)
 
-After discovery, ChatGPT should see the Portus MCP tool surface. The default broad profile exposes:
+After discovery, ChatGPT should see the Portus MCP tool surface:
 
 ```text
 project_context
@@ -188,8 +188,9 @@ project_edit
 project_patch
 project_run
 project_policy
+subagent_task
+subagent_context
 ```
-
 To verify registered projects, ask ChatGPT to call `project_context` with `include.projects=true` and no `projectAlias`.
 
 ### Optional: change ChatGPT permission behavior
@@ -280,9 +281,7 @@ Broad tools remain bounded by layered enforcement:
 
 Callers cannot raise server maxima or override path, Git-ignore, permission, confirmation, or audit policy. Read, context, search, policy inspection, and patch preparation remain unaudited; mutation and execution retain audit behavior. Errors and safe policy projections do not expose absolute roots, secrets, command environments, or file contents.
 
-Spawned agents are local command-capable processes, not a hard OS/container/filesystem sandbox. Only enable the `agent` or `full` profile and grant commands you are comfortable allowing.
-
-Fine-tune surface and behavior in `portus-mcp.config.json`, and permissions/limits in `portus-mcp.policy.json`. `PORTUS_MCP_BEARER_TOKEN` is optional for clients that support static bearer authentication; leave it empty for clients that do not.
+Spawned subagents are command-capable processes bounded by Flue workspace isolation in `.portus-mcp/flue-workspaces/<sessionId>` and `subagentTask` permission policy.
 
 ## Project Cold Start
 

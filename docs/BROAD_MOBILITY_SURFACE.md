@@ -2,13 +2,12 @@
 
 ## Decision
 
-Portus MCP treats **the connection as the product** and tools as policy-bounded adapters over that connection. A client connects to a registered machine and project, then performs ordinary project work through seven broad adapters instead of negotiating a growing collection of micro-tools.
+Portus MCP treats **the connection as the product** and tools as policy-bounded adapters over that connection. A client connects to a registered machine and project, then performs ordinary project work through nine consolidated adapters instead of negotiating a growing collection of micro-tools.
 
-Patch 3 was the final direct micro-tool expansion. The broad surface is a breaking, hard cutover: replaced registrations, schemas, permission-map entries, examples, and tool-specific compatibility tests are removed. There are no aliases, wrappers, deprecated registrations, legacy profile, or resurrection path.
 
-## Default Surface
+## Fixed Nine-Tool Surface
 
-The default `broad` profile exposes exactly:
+Portus MCP exposes exactly nine tools:
 
 ```text
 project_context
@@ -18,8 +17,9 @@ project_edit
 project_patch
 project_run
 project_policy
+subagent_task
+subagent_context
 ```
-
 The adapters divide work by intent:
 
 | Adapter | Responsibility |
@@ -31,19 +31,14 @@ The adapters divide work by intent:
 | `project_patch` | Patch preparation or application, including preconditions and dry runs. |
 | `project_run` | Approved checks, package scripts, or allowlisted commands. |
 | `project_policy` | Ordered permission, path-decision, and safe effective-configuration checks, or one native registration, permission-update, or audit action. |
+| `subagent_task` | Subagent lifecycle management using discriminated action union (`start`, `stop`, `cleanup`). |
+| `subagent_context` | Batch read subagent status, events, stdout/stderr logs, and collected results. |
 
-Broad schemas group related behavior without moving authority into the tool layer. `project_policy` requires exactly one of `checks` or `action`; `action` is a nested object selected by its inner `type` discriminator, as in `{ "action": { "type": "list_audit" } }`, not a flat string. Its action types are `register_project` (`projectPolicy` plus `registerProjects`), `update_permissions` (`projectPolicy` plus `updatePermissions`), and `list_audit` or `read_audit` (`projectPolicy`). Canonical paths, confirmation, safe projections, strict schemas, and redacted audit behavior remain authoritative; new administrative audit records use `tool=project_policy` and identify the action type in `operation`.
+Broad schemas group related behavior without moving authority into the tool layer. `project_policy` requires exactly one of `checks` or `action`; `action` is a nested object selected by its inner `type` discriminator, as in `{ "action": { "type": "list_audit" } }`, not a flat string. Its native actions (`register_project`, `update_permissions`, `list_audit`, `read_audit`) require `projectPolicy`. `subagent_task` and `subagent_context` require `subagentTask`. Canonical paths, confirmation, safe projections, strict schemas, and redacted audit behavior remain authoritative; new administrative audit records use `tool=project_policy` and identify the action type in `operation`.
 
-## Profiles
+## Subagent & Policy Unification
 
-| Profile | Exposed groups |
-|---|---|
-| `broad` (default) | Exactly the seven broad project adapters. |
-| `agent` | Agent and session registrations plus the shared `project_read` capability. |
-| `full` | The seven broad project adapters plus agent and session registrations. |
-
-There is no management or legacy profile. No obsolete project/admin or skill-specific name is registered under any profile, and there are no aliases, wrappers, deprecated paths, or compatibility registrations. Connected-agent skills reuse `project_read`; no separate skill group exists. Operator-owned configuration, environment pre-registration, and direct state/filesystem administration remain outside the model-facing MCP surface; retained model-accessible administration exists only as native `project_policy` actions.
-
+Subagent execution, context, lifecycle, and cleanup are managed through `subagent_task` and `subagent_context`. Sessions remain internal runtime records used for asynchronous execution, queueing, retries, logs, process control, and cleanup, and do not exist as a separate MCP tool family.
 ## Security Model
 
 Broad tools do not create caller-controlled bypasses. Safety remains layered:
@@ -68,21 +63,18 @@ Read, search, context, policy inspection, and patch preparation are unaudited. M
 A client with no prior alias knowledge calls `project_context` with `include.projects=true` and omits `projectAlias`. The response contains registered aliases only, never absolute roots or registry metadata. The client selects an alias, inspects it through project-scoped `project_context`, then reuses it with the other project tools. Any request that includes a project-scoped context section still requires `projectAlias`.
 
 
-## Agent, Session, and Skill Boundary
+## Subagent and Skill Boundaries
 
-Agent and session lifecycle operations remain outside the default `broad` profile, but the `project_read` adapter is shared with `agent` because it also provides bounded connected-agent skill reads. Skill availability is configuration, not a tool group: startup publishes metadata for `AGENT_SKILL_PATHS`, and `project_read` resolves only those skills through reserved `skill/<name>` aliases. Spawned-agent catalogs and read-only mounts come independently from `SUBAGENTS_SKILL_PATHS`. No skill-specific run, read, activation, or management tools remain.
-
+Subagent lifecycle operations are consolidated into `subagent_task` and `subagent_context`. Skill availability is configuration, not a tool group: startup publishes metadata for `AGENT_SKILL_PATHS`, and `project_read` resolves only those skills through reserved `skill/<name>` aliases. Spawned-subagent catalogs and read-only mounts come independently from `SUBAGENTS_SKILL_PATHS`. No skill-specific run, read, activation, or management tools remain.
 ## Testing Requirements
 
 The hard cutover is accepted only when tests prove observable behavior, not source-text plumbing:
 
-- default discovery returns exactly the seven broad tools;
+- default discovery returns exactly the nine consolidated tools;
 - each broad schema is strict and rejects unknown or bypass-looking fields;
 - every removed name is absent from discovery and current registrations;
-- agent and full profiles expose only their defined groups;
-- normal context, read, search, edit, patch, run, and policy workflows work end to end;
+- normal context, read, search, edit, patch, run, policy, subagent task, and subagent context workflows work end to end;
 - ordered batches, per-item failures, dry runs, preconditions, and mode-dependent validation behave as documented;
 - permissions, confirmations, Git-ignore handling, root confinement, blocked paths, limits, Unicode accounting, and audit semantics are preserved or strengthened;
-- path traversal, shell escape, command-policy bypass, malformed input, and permission denial fail safely;
-- errors and results do not leak absolute local paths or secrets; and
-- agent and full profiles expose only their defined agent/session groups plus the shared read adapter, and skill-specific names remain absent.
+- path traversal, shell escape, command-policy bypass, malformed input, and permission denial fail safely; and
+- errors and results do not leak absolute local paths or secrets.

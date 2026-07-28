@@ -35,32 +35,32 @@ Direct MCP project tools do not need provider credentials unless they spawn agen
 
 If an agent spawn fails with a missing key message, set the credential values for the selected provider in `.env`.
 
-## Tailscale URL Does Not Work
+## Network Exposure & Client Connection
 
-Tailscale prints:
+### Tailscale Funnel
+
+Tailscale Funnel exposes the local server to MCP clients such as Claude Desktop, Cursor, or custom HTTP MCP clients. Tailscale prints a base URL:
 
 ```text
 https://machine.tailnet.ts.net/
 ```
 
-Use this in the MCP client:
+Append `/mcp` in your client configuration:
 
 ```text
 https://machine.tailnet.ts.net/mcp
 ```
 
-On Linux, the command may need sudo:
+On Linux, elevated permissions may be required (`sudo tailscale funnel 8789`).
 
-```text
-sudo tailscale funnel 8789
-```
+### ChatGPT Connection via `tunnel-client`
 
-## ChatGPT Cannot Connect
+ChatGPT connects via OpenAI `tunnel-client` (`docs/TUNNEL_CLIENT.md`).
 
-Check that the URL ends in `/mcp`, the server is running, and Tailscale Funnel is active.
-
-For the tested ChatGPT custom connector flow, leave `PORTUS_MCP_BEARER_TOKEN` empty.
-
+1. Confirm Portus MCP is running locally (`npm start`) on `http://127.0.0.1:8789/mcp`.
+2. Confirm `tunnel-client` is running in a second terminal using your OpenAI Platform tunnel profile.
+3. In ChatGPT web plugin settings, select the tunnel, choose **No Auth**, tick the disclaimer, and click **Connect**.
+4. Leave `PORTUS_MCP_BEARER_TOKEN` empty when using the standard No Auth tunnel configuration.
 ## Codex Desktop Shows Enabled But Tools Are Missing
 
 Restart Codex Desktop.
@@ -69,24 +69,33 @@ In testing, the MCP entry showed as enabled before this session could see or use
 
 ## Permission Denied
 
-Inspect the current state with:
+Inspect policy state and diagnostic checks with `project_policy`:
 
-```text
-permission_get
-effective_config_show
-agent_limits
+```json
+{
+  "checks": [
+    { "type": "path", "projectAlias": "app", "relativePath": "src/index.ts" }
+  ]
+}
+```
+
+Or check subagent capabilities via `subagent_context`:
+
+```json
+{
+  "requests": [{ "type": "capabilities" }]
+}
 ```
 
 Common causes:
 
 ```text
-chatgpt.permissions.spawnAgents=false
+chatgpt.permissions.subagentTask=false
 chatgpt.permissions.projectRun=false
 chatgpt.permissions.projectEdit=false
-agents.concurrency.maxConcurrent=0
-agents.concurrency.maxConcurrentPerProject=0
+subagents.concurrency.maxConcurrent=0
+subagents.concurrency.maxConcurrentPerProject=0
 ```
-
 ## Path Blocked
 
 The path may escape the registered project root, match a blocked path pattern, or be gitignored while `readGitIgnoredFiles=false`.

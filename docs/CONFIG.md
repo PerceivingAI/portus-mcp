@@ -2,7 +2,7 @@
 
 ## What This Document Covers
 
-This document describes the active environment, application, tool-surface, skill-source, and policy configuration. The broad-mobility release is a hard cutover: configuration selects among current profiles and cannot enable removed tools. (`src/config.ts:10-11`, `src/config.ts:71-80`, `src/server.ts:23-34`)
+This document describes active environment, application, skill-source, and policy configuration. (`src/config.ts:11-24`, `src/server.ts:15-25`, `src/policy/policyConfig.ts:39-56`)
 
 ## Overview
 
@@ -16,23 +16,28 @@ portus-mcp.policy.json
 
 `.env` selects process, project, provider, skill-source, and file locations. `portus-mcp.config.json` controls the tool surface and structured application behavior. `portus-mcp.policy.json` owns permissions and runtime limits. Unknown application-config keys and invalid profile values fail validation rather than being ignored. (`src/config.ts:71-102`, `src/skills/SkillRegistry.ts:203-212`, `src/policy/policyConfig.ts:99-102`)
 
-## Tool-Surface Profile
+## Tool Surface
 
-`portus-mcp.config.json` accepts one `toolSurface` value. It defaults to `broad` when omitted. (`src/config.ts:10-11`, `src/config.ts:71-80`)
+Portus MCP exposes one fixed nine-tool surface:
 
-| Value | Surface |
-|---|---|
-| `broad` | Default; exactly `project_context`, `project_read`, `project_search`, `project_edit`, `project_patch`, `project_run`, and `project_policy`. |
-| `agent` | Agent and session tools plus `project_read`, which provides bounded access to configured connected-agent skill roots. |
-| `full` | The seven broad tools plus the agent and session tools; `project_read` is shared by both groups. |
+```text
+project_context
+project_read
+project_search
+project_edit
+project_patch
+project_run
+project_policy
+subagent_task
+subagent_context
+```
 
-Example:
+Example `portus-mcp.config.json`:
 
 ```json
 {
-  "toolSurface": "broad",
   "agents": {
-    "defaultTemplate": "ephemeral-project-agent",
+    "defaultTemplate": "ephemeral-project-subagent",
     "retry": {
       "enabled": true,
       "maxAttempts": 3,
@@ -47,8 +52,6 @@ Example:
   "traversal": { "excludedPatterns": [] }
 }
 ```
-
-There is no management or legacy profile. Obsolete project/admin and skill-specific names cannot be restored by configuration, compatibility wrappers, aliases, or hidden registrations. The `agent` profile receives `project_read` because configured connected-agent skills use that ordinary bounded read capability. (`src/config.ts:10-11`, `src/config.ts:71-80`, `src/server.ts:23-34`)
 
 ## Environment Variables
 
@@ -93,17 +96,18 @@ Provider variables are needed only for spawned-agent work. `PORTUS_MCP_DEFAULT_P
 
 ## Application Configuration
 
-Beyond `toolSurface`, `portus-mcp.config.json` contains the default agent template and retry policy plus traversal exclusions. The schema is strict: retry counts and delays must be positive, jitter is between 0 and 1, retry reasons are non-empty strings, and exclusions are non-empty strings. Skill sources are intentionally not accepted in this JSON schema; `AGENT_SKILL_PATHS` and `SUBAGENTS_SKILL_PATHS` are authoritative. (`src/config.ts:40-80`, `src/skills/SkillRegistry.ts:203-280`)
+`portus-mcp.config.json` contains the default subagent template and retry policy plus traversal exclusions. The schema is strict: retry counts and delays must be positive, jitter is between 0 and 1, retry reasons are non-empty strings, and exclusions are non-empty strings. Skill sources are intentionally not accepted in this JSON schema; `AGENT_SKILL_PATHS` and `SUBAGENTS_SKILL_PATHS` are authoritative. (`src/config.ts:40-98`, `src/skills/SkillRegistry.ts:203-280`)
 
-Agent and session settings do not alter the seven broad adapters. They apply only when the `agent` or `full` surface exposes the agent group. Connected-agent skills are cataloged at server startup and use `project_read`; spawned-agent skills are cataloged separately and mounted read-only for each spawned session. (`src/server.ts:16-40`, `src/flue/runTask.ts:155-169`)
+Subagent settings apply to Flue-backed execution via `subagent_task`. Connected-agent skills are cataloged at server startup and read via `project_read`; spawned-subagent skills are cataloged separately and mounted read-only for each subagent session. (`src/server.ts:15-25`, `src/flue/runTask.ts:280-320`, `subagents/ephemeral-project-subagent.ts:75-85`)
 
 ## Policy Configuration
 
-`portus-mcp.policy.json` controls grouped agent lifecycle/concurrency policy, the seven broad-tool permissions, independent registration, permission-update, and agent permissions, blocked paths, command and Git-ignore constraints, and server-owned limits. (`src/config.ts:13-26`, `src/policy/policyConfig.ts:39-53`)
+`portus-mcp.policy.json` controls subagent lifecycle and concurrency policy, tool permissions, blocked paths, command and Git-ignore constraints, and server-owned limits. (`src/config.ts:11-24`, `src/policy/policyConfig.ts:39-56`)
 
-ChatGPT broad-tool permissions are:
+ChatGPT permissions are:
 
 ```text
+subagentTask
 projectContext
 projectRead
 projectSearch
@@ -113,9 +117,9 @@ projectRun
 projectPolicy
 ```
 
-`registerProjects`, `updatePermissions`, and `spawnAgents` remain independent permissions. `requireConfirmation` controls whether mutating commands, directory removals, file deletions, and file-deleting patches require `confirm: true` (defaults to `true`). `useShell` controls whether commands execute within a shell wrapper (defaults to `false` for maximum security; set to `true` to allow executing batch scripts like `.bat` / `.cmd` on Windows). `project_policy` always requires `projectPolicy`; its native `register_project` action additionally requires `registerProjects`, `update_permissions` additionally requires `updatePermissions`, and `list_audit`/`read_audit` require no additional permission. Calls provide exactly one of `checks` or `action`. The latter is a nested object with an inner `type` discriminator—for example, `{ "action": { "type": "list_audit" } }`—and is not a flat action string. `readGitIgnoredFiles`, `requireConfirmation`, `useShell`, and `allowedCommands` remain internal constraints rather than substitutes for a broad permission, and the action schemas are strict. (`src/config.ts:13-26`, `src/tools/config.ts:72-93`)
+Each tool maps 1:1 to its permission flag (`subagent_task` requires `subagentTask`, `project_read` requires `projectRead`, etc.). `project_policy` requires `projectPolicy` for all checks and native actions (`register_project`, `update_permissions`, `list_audit`, `read_audit`). Legacy permission flags `registerProjects`, `updatePermissions`, and `spawnSubagents` have been removed. `requireConfirmation` controls whether mutating operations require `confirm: true` (defaults to `true`). `useShell` controls whether commands execute within a shell wrapper (defaults to `false`). (`src/policy/permissionPolicy.ts:10-45`, `src/tools/config.ts:148-196`, `src/tools/subagents.ts:98-175`)
 
-Project discovery is not a configuration profile or permission bypass. `project_context` with `include.projects=true` and no `projectAlias` returns registered aliases only; project-scoped sections still require `projectAlias`. Environment pre-registration through `PORTUS_MCP_PROJECTS` and operator-owned configuration/state files remain operator-side facilities, while model-accessible registration, permission updates, and audit reads are confined to the native `project_policy` actions and their permission gates. (`src/tools/projectBroad.ts:328-355`, `src/state/ProjectRegistry.ts:35-103`)
+Project discovery is not a configuration profile or permission bypass. `project_context` with `include.projects=true` and no `projectAlias` returns registered aliases only; project-scoped sections still require `projectAlias`. Environment pre-registration through `PORTUS_MCP_PROJECTS` and operator-owned configuration/state files remain operator-side facilities, while model-accessible registration, permission updates, and audit reads are confined to native `project_policy` actions and gated by `projectPolicy`. (`src/tools/projectBroad.ts:328-355`, `src/state/ProjectRegistry.ts:35-103`)
 
 Server policy owns file-read, file-write, patch, text-edit, search, per-skill read, agent-output, session-event, audit, timeout, and process bounds. Caller bounds may narrow an authoritative maximum but cannot raise it; callers cannot override blocked paths, Git-ignore handling, permissions, confirmation, or audit. (`src/policy/policyConfig.ts:55-98`, `src/flue/runTask.ts:155-169`)
 
@@ -127,12 +131,11 @@ Filesystem authorization uses the canonical registered project root, not lexical
 
 All project access remains confined to registered roots and subject to blocked-path and Git-ignore policy. Destructive or protected operations retain confirmation. Mutation, execution, registration, and permission updates retain durable, redacted audit behavior; reads, context, search, policy checks, audit reads, and patch preparation are unaudited. Safe projections and errors must not disclose absolute roots, bearer tokens, provider credentials, environment details, file contents, or command environments. (`src/config.ts:13-24`, `src/tools/config.ts:117-138`, `src/tools/config.ts:189-217`)
 
-Model-accessible registration, permission mutation, and audit reads are native operations of the default `project_policy` tool and remain bounded by its permission gates. Skill-specific MCP tools do not exist: connected agents use catalog metadata plus `project_read`, while spawned agents receive an audience-specific catalog and read-only skill mounts. (`src/server.ts:16-34`, `src/skills/SkillRegistry.ts:274-307`, `src/flue/runTask.ts:155-169`)
+Model-accessible registration, permission mutation, and audit reads are native operations of `project_policy` and remain bounded by `projectPolicy`. Skill-specific MCP tools do not exist: connected agents use catalog metadata plus `project_read`, while spawned subagents receive an audience-specific catalog and read-only skill mounts. (`src/server.ts:15-25`, `src/skills/SkillRegistry.ts:274-307`, `src/flue/runTask.ts:280-320`)
 
 ## Defaults and Resolution
-
-1. `PORTUS_MCP_CONFIG_PATH` selects the application JSON; otherwise `./portus-mcp.config.json` is used.
-2. `toolSurface` defaults to `broad`; an unknown value or unknown application-config key fails closed.
+1. `PORTUS_MCP_CONFIG_PATH` selects application JSON; otherwise `./portus-mcp.config.json` is used.
+2. Specifying a retired `toolSurface` key fails closed.
 3. `PORTUS_MCP_POLICY_PATH` selects policy JSON; otherwise `./portus-mcp.policy.json` is used.
 4. `PORTUS_MCP_PROJECTS` adds pre-registered project roots; aliases beginning with `skill/` are reserved.
 5. Unset `AGENT_SKILL_PATHS` and `SUBAGENTS_SKILL_PATHS` independently default to an existing `./skills` catalog; an explicitly empty value disables that audience.
@@ -143,12 +146,12 @@ Missing or invalid JSON configuration fails startup with file and validation det
 
 ## Codebase References
 
-- Tool-surface values and strict application schema: `src/config.ts:10-11`, `src/config.ts:40-102`
-- Direct permission model: `src/config.ts:13-34`
-- HTTP path, bearer token, and port: `src/server.ts:39-51`, `src/server.ts:191-196`
+- Fixed nine-tool surface: `src/server.ts:15-25`, `src/config.ts:11-24`
+- Direct permission model: `src/config.ts:11-24`, `src/policy/policyConfig.ts:39-56`
+- HTTP path, bearer token, and port: `src/server.ts:39-51`, `src/server.ts:181-187`
 - Project pre-registration and reserved skill alias namespace: `src/state/ProjectRegistry.ts:35-95`
-- Policy path: `src/policy/policyConfig.ts:104-124`
+- Policy path: `src/policy/policyConfig.ts:102-122`
 - Durable state path: `src/state/StateStore.ts:6-12`
 - Audience-specific skill source resolution and discovery: `src/skills/SkillRegistry.ts:203-280`
-- Tool-profile integration and connected-agent catalog instructions: `src/server.ts:16-40`, `src/skills/SkillRegistry.ts:291-307`
-- Spawned-agent skill mounts: `src/flue/runTask.ts:155-169`, `agents/ephemeral-project-agent.ts:89-131`
+- Subagent execution and tool registration: `src/tools/subagents.ts:80-210`, `src/flue/runTask.ts:280-320`
+- Spawned-subagent skill mounts: `subagents/ephemeral-project-subagent.ts:75-85`

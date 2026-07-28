@@ -18,11 +18,11 @@ Apache-2.0
 
 ## What Uses Flue
 
-These tools start spawned-agent work:
+Spawned subagent operations use `subagent_task` (`action: "start"`, `"stop"`, `"cleanup"`) and `subagent_context`:
 
 ```text
-agent_spawn
-agent_run_task
+subagent_task
+subagent_context
 ```
 
 Skills do not add alternate run tools. Every spawned task receives the metadata catalog selected by `SUBAGENTS_SKILL_PATHS`; the spawned agent chooses applicable skills and reads them from its read-only filesystem view. Portus MCP handles the MCP layer, policy checks, session tracking, logs, events, artifacts, cleanup, and audience-specific skill selection. Flue handles the spawned agent runtime.
@@ -72,17 +72,13 @@ Grant only commands you want spawned agents to use.
 
 ## Workspace and Skills
 
-Spawned agents see the registered project as a writable `/workspace` root. Configured subagent skill packages are mounted separately at `/skills/<name>` as read-only, symlink-disabled roots with per-file read limits.
+Spawned agents see the registered project as a writable `/workspace` root. Flue workspaces are staged internally inside `.portus-mcp/flue-workspaces/<sessionId>` to keep user project roots 100% clean of `.flue/` or `agents/` directories. Configured subagent skill packages are mounted separately at `/skills/<name>` as read-only roots with per-file read limits.
 
-The agent receives only name, description, supported host metadata, and stable in-sandbox locations at initialization. It reads a selected `SKILL.md`, references, assets, or scripts itself through its normal filesystem and command capabilities. Absolute host skill paths are not put in model context, and a skill mount grants no access to its catalog parent or adjacent skills.
+The subagent template is located at `subagents/ephemeral-project-subagent.ts`. The subagent receives name, description, supported host metadata, and stable in-sandbox locations at initialization. It reads a selected `SKILL.md`, references, assets, or scripts itself through its normal filesystem and command capabilities. Absolute host skill paths are not put in model context, and a skill mount grants no access to its catalog parent or adjacent skills.
 
-## Sessions
+## Session Artifacts & Inspection
 
-Session tools expose status, events, logs, artifacts, stop controls, and cleanup controls.
-
-Use `session_read_events` for progress. It avoids rereading full logs each time.
-
-## Retry
+Subagent status, stdout/stderr logs, execution events, and result artifacts are read using `subagent_context`. Session stop and artifact cleanup are performed using `subagent_task`.
 
 Retry policy lives in:
 

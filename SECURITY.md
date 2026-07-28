@@ -40,9 +40,10 @@ Portus MCP blocks reads, metadata checks, copy sources, overwrites, deletes, dir
 
 ## Permission Gates
 
-Broad project-tool permissions are:
+ChatGPT permissions are:
 
 ```text
+subagentTask
 projectContext
 projectRead
 projectSearch
@@ -52,7 +53,7 @@ projectRun
 projectPolicy
 ```
 
-Each broad tool checks its corresponding permission once at entry. `registerProjects`, `updatePermissions`, and `spawnAgents` remain independent. `readGitIgnoredFiles` and `allowedCommands` remain internal constraints of relevant tools rather than broad-tool permissions.
+Each tool checks its corresponding permission once at entry (`subagent_task` requires `subagentTask`, `project_read` requires `projectRead`, etc.). `project_policy` requires `projectPolicy` for all checks and native actions (`register_project`, `update_permissions`, `list_audit`, `read_audit`). `readGitIgnoredFiles` and `allowedCommands` remain internal constraints of relevant tools.
 
 Spawned-agent permissions include:
 
