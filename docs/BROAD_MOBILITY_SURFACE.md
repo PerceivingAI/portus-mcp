@@ -39,10 +39,10 @@ Broad schemas group related behavior without moving authority into the tool laye
 | Profile | Exposed groups |
 |---|---|
 | `broad` (default) | Exactly the seven broad project adapters. |
-| `agent` | Existing agent, session, and skill registrations only. |
-| `full` | The seven broad project adapters plus unchanged agent, session, and skill tools. |
+| `agent` | Agent and session registrations plus the shared `project_read` capability. |
+| `full` | The seven broad project adapters plus agent and session registrations. |
 
-There is no management or legacy profile. No obsolete project/admin name is registered under any profile, and there are no aliases, wrappers, deprecated paths, or compatibility registrations. Operator-owned configuration, environment pre-registration, and direct state/filesystem administration remain outside the model-facing MCP surface; retained model-accessible administration exists only as native `project_policy` actions.
+There is no management or legacy profile. No obsolete project/admin or skill-specific name is registered under any profile, and there are no aliases, wrappers, deprecated paths, or compatibility registrations. Connected-agent skills reuse `project_read`; no separate skill group exists. Operator-owned configuration, environment pre-registration, and direct state/filesystem administration remain outside the model-facing MCP surface; retained model-accessible administration exists only as native `project_policy` actions.
 
 ## Security Model
 
@@ -70,7 +70,7 @@ A client with no prior alias knowledge calls `project_context` with `include.pro
 
 ## Agent, Session, and Skill Boundary
 
-This decision does not redesign, remove, expand, or behaviorally refactor agent, session, skill, subagent, provider-selection, retry, lifecycle, cleanup, template, or orchestration behavior. Profile-aware registration only controls whether those existing tools are visible. They remain unchanged and outside the default `broad` surface.
+Agent and session lifecycle operations remain outside the default `broad` profile, but the `project_read` adapter is shared with `agent` because it also provides bounded connected-agent skill reads. Skill availability is configuration, not a tool group: startup publishes metadata for `AGENT_SKILL_PATHS`, and `project_read` resolves only those skills through reserved `skill/<name>` aliases. Spawned-agent catalogs and read-only mounts come independently from `SUBAGENTS_SKILL_PATHS`. No skill-specific run, read, activation, or management tools remain.
 
 ## Testing Requirements
 
@@ -85,4 +85,4 @@ The hard cutover is accepted only when tests prove observable behavior, not sour
 - permissions, confirmations, Git-ignore handling, root confinement, blocked paths, limits, Unicode accounting, and audit semantics are preserved or strengthened;
 - path traversal, shell escape, command-policy bypass, malformed input, and permission denial fail safely;
 - errors and results do not leak absolute local paths or secrets; and
-- existing agent/session/skill behavior remains unchanged when its profile is selected.
+- agent and full profiles expose only their defined agent/session groups plus the shared read adapter, and skill-specific names remain absent.

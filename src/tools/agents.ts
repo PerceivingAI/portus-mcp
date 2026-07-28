@@ -8,13 +8,13 @@ import { getSession, listActiveSessions, listSessions, removeSession, toPublicSe
 import { loadConfig } from "../config.js";
 import { registerTool } from "./toolUtils.js";
 import { limitText } from "../runtime/outputLimits.js";
-import { formatSkillForPrompt, readFullSkill } from "./skills.js";
 import { stateStore } from "../state/StateStore.js";
 import { assertChatGptPermission } from "../policy/permissionPolicy.js";
 import { appendSessionEvent, readSessionEvents } from "../state/SessionEvents.js";
 import { loadPolicyConfig } from "../policy/policyConfig.js";
+import type { SkillRegistrySnapshot } from "../skills/SkillRegistry.js";
 
-export function registerAgentTools(server: McpServer): void {
+export function registerAgentTools(server: McpServer, registry: SkillRegistrySnapshot): void {
   registerTool(server, "agent_run_task", "Use this when the user wants to spawn a Flue-backed Portus agent to perform a task in a registered project.", {
     projectAlias: z.string(),
     task: z.string(),
@@ -27,7 +27,8 @@ export function registerAgentTools(server: McpServer): void {
       projectAlias,
       task,
       agentTemplate: agentTemplate ?? config.agents.defaultTemplate,
-      timeoutSecs
+      timeoutSecs,
+      subagentSkills: registry.subagents
     }));
   });
 
@@ -43,36 +44,11 @@ export function registerAgentTools(server: McpServer): void {
       projectAlias,
       task,
       agentTemplate: agentTemplate ?? config.agents.defaultTemplate,
-      timeoutSecs
+      timeoutSecs,
+      subagentSkills: registry.subagents
     }));
   });
 
-  registerTool(server, "agent_run_skill", "Use this when ChatGPT needs to start an agent session with a named local skill.", {
-    projectAlias: z.string(),
-    skillName: z.string(),
-    task: z.string(),
-    agentTemplate: z.string().optional(),
-    timeoutSecs: z.number().int().positive().optional()
-  }, { readOnlyHint: false, destructiveHint: false, openWorldHint: true }, async ({ projectAlias, skillName, task, agentTemplate, timeoutSecs }) => {
-    assertChatGptPermission("spawnAgents", projectAlias);
-    const config = loadConfig();
-    const skill = readFullSkill(skillName);
-    return toPublicSession(await runFlueTask({
-      projectAlias,
-      agentTemplate: agentTemplate ?? config.agents.defaultTemplate,
-      timeoutSecs,
-      task: [
-        `Use the following skill for this task.`,
-        "",
-        `Skill: ${skillName}`,
-        "",
-          formatSkillForPrompt(skill),
-        "",
-        "Task:",
-        task
-      ].join("\n")
-    }));
-  });
 
   registerTool(server, "agent_status", "Use this when ChatGPT needs to check an agent session status.", {
     sessionId: z.string()

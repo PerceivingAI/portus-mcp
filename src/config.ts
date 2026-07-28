@@ -55,9 +55,6 @@ export type PortusMcpConfig = {
   traversal: {
     excludedPatterns: string[];
   };
-  skills: {
-    directory: string;
-  };
 };
 
 const retrySchema = z.object({
@@ -79,9 +76,6 @@ const configSchema = z.object({
   }).strict(),
   traversal: z.object({
     excludedPatterns: z.array(z.string().min(1))
-  }).strict(),
-  skills: z.object({
-    directory: z.string().min(1)
   }).strict()
 }).strict();
 

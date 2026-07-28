@@ -112,20 +112,23 @@ writeFileSync(configPath, JSON.stringify({
   },
   traversal: {
     excludedPatterns: [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"]
-  },
-  skills: { directory: "skills" }
+  }
 }, null, 2), "utf8");
 
 const previousEnvironment: Record<string, string | undefined> = {
   PORTUS_MCP_CONFIG_PATH: process.env.PORTUS_MCP_CONFIG_PATH,
   PORTUS_MCP_POLICY_PATH: process.env.PORTUS_MCP_POLICY_PATH,
   PORTUS_MCP_STATE_DIR: process.env.PORTUS_MCP_STATE_DIR,
-  PORTUS_MCP_PROJECTS: process.env.PORTUS_MCP_PROJECTS
+  PORTUS_MCP_PROJECTS: process.env.PORTUS_MCP_PROJECTS,
+  AGENT_SKILL_PATHS: process.env.AGENT_SKILL_PATHS,
+  SUBAGENTS_SKILL_PATHS: process.env.SUBAGENTS_SKILL_PATHS
 };
 process.env.PORTUS_MCP_CONFIG_PATH = configPath;
 process.env.PORTUS_MCP_POLICY_PATH = policyPath;
 process.env.PORTUS_MCP_STATE_DIR = stateDir;
 process.env.PORTUS_MCP_PROJECTS = `pre=${projectRoot};second=${secondProjectRoot}`;
+process.env.AGENT_SKILL_PATHS = "";
+process.env.SUBAGENTS_SKILL_PATHS = "";
 
 // Environment-backed state paths must be installed before loading stateful server modules.
 const { listProjects, upsertProject } = await import("../src/state/ProjectRegistry.js");

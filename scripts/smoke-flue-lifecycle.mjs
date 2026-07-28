@@ -60,8 +60,7 @@ writeFileSync(configPath, JSON.stringify({
       ".next",
       ".cache"
     ]
-  },
-  skills: { directory: "skills" }
+  }
 }, null, 2), "utf8");
 
 writeFileSync(policyPath, JSON.stringify({

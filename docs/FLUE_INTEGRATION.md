@@ -23,11 +23,9 @@ These tools start spawned-agent work:
 ```text
 agent_spawn
 agent_run_task
-agent_run_skill
-skill_run
 ```
 
-Portus MCP handles the MCP tool layer, policy checks, session tracking, logs, events, artifacts, and cleanup. Flue handles the spawned agent runtime.
+Skills do not add alternate run tools. Every spawned task receives the metadata catalog selected by `SUBAGENTS_SKILL_PATHS`; the spawned agent chooses applicable skills and reads them from its read-only filesystem view. Portus MCP handles the MCP layer, policy checks, session tracking, logs, events, artifacts, cleanup, and audience-specific skill selection. Flue handles the spawned agent runtime.
 
 ## CLI Path
 
@@ -72,11 +70,11 @@ agent capability gates in portus-mcp.policy.json
 
 Grant only commands you want spawned agents to use.
 
-## Workspace
+## Workspace and Skills
 
-Spawned agents run with cwd set to the registered project root.
+Spawned agents see the registered project as a writable `/workspace` root. Configured subagent skill packages are mounted separately at `/skills/<name>` as read-only, symlink-disabled roots with per-file read limits.
 
-This is not a hard filesystem sandbox. A command capable local process can access files allowed by OS permissions and granted commands.
+The agent receives only name, description, supported host metadata, and stable in-sandbox locations at initialization. It reads a selected `SKILL.md`, references, assets, or scripts itself through its normal filesystem and command capabilities. Absolute host skill paths are not put in model context, and a skill mount grants no access to its catalog parent or adjacent skills.
 
 ## Sessions
 

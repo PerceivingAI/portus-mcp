@@ -2,6 +2,7 @@ import path from "node:path";
 import { lstatSync, realpathSync } from "node:fs";
 import { loadPolicyConfig } from "./policyConfig.js";
 import { getProject } from "../state/ProjectRegistry.js";
+import type { SkillRegistrySnapshot } from "../skills/SkillRegistry.js";
 
 function isContained(root: string, target: string): boolean {
   const relative = path.relative(root, target);
@@ -17,22 +18,23 @@ function assertNotBlocked(target: string): void {
   }
 }
 
-function assertCanonicalProjectPath(root: string, target: string): void {
+function assertCanonicalRootPath(root: string, target: string, rootKind: "project" | "skill"): void {
+  const rootLabel = rootKind === "project" ? "Project" : "Skill";
   try {
     const rootInfo = lstatSync(root);
     if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
-      throw new Error("Project root cannot be resolved safely.");
+      throw new Error(`${rootLabel} root cannot be resolved safely.`);
     }
   } catch (error) {
-    if (error instanceof Error && error.message === "Project root cannot be resolved safely.") throw error;
-    throw new Error("Project root cannot be resolved safely.");
+    if (error instanceof Error && error.message === `${rootLabel} root cannot be resolved safely.`) throw error;
+    throw new Error(`${rootLabel} root cannot be resolved safely.`);
   }
 
   let canonicalRoot: string;
   try {
     canonicalRoot = realpathSync.native(root);
   } catch {
-    throw new Error("Project root cannot be resolved safely.");
+    throw new Error(`${rootLabel} root cannot be resolved safely.`);
   }
 
   const relativeTarget = path.relative(root, target);
@@ -49,7 +51,7 @@ function assertCanonicalProjectPath(root: string, target: string): void {
       nearestExisting = current;
     } catch (error) {
       const code = error && typeof error === "object" && "code" in error ? (error as NodeJS.ErrnoException).code : undefined;
-      if (code !== "ENOENT") throw new Error("Project path cannot be resolved safely.");
+      if (code !== "ENOENT") throw new Error(`${rootLabel} path cannot be resolved safely.`);
       missing = true;
     }
   }
@@ -58,16 +60,16 @@ function assertCanonicalProjectPath(root: string, target: string): void {
   try {
     canonicalExisting = realpathSync.native(nearestExisting);
   } catch {
-    throw new Error("Project path cannot be resolved safely.");
+    throw new Error(`${rootLabel} path cannot be resolved safely.`);
   }
   if (!isContained(canonicalRoot, canonicalExisting)) {
-    throw new Error("Path escapes project root.");
+    throw new Error(`Path escapes ${rootKind} root.`);
   }
 
   const unresolvedSuffix = path.relative(nearestExisting, target);
   const canonicalTarget = path.resolve(canonicalExisting, unresolvedSuffix);
   if (!isContained(canonicalRoot, canonicalTarget)) {
-    throw new Error("Path escapes project root.");
+    throw new Error(`Path escapes ${rootKind} root.`);
   }
   assertNotBlocked(canonicalTarget);
 }
@@ -83,7 +85,22 @@ export function resolveProjectPath(projectAlias: string, relativePath = "."): st
   }
 
   assertNotBlocked(target);
-  assertCanonicalProjectPath(root, target);
+  assertCanonicalRootPath(root, target, "project");
 
+  return target;
+}
+
+export function resolveReadablePath(rootAlias: string, relativePath: string, registry: SkillRegistrySnapshot): string {
+  const skill = registry.connected.byAlias.get(rootAlias);
+  if (!skill) return resolveProjectPath(rootAlias, relativePath);
+
+  const root = path.resolve(skill.rootPath);
+  const target = path.resolve(root, relativePath);
+  const relative = path.relative(root, target);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("Path escapes skill root.");
+  }
+  assertNotBlocked(target);
+  assertCanonicalRootPath(root, target, "skill");
   return target;
 }

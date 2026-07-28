@@ -10,13 +10,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getProject, listProjects } from "../state/ProjectRegistry.js";
 import { getEffectivePermissions } from "../state/PermissionRegistry.js";
 import { stateStore } from "../state/StateStore.js";
-import { resolveProjectPath } from "../policy/pathPolicy.js";
+import { resolveProjectPath, resolveReadablePath } from "../policy/pathPolicy.js";
 import { assertChatGptCommandAllowed, assertChatGptPermission } from "../policy/permissionPolicy.js";
 import { loadPolicyConfig } from "../policy/policyConfig.js";
 import { countChars, limitText } from "../runtime/outputLimits.js";
 import { runProjectCheck, runProjectScript } from "../runtime/checks.js";
 import { runProjectCommand } from "../runtime/commands.js";
 import { registerStrictProjectTool } from "./projectToolUtils.js";
+import type { SkillRegistrySnapshot } from "../skills/SkillRegistry.js";
 import {
   assertCanReadProjectPath,
   assertProjectCommandStaysInProject,
@@ -27,6 +28,7 @@ import {
   hashSha256,
   isTextLikely,
   parsePatchPaths,
+  readProjectBinaryFile,
   readProjectTextFile,
   readProjectTextFileRange,
   scoreFileSearchPath,
@@ -67,9 +69,11 @@ function safeError(error: unknown, relativePath?: string): string {
   return message === "" ? fallback : message.slice(0, 2000);
 }
 
-function pathMetadata(projectAlias: string, relativePath: string, includeHash: boolean): Record<string, unknown> {
-  const target = resolveProjectPath(projectAlias, relativePath);
-  assertCanReadProjectPath(projectAlias, target, relativePath);
+function pathMetadata(projectAlias: string, relativePath: string, includeHash: boolean, registry?: SkillRegistrySnapshot): Record<string, unknown> {
+  const target = registry
+    ? resolveReadablePath(projectAlias, relativePath, registry)
+    : resolveProjectPath(projectAlias, relativePath);
+  assertCanReadProjectPath(projectAlias, target, relativePath, registry);
   if (!existsSync(target)) return { relativePath, exists: false };
   const info = statSync(target);
   const kind = info.isDirectory() ? "directory" : info.isFile() ? "file" : "other";
@@ -313,31 +317,37 @@ function performEdit(projectAlias: string, operation: EditOperation, dryRun: boo
   return { relativePath: operation.relativePath, deleted: !dryRun, dryRun };
 }
 
-export function registerBroadProjectTools(server: McpServer): void {
-  registerStrictProjectTool(server, "project_read", "Read content, metadata, or existence for 1–20 project paths with ordered per-item results.", {
+export function registerProjectReadTool(server: McpServer, registry: SkillRegistrySnapshot): void {
+  registerStrictProjectTool(server, "project_read", "Read text, binary content, metadata, or existence for 1–20 registered project or read-only skill paths with ordered per-item results.", {
     projectAlias: z.string().min(1),
-    requests: z.array(z.object({ relativePath: z.string().min(1), mode: z.enum(["content", "metadata", "exists"]).default("content"), startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional() }).strict().superRefine((request, context) => { if (request.mode !== "content" && (request.startLine !== undefined || request.endLine !== undefined)) context.addIssue({ code: z.ZodIssueCode.custom, message: "Line ranges are only valid for content mode" }); })).min(1).max(20)
+    requests: z.array(z.object({ relativePath: z.string().min(1), mode: z.enum(["content", "binary", "metadata", "exists"]).default("content"), startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional() }).strict().superRefine((request, context) => { if (request.mode !== "content" && (request.startLine !== undefined || request.endLine !== undefined)) context.addIssue({ code: z.ZodIssueCode.custom, message: "Line ranges are only valid for content mode" }); })).min(1).max(20)
   }, readAnnotations, async ({ projectAlias, requests }) => {
-    assertChatGptPermission("projectRead", projectAlias);
+    assertChatGptPermission("projectRead", registry.connected.byAlias.has(projectAlias) ? undefined : projectAlias);
     const results: Array<Record<string, unknown>> = [];
     for (const [index, request] of requests.entries()) {
       try {
         const value = request.mode === "metadata"
-          ? pathMetadata(projectAlias, request.relativePath, false)
+          ? pathMetadata(projectAlias, request.relativePath, false, registry)
           : request.mode === "exists"
             ? (() => {
-                const target = resolveProjectPath(projectAlias, request.relativePath);
-                assertCanReadProjectPath(projectAlias, target, request.relativePath);
+                const target = resolveReadablePath(projectAlias, request.relativePath, registry);
+                assertCanReadProjectPath(projectAlias, target, request.relativePath, registry);
                 return { relativePath: request.relativePath, exists: existsSync(target) };
               })()
-            : request.startLine !== undefined || request.endLine !== undefined
-              ? await readProjectTextFileRange({ projectAlias, relativePath: request.relativePath, startLine: request.startLine, endLine: request.endLine })
-              : await readProjectTextFile({ projectAlias, relativePath: request.relativePath });
+            : request.mode === "binary"
+              ? await readProjectBinaryFile({ projectAlias, relativePath: request.relativePath }, registry)
+              : request.startLine !== undefined || request.endLine !== undefined
+                ? await readProjectTextFileRange({ projectAlias, relativePath: request.relativePath, startLine: request.startLine, endLine: request.endLine }, registry)
+                : await readProjectTextFile({ projectAlias, relativePath: request.relativePath }, registry);
         results.push({ ok: true, index, mode: request.mode, ...value });
       } catch (error) { results.push({ ok: false, index, mode: request.mode, relativePath: safeRelativePath(request.relativePath), error: safeError(error, request.relativePath) }); }
     }
     return { projectAlias, requestedCount: requests.length, successCount: results.filter((result) => result.ok).length, errorCount: results.filter((result) => !result.ok).length, results };
   });
+}
+
+export function registerBroadProjectTools(server: McpServer, registry: SkillRegistrySnapshot): void {
+  registerProjectReadTool(server, registry);
 
   const treeSchema = z.object({ relativePath: z.string().min(1).optional(), maxDepth: z.number().int().positive().max(12).optional(), includeFiles: z.boolean().optional(), includeDirs: z.boolean().optional(), maxEntries: z.number().int().positive().max(5000).optional(), format: z.enum(["tree", "json", "flat"]).optional() }).strict();
   registerStrictProjectTool(server, "project_context", "Return registered project aliases or bounded project status, tree, file listing, path metadata, and package-script context without file contents.", {

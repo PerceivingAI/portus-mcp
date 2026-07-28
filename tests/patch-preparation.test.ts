@@ -88,14 +88,15 @@ writeFileSync(configPath, JSON.stringify({
       maxRetryWindowSecs: 60
     }
   },
-  traversal: { excludedPatterns: [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"] },
-  skills: { directory: "skills" }
+  traversal: { excludedPatterns: [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"] }
 }, null, 2), "utf8");
 
 process.env.DOTENV_CONFIG_PATH = dotenvPath;
 process.env.PORTUS_MCP_CONFIG_PATH = configPath;
 process.env.PORTUS_MCP_POLICY_PATH = policyPath;
 process.env.PORTUS_MCP_STATE_DIR = stateDir;
+process.env.AGENT_SKILL_PATHS = "";
+process.env.SUBAGENTS_SKILL_PATHS = "";
 
 // Configuration modules read environment variables during module initialization, so this import must follow fixture setup.
 const { createHttpServer } = await import("../src/server.js");

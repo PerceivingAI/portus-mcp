@@ -5,33 +5,39 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { optionalEnv } from "./env.js";
-import { registerBroadProjectTools } from "./tools/projects.js";
+import { registerBroadProjectTools, registerProjectReadTool } from "./tools/projects.js";
 import { registerAgentTools } from "./tools/agents.js";
-import { registerSkillTools } from "./tools/skills.js";
 import { registerBroadPolicyTools } from "./tools/config.js";
 import { readSessionEvents } from "./state/SessionEvents.js";
 import { loadConfig } from "./config.js";
+import { connectedSkillInstructions, loadSkillRegistry } from "./skills/SkillRegistry.js";
+import type { SkillRegistrySnapshot } from "./skills/SkillRegistry.js";
 
-export function createMcpServer(): McpServer {
+export function createMcpServer(skillRegistry: SkillRegistrySnapshot = loadSkillRegistry()): McpServer {
   const server = new McpServer({
     name: "portus-mcp",
     version: "0.1.1"
+  }, {
+    instructions: connectedSkillInstructions(skillRegistry)
   });
   const { toolSurface } = loadConfig();
 
   if (toolSurface === "broad" || toolSurface === "full") {
-    registerBroadProjectTools(server);
+    registerBroadProjectTools(server, skillRegistry);
     registerBroadPolicyTools(server);
   }
+  if (toolSurface === "agent") {
+    registerProjectReadTool(server, skillRegistry);
+  }
   if (toolSurface === "agent" || toolSurface === "full") {
-    registerAgentTools(server);
-    registerSkillTools(server);
+    registerAgentTools(server, skillRegistry);
   }
 
   return server;
 }
 
 export function createHttpServer(mcpPath = optionalEnv("PORTUS_MCP_PATH", "/mcp")) {
+  const skillRegistry = loadSkillRegistry();
   const bearerToken = optionalEnv("PORTUS_MCP_BEARER_TOKEN", "").trim();
 
   const hasValidBearerToken = (authorization: string | undefined): boolean => {
@@ -157,7 +163,7 @@ export function createHttpServer(mcpPath = optionalEnv("PORTUS_MCP_PATH", "/mcp"
         req.rawHeaders.push("accept", normalizedAccept);
       }
     }
-    const server = createMcpServer();
+    const server = createMcpServer(skillRegistry);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true

@@ -32,13 +32,25 @@ function normalizeProjectRoot(rootPath: string): string {
 }
 
 const FILE = "projects.json";
+function assertProjectAlias(projectAlias: string): void {
+  if (projectAlias.trim() === "") throw new Error("Project alias is required.");
+  if (projectAlias.startsWith("skill/")) {
+    throw new Error("Project aliases beginning with skill/ are reserved for configured read-only skills.");
+  }
+}
 
 export function listProjects(): ProjectRecord[] {
   const stateProjects = stateStore.readJson<ProjectState>(FILE, { projects: [] }).projects;
   const preRegistered = listPreRegisteredProjects();
   const byAlias = new Map<string, ProjectRecord>();
-  for (const project of preRegistered) byAlias.set(project.projectAlias, project);
-  for (const project of stateProjects) byAlias.set(project.projectAlias, project);
+  for (const project of preRegistered) {
+    assertProjectAlias(project.projectAlias);
+    byAlias.set(project.projectAlias, project);
+  }
+  for (const project of stateProjects) {
+    assertProjectAlias(project.projectAlias);
+    byAlias.set(project.projectAlias, project);
+  }
   return Array.from(byAlias.values());
 }
 
@@ -49,6 +61,7 @@ export function getProject(projectAlias: string): ProjectRecord {
 }
 
 export function upsertProject(input: Omit<ProjectRecord, "createdAt" | "updatedAt">): ProjectRecord {
+  assertProjectAlias(input.projectAlias);
   const state = stateStore.readJson<ProjectState>(FILE, { projects: [] });
   const existing = state.projects.find((item) => item.projectAlias === input.projectAlias);
   const now = new Date().toISOString();
@@ -75,6 +88,7 @@ export function listPreRegisteredProjects(): ProjectRecord[] {
       throw new Error("Invalid PORTUS_MCP_PROJECTS entry. Use alias=/absolute/path;other=/absolute/path.");
     }
     const projectAlias = trimmed.slice(0, separator).trim();
+    assertProjectAlias(projectAlias);
     const rootPath = trimmed.slice(separator + 1).trim();
     if (!projectAlias || !rootPath) {
       throw new Error("Invalid PORTUS_MCP_PROJECTS entry. Project alias and path are required.");

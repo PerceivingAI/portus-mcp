@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -20,6 +20,7 @@ mkdirSync(skillsDir, { recursive: true });
 mkdirSync(path.join(skillsDir, "sample"), { recursive: true });
 mkdirSync(path.join(skillsDir, "sample", "agents"), { recursive: true });
 mkdirSync(path.join(skillsDir, "sample", "references"), { recursive: true });
+mkdirSync(path.join(skillsDir, "sample", "assets"), { recursive: true });
 mkdirSync(path.join(skillsDir, "no-entrypoint"), { recursive: true });
 writeFileSync(path.join(projectRoot, "README.md"), "# MCP Test\n", "utf8");
 writeFileSync(path.join(projectRoot, "pathological-regex.txt"), `${"a".repeat(40)}X\n`, "utf8");
@@ -49,6 +50,7 @@ writeFileSync(path.join(skillsDir, "sample", "agents", "openai.yaml"), [
 ].join("\n"), "utf8");
 writeFileSync(path.join(skillsDir, "sample", "references", "guide.md"), "# Guide\n\nUse this nested reference.\n", "utf8");
 writeFileSync(path.join(skillsDir, "sample", "references", "unicode.md"), "a🙂b\n", "utf8");
+writeFileSync(path.join(skillsDir, "sample", "assets", "sample.bin"), Buffer.from([0x00, 0xff, 0x10, 0x80]));
 writeFileSync(path.join(skillsDir, "loose.md"), "# Loose Skill\n\nThis must be ignored.\n", "utf8");
 writeFileSync(policyPath, JSON.stringify({
   agents: {
@@ -149,7 +151,6 @@ writeFileSync(configPath, JSON.stringify({
   traversal: {
     excludedPatterns: [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"]
   },
-  skills: { directory: skillsDir },
   toolSurface: "full"
 }, null, 2), "utf8");
 
@@ -159,11 +160,14 @@ process.env.PORTUS_MCP_POLICY_PATH = policyPath;
 process.env.PORTUS_MCP_STATE_DIR = stateDir;
 process.env.PORTUS_MCP_DEFAULT_PROVIDER = "cerebras";
 process.env.PORTUS_MCP_CEREBRAS_MODEL = "llama3.1-8b";
+process.env.AGENT_SKILL_PATHS = skillsDir;
+process.env.SUBAGENTS_SKILL_PATHS = skillsDir;
 process.env.CEREBRAS_API_KEY = "test-key";
 process.env.npm_execpath ??= path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
 
+// Environment-backed paths must be installed before loading stateful server modules.
 const { createHttpServer } = await import("../src/server.js");
-const { formatSkillForPrompt, parseSkillFrontmatter, readFullSkill } = await import("../src/tools/skills.js");
+const { loadSkillRegistry, parseSkillFrontmatter } = await import("../src/skills/SkillRegistry.js");
 const { updatePermissions } = await import("../src/state/PermissionRegistry.js");
 const { upsertProject } = await import("../src/state/ProjectRegistry.js");
 const { getSession, upsertSession } = await import("../src/state/SessionRegistry.js");
@@ -204,17 +208,22 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   const toolNames = new Set(tools.tools.map((tool) => tool.name));
   for (const expected of [
     "project_context", "project_read", "project_search", "project_edit", "project_patch", "project_run", "project_policy",
-    "agent_run_task", "agent_spawn", "skill_list", "skill_read"
+    "agent_run_task", "agent_spawn"
   ]) {
     assert.equal(toolNames.has(expected), true, `missing tool: ${expected}`);
   }
   for (const removed of [
     "project_register", "project_list", "permission_update", "audit_list", "audit_read",
-    "project_git_status", "project_git_diff", "project_git_diff_file", "project_git_show_untracked"
+    "project_git_status", "project_git_diff", "project_git_diff_file", "project_git_show_untracked",
+    "skill_list", "skill_read", "skill_run", "agent_run_skill", "skill_activate", "skill_resource_read", "skill_script_run"
   ]) {
     assert.equal(toolNames.has(removed), false, `${removed} should not be registered`);
   }
-  assert.equal(toolNames.has("skill_describe"), false, "skill_describe should not be registered");
+  const serverInstructions = client.getInstructions() ?? "";
+  assert.match(serverInstructions, /root-alias="skill\/sample"/);
+  assert.match(serverInstructions, /Sample skill for integration tests/);
+  assert.equal(serverInstructions.includes("# Sample Skill"), false);
+  assert.equal(serverInstructions.includes("default_prompt"), false);
 
   for (const tool of tools.tools) {
     assert.equal(typeof tool.annotations?.readOnlyHint, "boolean", `${tool.name} missing readOnlyHint`);
@@ -222,6 +231,10 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     assert.equal(typeof tool.annotations?.openWorldHint, "boolean", `${tool.name} missing openWorldHint`);
   }
 
+  assert.throws(
+    () => upsertProject({ projectAlias: "skill/collision", rootPath: projectRoot }),
+    /reserved for configured read-only skills/
+  );
   upsertProject({ projectAlias: "mcp", rootPath: projectRoot });
   const discovery = resultOf(await client.callTool({
     name: "project_context",
@@ -386,56 +399,48 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.equal(movedAndDeleted.results[0].destinationRelativePath, "copy/generated-moved.txt");
   assert.equal(movedAndDeleted.results[1].deleted, true);
 
-  const skills = resultOf(await client.callTool({ name: "skill_list", arguments: {} }));
-  assert.equal(skills.skills.some((listedSkill: any) => listedSkill.name === "sample"), true);
-  assert.equal(skills.skills.some((listedSkill: any) => listedSkill.name === "loose.md"), false);
-  const listedSample = skills.skills.find((listedSkill: any) => listedSkill.name === "sample");
-  assert.equal(listedSample.description, "Sample skill for integration tests.");
-  assert.equal("content" in listedSample, false);
-  assert.equal("path" in listedSample, false);
-  assert.equal("entrypoint" in listedSample, false);
-  assert.equal("bundledFiles" in listedSample, false);
-  assert.equal(skills.skills.some((listedSkill: any) => listedSkill.name === "no-entrypoint"), false);
+  const registry = loadSkillRegistry();
+  assert.deepEqual(registry.connected.catalog.map((skill) => skill.name), ["sample"]);
+  assert.deepEqual(registry.subagents.catalog.map((skill) => skill.name), ["sample"]);
+  assert.equal(registry.connected.byName.get("sample")?.description, "Sample skill for integration tests.");
+  assert.equal(registry.connected.byName.get("sample")?.openai?.interface?.display_name, "Sample");
+  assert.equal(registry.connected.byName.get("sample")?.openai?.interface?.default_prompt, "Use $sample for integration testing.");
 
-  const fullSkill = resultOf(await client.callTool({ name: "skill_read", arguments: { skillName: "sample" } }));
-  assert.equal(fullSkill.name, "sample");
-  assert.equal(fullSkill.description, "Sample skill for integration tests.");
-  assert.equal(fullSkill.entrypoint.endsWith("/skills/sample/SKILL.md"), true);
-  assert.equal(fullSkill.files.some((file: any) => file.relativePath === "SKILL.md" && /Sample Skill/.test(file.content)), true);
-  assert.equal(fullSkill.files.some((file: any) => file.relativePath === "agents/openai.yaml" && /display_name/.test(file.content)), true);
-  assert.equal(fullSkill.files.some((file: any) => file.relativePath === "references/guide.md" && /nested reference/.test(file.content)), true);
-  assert.equal(fullSkill.files.some((file: any) => file.relativePath === "references/unicode.md" && file.chars === 4), true);
-  assert.equal(fullSkill.totalChars, fullSkill.files.reduce((sum: number, file: any) => sum + file.chars, 0));
-
-  const invalidFullSkill = await client.callTool({ name: "skill_read", arguments: { skillName: "../sample" } });
-  assert.equal(invalidFullSkill.isError, true);
-  assert.match(JSON.stringify(invalidFullSkill.structuredContent), /Invalid skill name/);
-
-  const missingFullSkill = await client.callTool({ name: "skill_read", arguments: { skillName: "missing" } });
-  assert.equal(missingFullSkill.isError, true);
-  assert.match(JSON.stringify(missingFullSkill.structuredContent), /Skill not found: missing/);
-
-  const skillPrompt = formatSkillForPrompt(readFullSkill("sample"));
-  assert.match(skillPrompt, /--- SKILL.md ---/);
-  assert.match(skillPrompt, /Sample Skill/);
-  assert.match(skillPrompt, /--- agents\/openai.yaml ---/);
-  assert.match(skillPrompt, /--- references\/guide.md ---/);
-  assert.match(skillPrompt, /nested reference/);
-
-  resultOf(await client.callTool({
-    name: "project_policy",
-    arguments: { action: { type: "update_permissions", projectAlias: "mcp", permissions: { chatgpt: { spawnAgents: false } } } }
+  const skillEntrypoint = resultOf(await client.callTool({
+    name: "project_read",
+    arguments: { projectAlias: "skill/sample", requests: [{ relativePath: "SKILL.md", mode: "content" }] }
   }));
-  const deniedSkillRun = await client.callTool({
-    name: "skill_run",
-    arguments: { projectAlias: "mcp", skillName: "sample", task: "No-op task." }
-  });
-  assert.equal(deniedSkillRun.isError, true);
-  assert.match(JSON.stringify(deniedSkillRun.structuredContent), /Permission denied: chatgpt\.spawnAgents is false/);
-  resultOf(await client.callTool({
-    name: "project_policy",
-    arguments: { action: { type: "update_permissions", projectAlias: "mcp", permissions: { chatgpt: { spawnAgents: true } } } }
+  assert.equal(skillEntrypoint.successCount, 1);
+  assert.match(skillEntrypoint.results[0].content, /# Sample Skill/);
+  assert.equal(skillEntrypoint.results[0].content.includes("nested reference"), false);
+  assert.equal(JSON.stringify(skillEntrypoint).includes("default_prompt"), false);
+
+  const skillReference = resultOf(await client.callTool({
+    name: "project_read",
+    arguments: { projectAlias: "skill/sample", requests: [{ relativePath: "references/guide.md", mode: "content" }] }
   }));
+  assert.match(skillReference.results[0].content, /nested reference/);
+
+  const skillAsset = resultOf(await client.callTool({
+    name: "project_read",
+    arguments: { projectAlias: "skill/sample", requests: [{ relativePath: "assets/sample.bin", mode: "binary" }] }
+  }));
+  assert.equal(skillAsset.results[0].encoding, "base64");
+  assert.equal(skillAsset.results[0].contentBase64, Buffer.from([0x00, 0xff, 0x10, 0x80]).toString("base64"));
+
+  const escapedSkillRead = resultOf(await client.callTool({
+    name: "project_read",
+    arguments: { projectAlias: "skill/sample", requests: [{ relativePath: "../outside.txt", mode: "content" }] }
+  }));
+  assert.equal(escapedSkillRead.errorCount, 1);
+  assert.match(escapedSkillRead.results[0].error, /escapes skill root/);
+
+  const deniedSkillEdit = resultOf(await client.callTool({
+    name: "project_edit",
+    arguments: { projectAlias: "skill/sample", operations: [{ type: "write", relativePath: "forbidden.txt", content: "forbidden" }] }
+  }));
+  assert.equal(deniedSkillEdit.errorCount, 1);
+  assert.equal(existsSync(path.join(skillsDir, "sample", "forbidden.txt")), false);
 
   const check = resultOf(await client.callTool({
     name: "project_run",
@@ -542,30 +547,50 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.equal(JSON.stringify(auditRead.events).includes("metadataPath"), false);
 });
 
-test("skill frontmatter parser requires valid name and description", () => {
+test("skill frontmatter parser enforces the Agent Skills metadata contract", () => {
   assert.deepEqual(parseSkillFrontmatter([
     "---",
     "name: valid-skill",
-    "description: \"A valid skill.\"",
+    "description: >",
+    "  A valid folded",
+    "  skill description.",
+    "metadata:",
+    "  owner: portus",
     "---",
     "",
     "# Valid Skill"
   ].join("\n"), "valid-skill"), {
     name: "valid-skill",
-    description: "A valid skill."
+    description: "A valid folded skill description.",
+    metadata: { owner: "portus" }
   });
   assert.throws(() => parseSkillFrontmatter("# Missing\n", "missing"), /missing SKILL.md frontmatter/);
   assert.throws(() => parseSkillFrontmatter([
     "---",
     "name: missing-description",
     "---"
-  ].join("\n"), "missing-description"), /missing frontmatter description/);
+  ].join("\n"), "missing-description"), /description/i);
+  for (const invalidName of ["Invalid Name", "trailing-", "double--hyphen", "a".repeat(65)]) {
+    assert.throws(() => parseSkillFrontmatter([
+      "---",
+      `name: ${invalidName}`,
+      "description: Bad name.",
+      "---"
+    ].join("\n"), invalidName), /invalid frontmatter name/);
+  }
   assert.throws(() => parseSkillFrontmatter([
     "---",
-    "name: Invalid Name",
-    "description: Bad name.",
+    "name: valid-skill",
+    `description: ${"a".repeat(1025)}`,
     "---"
-  ].join("\n"), "invalid-name"), /invalid frontmatter name/);
+  ].join("\n"), "valid-skill"), /exceeds 1024 characters/);
+  assert.throws(() => parseSkillFrontmatter([
+    "---",
+    "name: valid-skill",
+    "name: duplicate",
+    "description: Duplicate key.",
+    "---"
+  ].join("\n"), "valid-skill"), /Map keys must be unique/);
 });
 
 

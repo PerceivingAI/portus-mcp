@@ -21,8 +21,8 @@ Together they provide alias-only project discovery and bounded project context, 
 The only tool-surface profiles are:
 
 - `broad`, the default seven project tools above;
-- `agent`, the existing agent, session, and skill tools only; and
-- `full`, the seven broad tools plus those unchanged agent/session/skill tools.
+- `agent`, the agent and session tools plus the shared bounded `project_read` capability; and
+- `full`, the seven broad tools plus the agent and session tools.
 
 There is no management or legacy profile. The obsolete project/admin MCP names have no registrations, aliases, wrappers, or compatibility paths.
 
@@ -32,7 +32,7 @@ You need Node.js 20 or newer, npm, and Git.
 
 For access from another machine or hosted client, use Tailscale Funnel, Cloudflare Tunnel, or another exposure layer that can reach the MCP server.
 
-Provider credentials are needed only when using the non-default agent/session/skill capability. The seven broad project tools do not require provider credentials.
+Provider credentials are needed only when spawning agents. The seven broad project tools and connected-agent skill reads do not require provider credentials.
 
 ## Install
 
@@ -62,7 +62,25 @@ The shipped `portus-mcp.config.json` selects the default broad surface:
 }
 ```
 
-Keep the remaining required application-config fields from the shipped file. Only add provider credentials when selecting agent functionality.
+Keep the remaining required application-config fields from the shipped file. Only add provider credentials when spawning agents.
+
+## Skills
+
+Portus treats skills as configured, read-only filesystem packages—not as skill-specific MCP tools. Two environment variables select independent audiences:
+
+```text
+AGENT_SKILL_PATHS=./skills
+SUBAGENTS_SKILL_PATHS=./skills
+```
+
+- `AGENT_SKILL_PATHS` populates the catalog advertised to the connected MCP client. The client reads a selected package through `project_read` with aliases such as `skill/project-inspector`.
+- `SUBAGENTS_SKILL_PATHS` populates the catalog and read-only `/skills/<name>` mounts given to Portus-spawned agents.
+- Each value accepts semicolon-separated individual skill directories or catalog directories.
+- Relative paths resolve from the directory containing `portus-mcp.config.json`.
+- An unset variable uses the local `./skills` catalog when it exists. An explicitly empty value disables that audience.
+- No user, system, Codex, or other host skill directory is scanned implicitly.
+
+Skills are startup snapshots. After adding, deleting, changing, or reconfiguring a skill, restart Portus; reconnect the MCP client or start a new spawned-agent session. There are no `skill_list`, `skill_read`, `skill_run`, or `agent_run_skill` tools.
 
 ## Start
 

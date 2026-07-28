@@ -115,8 +115,7 @@ writeFileSync(configPath, JSON.stringify({
   },
   traversal: {
     excludedPatterns: [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"]
-  },
-  skills: { directory: "skills" }
+  }
 }, null, 2), "utf8");
 
 process.env.DOTENV_CONFIG_PATH = dotenvPath;

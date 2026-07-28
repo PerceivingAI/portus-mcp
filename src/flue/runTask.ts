@@ -12,6 +12,7 @@ import { assertAgentPermission } from "../policy/permissionPolicy.js";
 import { getEffectivePermissions } from "../state/PermissionRegistry.js";
 import { loadAgentCommandConfig, loadPolicyConfig } from "../policy/policyConfig.js";
 import { countChars } from "../runtime/outputLimits.js";
+import type { SkillAudienceRegistry } from "../skills/SkillRegistry.js";
 
 const runningProcesses = new Map<string, ChildProcess>();
 const runningStops = new Set<string>();
@@ -46,6 +47,7 @@ export type RunFlueTaskInput = {
   task: string;
   agentTemplate: string;
   timeoutSecs?: number;
+  subagentSkills?: SkillAudienceRegistry;
 };
 
 type QueueItem = {
@@ -152,6 +154,19 @@ async function startSessionExecution(input: RunFlueTaskInput, record: SessionRec
 
   const commandConfig = loadAgentCommandConfig();
   const grantedCommands = grantedCommandsForProject(input.projectAlias, commandConfig.allowedCommands);
+  const maxSkillReadBytes = loadPolicyConfig().limits.skills.maxReadChars * 4;
+  const subagentSkills = (input.subagentSkills?.skills ?? []).map((skill) => ({
+    name: skill.name,
+    description: skill.description,
+    entrypoint: skill.entrypoint,
+    mountPath: `/skills/${skill.name}`,
+    rootPath: skill.rootPath,
+    allowImplicitInvocation: skill.allowImplicitInvocation,
+    ...(skill.compatibility === undefined ? {} : { compatibility: skill.compatibility }),
+    ...(skill.allowedTools === undefined ? {} : { allowedTools: skill.allowedTools }),
+    ...(skill.openai?.dependencies === undefined ? {} : { dependencies: skill.openai.dependencies }),
+    maxReadBytes: maxSkillReadBytes
+  }));
 
   const flueAgentName = input.agentTemplate.replace(/\.ts$/, "");
   const flueWorkspace = process.cwd();
@@ -207,7 +222,8 @@ async function startSessionExecution(input: RunFlueTaskInput, record: SessionRec
       provider: providerConfig.provider,
       model: providerConfig.model,
       allowedCommands: commandConfig.allowedCommands,
-      grantedCommands
+      grantedCommands,
+      subagentSkills
     })
   ];
 
@@ -223,10 +239,11 @@ async function startSessionExecution(input: RunFlueTaskInput, record: SessionRec
   if (record.status === "queued") {
     appendSessionEvent(runningRecord, "dequeued", "Session dequeued.", { queueWaitMs: runningRecord.queueWaitMs ?? null });
   }
-  appendSessionEvent(runningRecord, "started", "Session started.", { grantedCommands });
+  appendSessionEvent(runningRecord, "started", "Session started.", { grantedCommands, skills: subagentSkills.map((skill) => skill.name) });
   writeFileSync(record.metadataPath, JSON.stringify({
     status: "running",
     grantedCommands,
+    skills: subagentSkills.map((skill) => skill.name),
     queuedAt: runningRecord.queuedAt ?? null,
     dequeuedAt: runningRecord.dequeuedAt ?? null,
     queueWaitMs: runningRecord.queueWaitMs ?? null

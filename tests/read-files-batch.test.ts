@@ -54,13 +54,14 @@ function writePolicy(maxChars = 500000): void {
 writePolicy();
 writeFileSync(configPath, JSON.stringify({
   agents: { defaultTemplate: "ephemeral-project-agent", retry: { enabled: true, maxAttempts: 3, baseDelayMs: 1500, maxDelayMs: 15000, jitterRatio: 0.2, retryOn: ["provider_rate_limited"], respectRetryAfter: true, maxRetryWindowSecs: 60 } },
-  traversal: { excludedPatterns: [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"] },
-  skills: { directory: "skills" }
+  traversal: { excludedPatterns: [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"] }
 }, null, 2), "utf8");
 process.env.DOTENV_CONFIG_PATH = dotenvPath;
 process.env.PORTUS_MCP_CONFIG_PATH = configPath;
 process.env.PORTUS_MCP_POLICY_PATH = policyPath;
 process.env.PORTUS_MCP_STATE_DIR = stateDir;
+process.env.AGENT_SKILL_PATHS = "";
+process.env.SUBAGENTS_SKILL_PATHS = "";
 
 // Configuration reads environment variables at module initialization, so this test intentionally imports after fixture setup.
 const { createHttpServer } = await import("../src/server.js");

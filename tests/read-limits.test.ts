@@ -119,14 +119,15 @@ writeFileSync(configPath, JSON.stringify({
   },
   traversal: {
     excludedPatterns: [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"]
-  },
-  skills: { directory: "skills" }
+  }
 }, null, 2), "utf8");
 
 process.env.DOTENV_CONFIG_PATH = dotenvPath;
 process.env.PORTUS_MCP_CONFIG_PATH = configPath;
 process.env.PORTUS_MCP_POLICY_PATH = policyPath;
 process.env.PORTUS_MCP_STATE_DIR = stateDir;
+process.env.AGENT_SKILL_PATHS = "";
+process.env.SUBAGENTS_SKILL_PATHS = "";
 process.env.PORTUS_MCP_DEFAULT_PROVIDER = "cerebras";
 process.env.PORTUS_MCP_CEREBRAS_MODEL = "llama3.1-8b";
 process.env.CEREBRAS_API_KEY = "test-key";

@@ -21,7 +21,7 @@ project_policy
 | Tool | Use |
 |---|---|
 | `project_context` | With `include.projects=true` and no `projectAlias`, discover registered aliases only. With a `projectAlias`, retrieve bounded project status, tree, file-list, path metadata/existence, and package-script sections. Any project-scoped section requires `projectAlias`; the tool never returns file contents. |
-| `project_read` | Submit 1–20 ordered content, line-range, metadata, or existence requests. Per-item runtime failures are isolated. |
+| `project_read` | Submit 1–20 ordered content, binary, line-range, metadata, or existence requests. Per-item runtime failures are isolated. Besides registered projects, it resolves configured connected-agent skills through reserved `skill/<name>` aliases. |
 | `project_search` | Search files, text, symbols, or all supported modes with server-bounded results and scanning. JavaScript regex matching runs in an isolated worker with a generous policy-owned execution budget, preserving full regex behavior without blocking the MCP event loop. |
 | `project_edit` | Run ordered write, replace, insert, copy, move, delete, mkdir, or rmdir operations, optionally as a dry run. The batch is ordered but not atomic. |
 | `project_patch` | Prepare or apply a unified patch with policy checks, preconditions, dry-run behavior, and destructive confirmation where required. |
@@ -35,10 +35,10 @@ Discovery annotations describe each tool's maximum capability. `project_edit` an
 | Profile | Available surface |
 |---|---|
 | `broad` | Exactly the seven broad tools above. This is the default. |
-| `agent` | Existing agent, session, and skill tools only. |
-| `full` | The seven broad tools plus the unchanged agent, session, and skill tools. |
+| `agent` | Agent and session tools plus the shared `project_read` capability. |
+| `full` | The seven broad tools plus the agent and session tools. |
 
-There is no management or legacy profile. No profile registers an obsolete project/admin name or exposes a compatibility path.
+There is no management or legacy profile. No profile registers an obsolete project/admin or skill-specific name, and no compatibility path restores one. Connected-agent skill metadata is delivered through MCP server instructions; selected files are read through `project_read`, not `skill_list`, `skill_read`, or `skill_run`.
 
 ## Project Discovery and Policy Actions
 
@@ -61,6 +61,7 @@ Every adapter remains bounded by:
 
 - registered project-root confinement;
 - blocked-path and traversal policy;
+- configured connected-agent skill-root confinement for `skill/<name>` reads;
 - Git-ignore read policy;
 - the least existing permission required for each absorbed action;
 - allowlisted command and package-script policy;

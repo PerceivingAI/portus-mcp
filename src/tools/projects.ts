@@ -6,21 +6,22 @@ import { execFileSync } from "node:child_process";
 import { loadConfig } from "../config.js";
 import { getProject } from "../state/ProjectRegistry.js";
 import { stateStore } from "../state/StateStore.js";
-import { resolveProjectPath } from "../policy/pathPolicy.js";
+import { resolveProjectPath, resolveReadablePath } from "../policy/pathPolicy.js";
 import { loadPolicyConfig } from "../policy/policyConfig.js";
 import { getEffectivePermissions } from "../state/PermissionRegistry.js";
 import { limitText } from "../runtime/outputLimits.js";
-export { registerBroadProjectTools } from "./projectBroad.js";
+import type { SkillRegistrySnapshot } from "../skills/SkillRegistry.js";
+export { registerBroadProjectTools, registerProjectReadTool } from "./projectBroad.js";
 
 const TEXT_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json", ".md", ".txt", ".yaml", ".yml", ".toml", ".env", ".html", ".css", ".scss", ".xml", ".sh", ".ps1", ".sql"]);
 
-function resolveReadableTextFile(projectAlias: string, relativePath: string): string {
+function resolveReadableTextFile(projectAlias: string, relativePath: string, registry: SkillRegistrySnapshot): string {
   if (path.posix.isAbsolute(relativePath) || path.win32.isAbsolute(relativePath)) {
     throw new Error("Path is not allowed");
   }
   let target: string;
   try {
-    target = resolveProjectPath(projectAlias, relativePath);
+    target = resolveReadablePath(projectAlias, relativePath, registry);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const matchedAt = message.indexOf(" matched ");
@@ -29,7 +30,7 @@ function resolveReadableTextFile(projectAlias: string, relativePath: string): st
     }
     throw error;
   }
-  assertCanReadProjectPath(projectAlias, target, relativePath);
+  assertCanReadProjectPath(projectAlias, target, relativePath, registry);
   if (!existsSync(target)) throw new Error(`File does not exist: ${relativePath}`);
   try {
     if (!statSync(target).isFile()) throw new Error(`Path is not a file: ${relativePath}`);
@@ -41,9 +42,9 @@ function resolveReadableTextFile(projectAlias: string, relativePath: string): st
   return target;
 }
 
-export async function readProjectTextFile(input: { projectAlias: string; relativePath: string }) {
+export async function readProjectTextFile(input: { projectAlias: string; relativePath: string }, registry: SkillRegistrySnapshot) {
   const readLimit = loadPolicyConfig().limits.fileRead.maxChars;
-  const target = resolveReadableTextFile(input.projectAlias, input.relativePath);
+  const target = resolveReadableTextFile(input.projectAlias, input.relativePath, registry);
   let content: string;
   try {
     content = readFileSync(target, "utf8");
@@ -62,12 +63,12 @@ function assertValidLineRange(startLine: number, endLine: number): void {
 }
 
 
-export async function readProjectTextFileRange(input: { projectAlias: string; relativePath: string; startLine?: number; endLine?: number }) {
+export async function readProjectTextFileRange(input: { projectAlias: string; relativePath: string; startLine?: number; endLine?: number }, registry: SkillRegistrySnapshot) {
   const startLine = input.startLine ?? 1;
   const endLine = input.endLine ?? startLine + 199;
   assertValidLineRange(startLine, endLine);
 
-  const target = resolveReadableTextFile(input.projectAlias, input.relativePath);
+  const target = resolveReadableTextFile(input.projectAlias, input.relativePath, registry);
   const stream = createReadStream(target, { encoding: "utf8" });
   const lines: string[] = [];
   let lineNumber = 0;
@@ -109,6 +110,37 @@ export async function readProjectTextFileRange(input: { projectAlias: string; re
     totalChars: limited.totalChars,
     omittedChars: limited.omittedChars,
     limit: limited.limit
+  };
+}
+
+export async function readProjectBinaryFile(input: { projectAlias: string; relativePath: string }, registry: SkillRegistrySnapshot) {
+  if (path.posix.isAbsolute(input.relativePath) || path.win32.isAbsolute(input.relativePath)) {
+    throw new Error("Path is not allowed");
+  }
+  const target = resolveReadablePath(input.projectAlias, input.relativePath, registry);
+  assertCanReadProjectPath(input.projectAlias, target, input.relativePath, registry);
+  if (!existsSync(target)) throw new Error(`File does not exist: ${input.relativePath}`);
+  const info = statSync(target);
+  if (!info.isFile()) throw new Error(`Path is not a file: ${input.relativePath}`);
+  const limit = loadPolicyConfig().limits.fileRead.maxChars;
+  const encodedChars = Math.ceil(info.size / 3) * 4;
+  if (encodedChars > limit) {
+    throw new Error(`Binary file exceeds the configured read limit: ${input.relativePath}`);
+  }
+  let contentBase64: string;
+  try {
+    contentBase64 = readFileSync(target).toString("base64");
+  } catch {
+    throw new Error(`Unable to read binary file: ${input.relativePath}`);
+  }
+  return {
+    projectAlias: input.projectAlias,
+    relativePath: input.relativePath,
+    contentBase64,
+    encoding: "base64" as const,
+    bytes: info.size,
+    chars: contentBase64.length,
+    limit
   };
 }
 
@@ -155,7 +187,8 @@ function isGitIgnored(projectRoot: string, target: string): boolean {
   }
 }
 
-export function assertCanReadProjectPath(projectAlias: string, target: string, relativePath: string): void {
+export function assertCanReadProjectPath(projectAlias: string, target: string, relativePath: string, registry?: SkillRegistrySnapshot): void {
+  if (registry?.connected.byAlias.has(projectAlias)) return;
   const permissions = getEffectivePermissions(projectAlias).chatgpt;
   if (permissions.readGitIgnoredFiles) return;
   if (isGitIgnored(getProject(projectAlias).rootPath, target)) {
@@ -163,10 +196,12 @@ export function assertCanReadProjectPath(projectAlias: string, target: string, r
   }
 }
 
-export function canReadProjectRelativePath(projectAlias: string, relativePath: string): boolean {
+export function canReadProjectRelativePath(projectAlias: string, relativePath: string, registry?: SkillRegistrySnapshot): boolean {
   try {
-    const target = resolveProjectPath(projectAlias, relativePath);
-    assertCanReadProjectPath(projectAlias, target, relativePath);
+    const target = registry
+      ? resolveReadablePath(projectAlias, relativePath, registry)
+      : resolveProjectPath(projectAlias, relativePath);
+    assertCanReadProjectPath(projectAlias, target, relativePath, registry);
     return true;
   } catch {
     return false;
