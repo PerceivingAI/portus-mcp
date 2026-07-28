@@ -12,9 +12,7 @@ import { registerStrictProjectTool } from "./projectToolUtils.js";
 
 const permissionUpdateSchema = z.object({
   chatgpt: z.object({
-    registerProjects: z.boolean().optional(),
-    updatePermissions: z.boolean().optional(),
-    spawnSubagents: z.boolean().optional(),
+    subagentTask: z.boolean().optional(),
     projectContext: z.boolean().optional(),
     projectRead: z.boolean().optional(),
     projectSearch: z.boolean().optional(),
@@ -187,7 +185,6 @@ export function registerBroadPolicyTools(server: McpServer): void {
     if (!action) throw new Error("Missing project_policy action");
     if (action.type === "register_project") {
       assertChatGptPermission("projectPolicy", action.projectAlias);
-      assertChatGptPermission("registerProjects", action.projectAlias);
       stateStore.requireAuditWritable();
       const record = upsertProject({ projectAlias: action.projectAlias, rootPath: action.rootPath });
       stateStore.audit({ tool: "project_policy", operation: "register_project", projectAlias: action.projectAlias });
@@ -195,7 +192,6 @@ export function registerBroadPolicyTools(server: McpServer): void {
     }
     if (action.type === "update_permissions") {
       assertChatGptPermission("projectPolicy", action.projectAlias);
-      assertChatGptPermission("updatePermissions", action.projectAlias);
       return { action: action.type, projectAlias: action.projectAlias ?? null, permissions: updatePermissions({ projectAlias: action.projectAlias, permissions: action.permissions }) };
     }
     if (action.type === "list_audit") {

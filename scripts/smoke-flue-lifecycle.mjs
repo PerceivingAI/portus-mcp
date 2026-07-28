@@ -87,9 +87,7 @@ writeFileSync(policyPath, JSON.stringify({
   },
   chatgpt: {
     permissions: {
-      spawnSubagents: true,
-      registerProjects: true,
-      updatePermissions: true,
+      subagentTask: true,
       projectContext: true,
       projectRead: true,
       projectSearch: true,

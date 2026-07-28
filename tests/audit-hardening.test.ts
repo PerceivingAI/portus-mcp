@@ -39,9 +39,7 @@ function writePolicy(strictMode: boolean): void {
     },
     chatgpt: {
       permissions: {
-        registerProjects: false,
-        updatePermissions: true,
-        spawnSubagents: true,
+        subagentTask: true,
         projectContext: true,
         projectRead: true,
         projectSearch: true,

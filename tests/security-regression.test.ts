@@ -59,9 +59,7 @@ writeFileSync(policyPath, JSON.stringify({
   },
   chatgpt: {
     permissions: {
-      registerProjects: true,
-      updatePermissions: false,
-      spawnSubagents: true,
+      subagentTask: true,
       projectContext: true,
       projectRead: true,
       projectSearch: true,
@@ -170,10 +168,10 @@ async function withClient(t: any): Promise<Client> {
 }
 
 test("permission gates cover every chatgpt and agents field", () => {
-  for (const permission of ["readGitIgnoredFiles", "updatePermissions"] as const) {
+  for (const permission of ["readGitIgnoredFiles", "useShell"] as const) {
     assert.throws(() => assertChatGptPermission(permission, "missing-project"), /Permission denied/);
   }
-  for (const permission of ["registerProjects", "spawnSubagents", "projectContext", "projectRead", "projectSearch", "projectEdit", "projectPatch", "projectRun", "projectPolicy", "requireConfirmation"] as const) {
+  for (const permission of ["subagentTask", "projectContext", "projectRead", "projectSearch", "projectEdit", "projectPatch", "projectRun", "projectPolicy", "requireConfirmation"] as const) {
     assert.doesNotThrow(() => assertChatGptPermission(permission, "missing-project"));
   }
 

@@ -9,9 +9,7 @@ export type { AgentProvider, AgentProviderConfig, AgentProviderDefinition } from
 
 
 export type ChatGptPermissionConfig = {
-  registerProjects: boolean;
-  updatePermissions: boolean;
-  spawnSubagents: boolean;
+  subagentTask: boolean;
   projectContext: boolean;
   projectRead: boolean;
   projectSearch: boolean;

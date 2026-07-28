@@ -60,13 +60,23 @@ function normalizePartialPermissions(input: PartialPermissionConfig | Record<str
     raw.subagents = raw.agents;
     delete raw.agents;
   }
-  if (raw.chatgpt && typeof raw.chatgpt === "object" && "spawnAgents" in raw.chatgpt && !("spawnSubagents" in raw.chatgpt)) {
-    raw.chatgpt = { ...raw.chatgpt, spawnSubagents: (raw.chatgpt as Record<string, unknown>).spawnAgents };
-    delete (raw.chatgpt as Record<string, unknown>).spawnAgents;
+  if (raw.chatgpt && typeof raw.chatgpt === "object") {
+    const chatgptObj = { ...(raw.chatgpt as Record<string, unknown>) };
+    if ("spawnAgents" in chatgptObj && !("subagentTask" in chatgptObj)) {
+      chatgptObj.subagentTask = chatgptObj.spawnAgents;
+      delete chatgptObj.spawnAgents;
+    }
+    if ("spawnSubagents" in chatgptObj && !("subagentTask" in chatgptObj)) {
+      chatgptObj.subagentTask = chatgptObj.spawnSubagents;
+      delete chatgptObj.spawnSubagents;
+    }
+    delete chatgptObj.registerProjects;
+    delete chatgptObj.updatePermissions;
+    raw.chatgpt = chatgptObj;
   }
   const allowedTopLevel: Record<string, true> = { chatgpt: true, subagents: true };
   const allowedChatGpt: Record<string, true> = {
-    registerProjects: true, updatePermissions: true, spawnSubagents: true,
+    subagentTask: true,
     projectContext: true, projectRead: true, projectSearch: true, projectEdit: true,
     projectPatch: true, projectRun: true, projectPolicy: true,
     readGitIgnoredFiles: true, requireConfirmation: true, useShell: true, allowedCommands: true

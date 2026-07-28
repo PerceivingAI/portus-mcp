@@ -38,9 +38,7 @@ const policySchema = z.object({
   }).strict(),
   chatgpt: z.object({
     permissions: z.object({
-      registerProjects: z.boolean(),
-      updatePermissions: z.boolean(),
-      spawnSubagents: z.boolean(),
+      subagentTask: z.boolean(),
       projectContext: z.boolean(),
       projectRead: z.boolean(),
       projectSearch: z.boolean(),

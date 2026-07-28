@@ -45,9 +45,7 @@ const basePolicy = {
   },
   chatgpt: {
     permissions: {
-      registerProjects: true,
-      updatePermissions: true,
-      spawnSubagents: false,
+      subagentTask: false,
       projectContext: true,
       projectRead: true,
       projectSearch: true,
