@@ -1,4 +1,4 @@
-import { AgentPermissionConfig, ChatGptPermissionConfig, PermissionConfig } from "../config.js";
+import { SubagentPermissionConfig, ChatGptPermissionConfig, PermissionConfig } from "../config.js";
 import { policyPermissions } from "../policy/policyConfig.js";
 import { stateStore } from "./StateStore.js";
 
@@ -9,7 +9,7 @@ type PermissionState = {
 
 export type PartialPermissionConfig = {
   chatgpt?: Partial<ChatGptPermissionConfig>;
-  agents?: Partial<AgentPermissionConfig>;
+  subagents?: Partial<SubagentPermissionConfig>;
 } & Record<string, unknown>;
 
 const FILE = "permissions.json";
@@ -29,10 +29,10 @@ export function getEffectivePermissions(projectAlias?: string): PermissionConfig
       ...globalOverride.chatgpt,
       ...projectOverride.chatgpt
     },
-    agents: {
-      ...base.agents,
-      ...globalOverride.agents,
-      ...projectOverride.agents
+    subagents: {
+      ...base.subagents,
+      ...globalOverride.subagents,
+      ...projectOverride.subagents
     }
   };
 }
@@ -55,15 +55,23 @@ export function updatePermissions(input: {
 }
 
 function normalizePartialPermissions(input: PartialPermissionConfig | Record<string, unknown>): PartialPermissionConfig {
-  const raw = input as Record<string, unknown>;
-  const allowedTopLevel: Record<string, true> = { chatgpt: true, agents: true };
+  const raw = { ...(input as Record<string, unknown>) };
+  if (raw.agents !== undefined && raw.subagents === undefined) {
+    raw.subagents = raw.agents;
+    delete raw.agents;
+  }
+  if (raw.chatgpt && typeof raw.chatgpt === "object" && "spawnAgents" in raw.chatgpt && !("spawnSubagents" in raw.chatgpt)) {
+    raw.chatgpt = { ...raw.chatgpt, spawnSubagents: (raw.chatgpt as Record<string, unknown>).spawnAgents };
+    delete (raw.chatgpt as Record<string, unknown>).spawnAgents;
+  }
+  const allowedTopLevel: Record<string, true> = { chatgpt: true, subagents: true };
   const allowedChatGpt: Record<string, true> = {
-    registerProjects: true, updatePermissions: true, spawnAgents: true,
+    registerProjects: true, updatePermissions: true, spawnSubagents: true,
     projectContext: true, projectRead: true, projectSearch: true, projectEdit: true,
     projectPatch: true, projectRun: true, projectPolicy: true,
     readGitIgnoredFiles: true, requireConfirmation: true, useShell: true, allowedCommands: true
   };
-  const allowedAgents: Record<string, true> = { network: true, maxRuntimeSecs: true };
+  const allowedSubagents: Record<string, true> = { network: true, maxRuntimeSecs: true };
   const rejectUnknown = (value: unknown, allowed: Record<string, true>, scope: string): void => {
     if (value === undefined) return;
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${scope} permissions must be an object`);
@@ -72,16 +80,16 @@ function normalizePartialPermissions(input: PartialPermissionConfig | Record<str
   };
   rejectUnknown(raw, allowedTopLevel, "top-level");
   rejectUnknown(raw.chatgpt, allowedChatGpt, "chatgpt");
-  rejectUnknown(raw.agents, allowedAgents, "agents");
+  rejectUnknown(raw.subagents, allowedSubagents, "subagents");
   return {
     chatgpt: { ...((raw.chatgpt as Partial<ChatGptPermissionConfig> | undefined) ?? {}) },
-    agents: { ...((raw.agents as Partial<AgentPermissionConfig> | undefined) ?? {}) }
+    subagents: { ...((raw.subagents as Partial<SubagentPermissionConfig> | undefined) ?? {}) }
   };
 }
 
 function mergePartialPermissions(current: PartialPermissionConfig, next: PartialPermissionConfig): PartialPermissionConfig {
   return {
     chatgpt: { ...(normalizePartialPermissions(current).chatgpt ?? {}), ...(next.chatgpt ?? {}) },
-    agents: { ...(normalizePartialPermissions(current).agents ?? {}), ...(next.agents ?? {}) }
+    subagents: { ...(normalizePartialPermissions(current).subagents ?? {}), ...(next.subagents ?? {}) }
   };
 }

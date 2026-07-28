@@ -16,7 +16,7 @@ const dotenvPath = path.join(root, "missing.env");
 mkdirSync(projectRoot, { recursive: true });
 function writePolicy(strictMode: boolean): void {
   writeFileSync(policyPath, JSON.stringify({
-    agents: {
+    subagents: {
       concurrency: {
         maxConcurrent: 4,
         maxConcurrentPerProject: 2,
@@ -41,7 +41,7 @@ function writePolicy(strictMode: boolean): void {
       permissions: {
         registerProjects: false,
         updatePermissions: true,
-        spawnAgents: true,
+        spawnSubagents: true,
         projectContext: true,
         projectRead: true,
         projectSearch: true,
@@ -77,7 +77,7 @@ function writePolicy(strictMode: boolean): void {
       skills: {
         maxReadChars: 200000
       },
-      agentOutput: {
+      subagentOutput: {
         maxStdoutChars: 200000,
         maxStderrChars: 200000
       },
@@ -99,8 +99,8 @@ function writePolicy(strictMode: boolean): void {
 }
 writePolicy(false);
 writeFileSync(configPath, JSON.stringify({
-  agents: {
-    defaultTemplate: "ephemeral-project-agent",
+  subagents: {
+    defaultTemplate: "ephemeral-project-subagent",
     retry: {
       enabled: true,
       maxAttempts: 3,

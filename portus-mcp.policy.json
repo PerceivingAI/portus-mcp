@@ -1,5 +1,5 @@
 {
-  "agents": {
+  "subagents": {
     "concurrency": {
       "maxConcurrent": 4,
       "maxConcurrentPerProject": 2,
@@ -24,7 +24,7 @@
     "permissions": {
       "registerProjects": false,
       "updatePermissions": false,
-      "spawnAgents": true,
+      "spawnSubagents": true,
       "projectContext": true,
       "projectRead": true,
       "projectSearch": true,
@@ -72,7 +72,7 @@
     "skills": {
       "maxReadChars": 200000
     },
-    "agentOutput": {
+    "subagentOutput": {
       "maxStdoutChars": 200000,
       "maxStderrChars": 200000
     },

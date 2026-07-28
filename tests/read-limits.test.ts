@@ -17,7 +17,7 @@ mkdirSync(projectRoot, { recursive: true });
 writeFileSync(path.join(projectRoot, "README.md"), "abcdefghijklmnopqrstuvwxyz\n", "utf8");
 
 const basePolicy = {
-  agents: {
+  subagents: {
     concurrency: {
       maxConcurrent: 4,
       maxConcurrentPerProject: 2,
@@ -42,7 +42,7 @@ const basePolicy = {
     permissions: {
       registerProjects: true,
       updatePermissions: false,
-      spawnAgents: true,
+      spawnSubagents: true,
       projectContext: true,
       projectRead: true,
       projectSearch: true,
@@ -78,7 +78,7 @@ const basePolicy = {
     skills: {
       maxReadChars: 200000,
     },
-    agentOutput: {
+    subagentOutput: {
       maxStdoutChars: 200000,
       maxStderrChars: 200000,
     },
@@ -104,8 +104,8 @@ function writePolicy(policy = basePolicy): void {
 
 writePolicy();
 writeFileSync(configPath, JSON.stringify({
-  agents: {
-    defaultTemplate: "ephemeral-project-agent",
+  subagents: {
+    defaultTemplate: "ephemeral-project-subagent",
     retry: {
       enabled: true,
       maxAttempts: 3,

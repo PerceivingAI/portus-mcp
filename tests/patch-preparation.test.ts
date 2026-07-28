@@ -30,7 +30,7 @@ execFileSync("git", ["add", ".gitignore", "existing.txt", "empty.txt", "deleted.
 execFileSync("git", ["commit", "-m", "fixture"], { cwd: projectRoot, stdio: "ignore" });
 
 writeFileSync(policyPath, JSON.stringify({
-  agents: {
+  subagents: {
     concurrency: { maxConcurrent: 4, maxConcurrentPerProject: 2, queueEnabled: false, maxQueueDepth: 10 },
     lifecycle: {
       queuedTaskTtlSecs: 300,
@@ -47,7 +47,7 @@ writeFileSync(policyPath, JSON.stringify({
     permissions: {
       registerProjects: true,
       updatePermissions: true,
-      spawnAgents: false,
+      spawnSubagents: false,
       projectContext: true,
       projectRead: true,
       projectSearch: true,
@@ -67,7 +67,7 @@ writeFileSync(policyPath, JSON.stringify({
     textEdit: { maxOperationChars: 200000, maxSearchOrMarkerChars: 20000 },
     search: { maxScanEntries: 100000, maxTextFileChars: 200000 },
     skills: { maxReadChars: 200000 },
-    agentOutput: { maxStdoutChars: 200000, maxStderrChars: 200000 },
+    subagentOutput: { maxStdoutChars: 200000, maxStderrChars: 200000 },
     sessionEvents: { maxEvents: 500, maxChunkChars: 4000 },
     audit: { maxEvents: 1000 },
     process: { maxOutputBufferMb: 10 }
@@ -75,8 +75,8 @@ writeFileSync(policyPath, JSON.stringify({
   audit: { strictMode: false }
 }, null, 2), "utf8");
 writeFileSync(configPath, JSON.stringify({
-  agents: {
-    defaultTemplate: "ephemeral-project-agent",
+  subagents: {
+    defaultTemplate: "ephemeral-project-subagent",
     retry: {
       enabled: true,
       maxAttempts: 3,

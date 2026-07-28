@@ -49,7 +49,7 @@ export async function runProjectScript(
       timeout: timeoutSecs * 1000,
       maxBuffer
     });
-    const policy = loadPolicyConfig().limits.agentOutput;
+    const policy = loadPolicyConfig().limits.subagentOutput;
     const stdout = limitText(result.stdout, policy.maxStdoutChars);
     const stderr = limitText(result.stderr, policy.maxStderrChars);
     return {
@@ -60,7 +60,7 @@ export async function runProjectScript(
       truncated: stdout.truncated || stderr.truncated
     };
   } catch (error: any) {
-    const policy = loadPolicyConfig().limits.agentOutput;
+    const policy = loadPolicyConfig().limits.subagentOutput;
     const stdout = limitText(error?.stdout ?? "", policy.maxStdoutChars);
     const stderr = limitText(error?.stderr ?? String(error), policy.maxStderrChars);
     return {

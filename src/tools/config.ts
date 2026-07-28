@@ -14,7 +14,7 @@ const permissionUpdateSchema = z.object({
   chatgpt: z.object({
     registerProjects: z.boolean().optional(),
     updatePermissions: z.boolean().optional(),
-    spawnAgents: z.boolean().optional(),
+    spawnSubagents: z.boolean().optional(),
     projectContext: z.boolean().optional(),
     projectRead: z.boolean().optional(),
     projectSearch: z.boolean().optional(),
@@ -25,7 +25,7 @@ const permissionUpdateSchema = z.object({
     readGitIgnoredFiles: z.boolean().optional(),
     allowedCommands: z.array(z.string().regex(/^[A-Za-z0-9._-]+$/)).optional()
   }).strict().optional(),
-  agents: z.object({
+  subagents: z.object({
     network: z.boolean().optional(),
     maxRuntimeSecs: z.number().int().positive().optional()
   }).strict().optional()

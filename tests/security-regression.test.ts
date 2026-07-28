@@ -36,7 +36,7 @@ execFileSync("git", ["commit", "-m", "initial"], { cwd: projectRoot, stdio: "ign
 writeFileSync(path.join(projectRoot, ".env"), "SECRET_TOKEN=changed\n", "utf8");
 
 writeFileSync(policyPath, JSON.stringify({
-  agents: {
+  subagents: {
     concurrency: {
       maxConcurrent: 4,
       maxConcurrentPerProject: 2,
@@ -61,7 +61,7 @@ writeFileSync(policyPath, JSON.stringify({
     permissions: {
       registerProjects: true,
       updatePermissions: false,
-      spawnAgents: true,
+      spawnSubagents: true,
       projectContext: true,
       projectRead: true,
       projectSearch: true,
@@ -97,7 +97,7 @@ writeFileSync(policyPath, JSON.stringify({
     skills: {
       maxReadChars: 200000,
     },
-    agentOutput: {
+    subagentOutput: {
       maxStdoutChars: 200000,
       maxStderrChars: 200000,
     },
@@ -117,8 +117,8 @@ writeFileSync(policyPath, JSON.stringify({
   }
 }, null, 2), "utf8");
 writeFileSync(configPath, JSON.stringify({
-  agents: {
-    defaultTemplate: "ephemeral-project-agent",
+  subagents: {
+    defaultTemplate: "ephemeral-project-subagent",
     retry: {
       enabled: true,
       maxAttempts: 3,
@@ -146,7 +146,7 @@ process.env.PORTUS_MCP_CEREBRAS_MODEL = "llama3.1-8b";
 process.env.CEREBRAS_API_KEY = "test-key";
 
 const { createHttpServer } = await import("../src/server.js");
-const { assertAgentPermission, assertChatGptPermission } = await import("../src/policy/permissionPolicy.js");
+const { assertSubagentPermission, assertChatGptPermission } = await import("../src/policy/permissionPolicy.js");
 const { getEffectivePermissions, updatePermissions } = await import("../src/state/PermissionRegistry.js");
 const { upsertProject } = await import("../src/state/ProjectRegistry.js");
 
@@ -173,23 +173,23 @@ test("permission gates cover every chatgpt and agents field", () => {
   for (const permission of ["readGitIgnoredFiles", "updatePermissions"] as const) {
     assert.throws(() => assertChatGptPermission(permission, "missing-project"), /Permission denied/);
   }
-  for (const permission of ["registerProjects", "spawnAgents", "projectContext", "projectRead", "projectSearch", "projectEdit", "projectPatch", "projectRun", "projectPolicy", "requireConfirmation"] as const) {
+  for (const permission of ["registerProjects", "spawnSubagents", "projectContext", "projectRead", "projectSearch", "projectEdit", "projectPatch", "projectRun", "projectPolicy", "requireConfirmation"] as const) {
     assert.doesNotThrow(() => assertChatGptPermission(permission, "missing-project"));
   }
 
   for (const permission of ["network"] as const) {
-    assert.throws(() => assertAgentPermission(permission, "missing-project"), /Permission denied/);
+    assert.throws(() => assertSubagentPermission(permission, "missing-project"), /Permission denied/);
   }
   for (const permission of ["maxRuntimeSecs"] as const) {
-    assert.doesNotThrow(() => assertAgentPermission(permission, "missing-project"));
+    assert.doesNotThrow(() => assertSubagentPermission(permission, "missing-project"));
   }
 });
 
 test("runtime permissions override policy defaults", () => {
-  updatePermissions({ projectAlias: "runtime", permissions: { chatgpt: { }, agents: { network: true } } });
+  updatePermissions({ projectAlias: "runtime", permissions: { chatgpt: { }, subagents: { network: true } } });
   const effective = getEffectivePermissions("runtime");
   assert.equal(effective.chatgpt.projectEdit, true);
-  assert.equal(effective.agents.network, true);
+  assert.equal(effective.subagents.network, true);
 });
 
 test("each broad project tool is gated only by its matching permission", async (t) => {
@@ -217,13 +217,11 @@ test("each broad project tool is gated only by its matching permission", async (
   }
 });
 
-test("obsolete project and admin tools remain unavailable", async (t) => {
+test("unregistered tool invocations fail closed", async (t) => {
   const client = await withClient(t);
-  for (const tool of ["project_register", "project_list", "permission_update", "audit_list", "audit_read"]) {
-    const denied = await client.callTool({ name: tool, arguments: {} });
-    assert.equal(denied.isError, true, `${tool} should be unavailable`);
-    assert.match(JSON.stringify(denied), new RegExp(`Tool ${tool} not found`));
-  }
+  const denied = await client.callTool({ name: "unknown_tool", arguments: {} });
+  assert.equal(denied.isError, true);
+  assert.match(JSON.stringify(denied), /Tool unknown_tool not found/);
 });
 
 test("canonical project boundary permits internal links and rejects external junction escapes", async (t) => {

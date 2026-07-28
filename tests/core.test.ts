@@ -18,7 +18,7 @@ mkdirSync(projectRoot, { recursive: true });
 writeFileSync(path.join(projectRoot, "README.md"), "# Test\n", "utf8");
 writeFileSync(path.join(projectRoot, ".env"), "SECRET=hidden\n", "utf8");
 writeFileSync(policyPath, JSON.stringify({
-  agents: {
+  subagents: {
     concurrency: {
       maxConcurrent: 4,
       maxConcurrentPerProject: 2,
@@ -43,7 +43,7 @@ writeFileSync(policyPath, JSON.stringify({
     permissions: {
       registerProjects: false,
       updatePermissions: false,
-      spawnAgents: true,
+      spawnSubagents: true,
       projectContext: true,
       projectRead: true,
       projectSearch: true,
@@ -79,7 +79,7 @@ writeFileSync(policyPath, JSON.stringify({
     skills: {
       maxReadChars: 200000,
     },
-    agentOutput: {
+    subagentOutput: {
       maxStdoutChars: 200000,
       maxStderrChars: 200000,
     },
@@ -99,8 +99,8 @@ writeFileSync(policyPath, JSON.stringify({
   }
 }, null, 2), "utf8");
 writeFileSync(configPath, JSON.stringify({
-  agents: {
-    defaultTemplate: "ephemeral-project-agent",
+  subagents: {
+    defaultTemplate: "ephemeral-project-subagent",
     retry: {
       enabled: true,
       maxAttempts: 3,

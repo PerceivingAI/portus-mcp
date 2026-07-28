@@ -1,6 +1,6 @@
 {
-  "agents": {
-    "defaultTemplate": "ephemeral-project-agent",
+  "subagents": {
+    "defaultTemplate": "ephemeral-project-subagent",
     "retry": {
       "enabled": true,
       "maxAttempts": 3,

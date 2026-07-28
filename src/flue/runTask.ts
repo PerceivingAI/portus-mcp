@@ -8,9 +8,9 @@ import { SessionRecord, getSession, listActiveSessions, upsertSession } from "..
 import { appendSessionEvent, appendSessionEventById } from "../state/SessionEvents.js";
 import { getProject } from "../state/ProjectRegistry.js";
 import { optionalEnv } from "../env.js";
-import { assertAgentPermission } from "../policy/permissionPolicy.js";
+import { assertSubagentPermission } from "../policy/permissionPolicy.js";
 import { getEffectivePermissions } from "../state/PermissionRegistry.js";
-import { loadAgentCommandConfig, loadPolicyConfig } from "../policy/policyConfig.js";
+import { loadSubagentCommandConfig, loadPolicyConfig } from "../policy/policyConfig.js";
 import { countChars } from "../runtime/outputLimits.js";
 import type { SkillAudienceRegistry } from "../skills/SkillRegistry.js";
 
@@ -59,20 +59,20 @@ type QueueItem = {
 export async function runFlueTask(input: RunFlueTaskInput): Promise<SessionRecord> {
   // Reject unknown projects before admitting work to the queue.
   getProject(input.projectAlias);
-  assertAgentPermission("network", input.projectAlias);
+  assertSubagentPermission("network", input.projectAlias);
 
-  const maxRuntimeSecs = getEffectivePermissions(input.projectAlias).agents.maxRuntimeSecs;
+  const maxRuntimeSecs = getEffectivePermissions(input.projectAlias).subagents.maxRuntimeSecs;
   const timeoutSecs = input.timeoutSecs ?? maxRuntimeSecs;
   if (timeoutSecs > maxRuntimeSecs) {
     throw new Error(`Requested timeout ${timeoutSecs}s exceeds maxRuntimeSecs ${maxRuntimeSecs}s`);
   }
 
-  const limits = getAgentLimits(input.projectAlias);
+  const limits = getSubagentLimits(input.projectAlias);
   if (limits.maxConcurrentAgents === 0) {
-    throw new Error("Max concurrent agents is set to 0.");
+    throw new Error("Max concurrent subagents is set to 0.");
   }
   if (limits.maxConcurrentAgentsPerProject === 0) {
-    throw new Error("Max concurrent agents per project is set to 0.");
+    throw new Error("Max concurrent subagents per project is set to 0.");
   }
   const blockedByCapacity = limits.activeSessions >= limits.maxConcurrentAgents || limits.projectActiveSessions >= limits.maxConcurrentAgentsPerProject;
   const blockedByLock = !canAcquireProjectLock(input.projectAlias);
@@ -80,7 +80,7 @@ export async function runFlueTask(input: RunFlueTaskInput): Promise<SessionRecor
   if (isBlocked && !limits.queueEnabled) {
     throw new Error(blockedByLock
       ? `Project lock active for ${input.projectAlias}; queue is disabled`
-      : `Concurrent agent limit reached (total=${limits.maxConcurrentAgents}, perProject=${limits.maxConcurrentAgentsPerProject}); queue is disabled`);
+      : `Concurrent subagent limit reached (total=${limits.maxConcurrentAgents}, perProject=${limits.maxConcurrentAgentsPerProject}); queue is disabled`);
   }
 
   const sessionId = `sess_${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 17)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -121,16 +121,16 @@ export async function runFlueTask(input: RunFlueTaskInput): Promise<SessionRecor
   });
 
   if (isBlocked && limits.queueEnabled) {
-    const maxQueueDepth = loadPolicyConfig().agents.concurrency.maxQueueDepth;
+    const maxQueueDepth = loadPolicyConfig().subagents.concurrency.maxQueueDepth;
     if (pendingQueue.length >= maxQueueDepth) {
       const failed = failQueuedRecord(record, "queue_ttl_expired", "Queue is full and cannot accept more tasks.");
       appendSessionEvent(failed, "queue_full", "Queue is full and cannot accept more tasks.", { queueDepth: pendingQueue.length });
-      stateStore.audit({ tool: "agent_run_task", sessionId, projectAlias: input.projectAlias, status: "failed", reason: "queue_full" });
+      stateStore.audit({ tool: "subagent_task", sessionId, projectAlias: input.projectAlias, status: "failed", reason: "queue_full" });
       return failed;
     }
     pendingQueue.push({ input, record, queuedAtMs: Date.now() });
     appendSessionEvent(record, "queued", "Session queued.", { queueDepth: pendingQueue.length });
-    stateStore.audit({ tool: "agent_run_task", sessionId, projectAlias: input.projectAlias, status: "queued", queuedAt: record.queuedAt });
+    stateStore.audit({ tool: "subagent_task", sessionId, projectAlias: input.projectAlias, status: "queued", queuedAt: record.queuedAt });
     writeFileSync(metadataPath, JSON.stringify({
       status: "queued",
       queuedAt: record.queuedAt,
@@ -147,12 +147,12 @@ async function startSessionExecution(input: RunFlueTaskInput, record: SessionRec
   const config = loadConfig();
   const providerConfig = loadAgentProviderConfig();
   const project = getProject(input.projectAlias);
-  const maxRuntimeSecs = getEffectivePermissions(input.projectAlias).agents.maxRuntimeSecs;
+  const maxRuntimeSecs = getEffectivePermissions(input.projectAlias).subagents.maxRuntimeSecs;
   const timeoutSecs = input.timeoutSecs ?? maxRuntimeSecs;
 
   acquireProjectLock(input.projectAlias, record.sessionId);
 
-  const commandConfig = loadAgentCommandConfig();
+  const commandConfig = loadSubagentCommandConfig();
   const grantedCommands = grantedCommandsForProject(input.projectAlias, commandConfig.allowedCommands);
   const maxSkillReadBytes = loadPolicyConfig().limits.skills.maxReadChars * 4;
   const subagentSkills = (input.subagentSkills?.skills ?? []).map((skill) => ({
@@ -170,7 +170,7 @@ async function startSessionExecution(input: RunFlueTaskInput, record: SessionRec
 
   const flueAgentName = input.agentTemplate.replace(/\.ts$/, "");
   const flueWorkspace = process.cwd();
-  const flueProjectAgent = prepareProjectFlueAgent({
+  const flueProjectAgent = prepareProjectFlueSubagent({
     flueWorkspace,
     projectRoot: project.rootPath,
     sourceAgentName: flueAgentName,
@@ -198,7 +198,7 @@ async function startSessionExecution(input: RunFlueTaskInput, record: SessionRec
     upsertSession(failed);
     appendSessionEvent(failed, "failed", "Flue CLI path does not exist.", { failureType: "flue_cli_missing" });
     releaseProjectLock(input.projectAlias, record.sessionId);
-    stateStore.audit({ tool: "agent_run_task", sessionId: record.sessionId, projectAlias: input.projectAlias, status: "failed", failureType: "flue_cli_missing", flueCli });
+    stateStore.audit({ tool: "subagent_task", sessionId: record.sessionId, projectAlias: input.projectAlias, status: "failed", failureType: "flue_cli_missing", flueCli });
     scheduleQueueDrain();
     return failed;
   }
@@ -212,7 +212,7 @@ async function startSessionExecution(input: RunFlueTaskInput, record: SessionRec
     "--session-id",
     record.sessionId,
     "--workspace",
-    project.rootPath,
+    flueProjectAgent.workspaceDir,
     "--output",
     path.join(flueWorkspace, ".portus-mcp", "flue-builds", record.sessionId),
     "--payload",
@@ -265,7 +265,7 @@ async function startSessionExecution(input: RunFlueTaskInput, record: SessionRec
     cleanup: flueProjectAgent.cleanup
   });
   stateStore.audit({
-    tool: "agent_run_task",
+    tool: "subagent_task",
     sessionId: record.sessionId,
     projectAlias: input.projectAlias,
     status: "running",
@@ -277,57 +277,49 @@ async function startSessionExecution(input: RunFlueTaskInput, record: SessionRec
   return runningRecord;
 }
 
-function prepareProjectFlueAgent(params: {
+function prepareProjectFlueSubagent(params: {
   flueWorkspace: string;
   projectRoot: string;
   sourceAgentName: string;
   sessionId: string;
-}): { agentName: string; cleanup: () => void } {
-  const sourcePath = path.join(params.flueWorkspace, "agents", `${params.sourceAgentName}.ts`);
+}): { agentName: string; workspaceDir: string; cleanup: () => void } {
+  const sourcePath = path.join(params.flueWorkspace, "subagents", `${params.sourceAgentName}.ts`);
   const fluePackagesPath = path.join(params.flueWorkspace, "node_modules", "@flue");
   if (!existsSync(sourcePath)) {
-    throw new Error(`Flue agent template does not exist: ${sourcePath}`);
+    throw new Error(`Flue subagent template does not exist: ${sourcePath}`);
   }
   if (!existsSync(fluePackagesPath)) {
     throw new Error(`Flue SDK packages do not exist: ${fluePackagesPath}`);
   }
-  const agentsDir = path.join(params.projectRoot, "agents");
-  const createdAgentsDir = !existsSync(agentsDir);
-  mkdirSync(agentsDir, { recursive: true });
+  const workspaceDir = path.join(params.flueWorkspace, ".portus-mcp", "flue-workspaces", params.sessionId);
+  const internalAgentsDir = path.join(workspaceDir, "agents");
+  mkdirSync(internalAgentsDir, { recursive: true });
   const agentName = `portus-${params.sessionId}`;
-  const targetPath = path.join(agentsDir, `${agentName}.ts`);
-  if (existsSync(targetPath)) {
-    throw new Error(`Temporary Flue agent path already exists: ${targetPath}`);
-  }
+  const targetPath = path.join(internalAgentsDir, `${agentName}.ts`);
   copyFileSync(sourcePath, targetPath);
-  const nodeModulesDir = path.join(params.projectRoot, "node_modules");
-  const createdNodeModulesDir = !existsSync(nodeModulesDir);
-  mkdirSync(nodeModulesDir, { recursive: true });
-  const flueLinkPath = path.join(nodeModulesDir, "@flue");
-  const createdFlueLink = !existsSync(flueLinkPath);
-  if (createdFlueLink) {
+
+  const internalNodeModulesDir = path.join(workspaceDir, "node_modules");
+  mkdirSync(internalNodeModulesDir, { recursive: true });
+  const flueLinkPath = path.join(internalNodeModulesDir, "@flue");
+  if (!existsSync(flueLinkPath)) {
     symlinkSync(fluePackagesPath, flueLinkPath, process.platform === "win32" ? "junction" : "dir");
   }
+  const justBashPackagesPath = path.join(params.flueWorkspace, "node_modules", "just-bash");
+  if (existsSync(justBashPackagesPath)) {
+    const justBashLinkPath = path.join(internalNodeModulesDir, "just-bash");
+    if (!existsSync(justBashLinkPath)) {
+      symlinkSync(justBashPackagesPath, justBashLinkPath, process.platform === "win32" ? "junction" : "dir");
+    }
+  }
+
   return {
     agentName,
+    workspaceDir,
     cleanup: () => {
-      rmSync(targetPath, { force: true });
-      if (createdFlueLink) {
-        rmSync(flueLinkPath, { force: true, recursive: true });
-      }
-      if (createdNodeModulesDir) {
-        try {
-          rmSync(nodeModulesDir, { force: true });
-        } catch {
-          // best effort
-        }
-      }
-      if (createdAgentsDir) {
-        try {
-          rmSync(agentsDir, { force: true });
-        } catch {
-          // best effort
-        }
+      try {
+        rmSync(workspaceDir, { force: true, recursive: true });
+      } catch {
+        // best effort
       }
     }
   };
@@ -352,7 +344,7 @@ function failQueuedRecord(record: SessionRecord, failureType: FailureType, messa
 }
 
 function scheduleQueueDrain(): void {
-  const delayMs = loadPolicyConfig().agents.lifecycle.queueDrainDelayMs;
+  const delayMs = loadPolicyConfig().subagents.lifecycle.queueDrainDelayMs;
   setTimeout(() => {
     void drainQueue();
   }, delayMs);
@@ -360,7 +352,7 @@ function scheduleQueueDrain(): void {
 
 async function drainQueue(): Promise<void> {
   if (pendingQueue.length === 0) return;
-  const queueTtlMs = loadPolicyConfig().agents.lifecycle.queuedTaskTtlSecs * 1000;
+  const queueTtlMs = loadPolicyConfig().subagents.lifecycle.queuedTaskTtlSecs * 1000;
   const now = Date.now();
   for (let i = pendingQueue.length - 1; i >= 0; i -= 1) {
     const item = pendingQueue[i]!;
@@ -374,7 +366,7 @@ async function drainQueue(): Promise<void> {
 
   for (let i = 0; i < pendingQueue.length; i += 1) {
     const item = pendingQueue[i]!;
-    const limits = getAgentLimits(item.input.projectAlias);
+    const limits = getSubagentLimits(item.input.projectAlias);
     const blockedByCapacity = limits.activeSessions >= limits.maxConcurrentAgents || limits.projectActiveSessions >= limits.maxConcurrentAgentsPerProject;
     const blockedByLock = !canAcquireProjectLock(item.input.projectAlias);
     if (blockedByCapacity || blockedByLock) continue;
@@ -388,7 +380,7 @@ async function drainQueue(): Promise<void> {
 function canAcquireProjectLock(projectAlias: string): boolean {
   const existing = projectLocks.get(projectAlias);
   if (!existing) return true;
-  const lockTimeoutMs = loadPolicyConfig().agents.lifecycle.projectLockTimeoutSecs * 1000;
+  const lockTimeoutMs = loadPolicyConfig().subagents.lifecycle.projectLockTimeoutSecs * 1000;
   if (Date.now() - existing.acquiredAtMs > lockTimeoutMs) {
     projectLocks.delete(projectAlias);
     appendSessionEventById(existing.sessionId, "lock_expired", "Project lock expired and was released.", { projectAlias });
@@ -450,7 +442,7 @@ function buildAgentChildEnv(providerConfig: AgentProviderConfig): NodeJS.Process
   return env;
 }
 
-export function getAgentLimits(projectAlias?: string): {
+export function getSubagentLimits(projectAlias?: string): {
   maxConcurrentAgents: number;
   activeSessions: number;
   maxConcurrentAgentsPerProject: number;
@@ -463,14 +455,14 @@ export function getAgentLimits(projectAlias?: string): {
   lockedProjects: Array<{ projectAlias: string; sessionId: string; acquiredAt: string }>;
 } {
   const policy = loadPolicyConfig();
-  const maxConcurrentAgents = policy.agents.concurrency.maxConcurrent;
-  const maxConcurrentAgentsPerProject = policy.agents.concurrency.maxConcurrentPerProject;
+  const maxConcurrentAgents = policy.subagents.concurrency.maxConcurrent;
+  const maxConcurrentAgentsPerProject = policy.subagents.concurrency.maxConcurrentPerProject;
   const activeSessions = listActiveSessions().length;
   const projectActiveSessions = projectAlias ? listActiveSessions(projectAlias).length : 0;
-  const queueEnabled = policy.agents.concurrency.queueEnabled;
-  const maxQueueDepth = policy.agents.concurrency.maxQueueDepth;
-  const queueTaskTtlSecs = policy.agents.lifecycle.queuedTaskTtlSecs;
-  const sessionLockTimeoutSecs = policy.agents.lifecycle.projectLockTimeoutSecs;
+  const queueEnabled = policy.subagents.concurrency.queueEnabled;
+  const maxQueueDepth = policy.subagents.concurrency.maxQueueDepth;
+  const queueTaskTtlSecs = policy.subagents.lifecycle.queuedTaskTtlSecs;
+  const sessionLockTimeoutSecs = policy.subagents.lifecycle.projectLockTimeoutSecs;
   const lockedProjects = Array.from(projectLocks.entries()).map(([alias, lock]) => ({
     projectAlias: alias,
     sessionId: lock.sessionId,
@@ -654,7 +646,7 @@ async function runSingleAttempt(params: {
   let stderr = "";
   let emittedOutput = false;
   let startupHang = false;
-  const agentPolicy = loadPolicyConfig().agents.lifecycle;
+  const agentPolicy = loadPolicyConfig().subagents.lifecycle;
   child.stdout?.on("data", (chunk) => {
     emittedOutput = true;
     const text = chunk.toString("utf8");
@@ -812,7 +804,7 @@ function finalizeSession(
 }
 
 function loadRetryPolicy(config: ReturnType<typeof loadConfig>): RetryPolicy {
-  const cfg = config.agents.retry;
+  const cfg = config.subagents.retry;
   const retryOn = new Set(cfg.retryOn) as Set<FailureType>;
   return {
     enabled: cfg.enabled,
@@ -919,16 +911,16 @@ async function performChildTreeTermination(child: ChildProcess, reason: string):
   } else {
     if (!hasProcessGroupExited(pid)) {
       signalProcessGroup(pid, "SIGTERM");
-      const exitedDuringGrace = await waitForProcessGroupExit(pid, loadPolicyConfig().agents.lifecycle.killEscalationDelayMs);
+      const exitedDuringGrace = await waitForProcessGroupExit(pid, loadPolicyConfig().subagents.lifecycle.killEscalationDelayMs);
       if (!exitedDuringGrace) {
         signalProcessGroup(pid, "SIGKILL");
       }
     }
     await confirmChildExit(child);
-    const groupExited = await waitForProcessGroupExit(pid, loadPolicyConfig().agents.lifecycle.forcedCloseGraceMs);
+    const groupExited = await waitForProcessGroupExit(pid, loadPolicyConfig().subagents.lifecycle.forcedCloseGraceMs);
     if (!groupExited) throw new Error(`Process group ${pid} remained alive after SIGKILL`);
   }
-  stateStore.audit({ tool: "agent_run_task", kill: "confirmed", pid, reason });
+  stateStore.audit({ tool: "subagent_task", kill: "confirmed", pid, reason });
 }
 
 function hasChildExited(child: ChildProcess): boolean {
@@ -963,7 +955,7 @@ async function waitForProcessGroupExit(pid: number, timeoutMs: number): Promise<
 
 async function confirmChildExit(child: ChildProcess): Promise<void> {
   if (hasChildExited(child)) return;
-  const timeoutMs = loadPolicyConfig().agents.lifecycle.forcedCloseGraceMs;
+  const timeoutMs = loadPolicyConfig().subagents.lifecycle.forcedCloseGraceMs;
   const { promise, resolve, reject } = deferred<void>();
   const timeout = setTimeout(() => {
     cleanup();

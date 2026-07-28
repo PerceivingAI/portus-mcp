@@ -32,17 +32,17 @@ writeFileSync(path.join(root, "outside.txt"), "outside\n", "utf8");
 execFileSync("git", ["init"], { cwd: projectRoot, stdio: "ignore" });
 
 const basePolicy = {
-  agents: {
+  subagents: {
     concurrency: { maxConcurrent: 4, maxConcurrentPerProject: 2, queueEnabled: false, maxQueueDepth: 10 },
     lifecycle: { queuedTaskTtlSecs: 300, projectLockTimeoutSecs: 1800, maxRuntimeSecs: 900, startupWatchdogMs: 15000, forcedCloseGraceMs: 8000, killEscalationDelayMs: 1200, queueDrainDelayMs: 50 },
     permissions: { networkAccess: true, allowedCommands: ["git"] }
   },
-  chatgpt: { permissions: { registerProjects: true, updatePermissions: true, spawnAgents: false, projectContext: true, projectRead: true, projectSearch: true, projectEdit: false, projectPatch: false, projectRun: false, projectPolicy: true, readGitIgnoredFiles: false, allowedCommands: ["git"] } },
+  chatgpt: { permissions: { registerProjects: true, updatePermissions: true, spawnSubagents: false, projectContext: true, projectRead: true, projectSearch: true, projectEdit: false, projectPatch: false, projectRun: false, projectPolicy: true, readGitIgnoredFiles: false, allowedCommands: ["git"] } },
   pathPolicy: { blockedPatterns: [".env"] },
   limits: {
     fileRead: { maxChars: 500000 }, fileWrite: { maxChars: 1000000 }, patch: { maxChars: 1000000 },
     textEdit: { maxOperationChars: 200000, maxSearchOrMarkerChars: 20000 }, search: { maxScanEntries: 100000, maxTextFileChars: 200000 },
-    skills: { maxReadChars: 200000 }, agentOutput: { maxStdoutChars: 200000, maxStderrChars: 200000 },
+    skills: { maxReadChars: 200000 }, subagentOutput: { maxStdoutChars: 200000, maxStderrChars: 200000 },
     sessionEvents: { maxEvents: 500, maxChunkChars: 4000 }, audit: { maxEvents: 1000 }, process: { maxOutputBufferMb: 10 }
   },
   audit: { strictMode: false }
@@ -53,7 +53,7 @@ function writePolicy(maxChars = 500000): void {
 }
 writePolicy();
 writeFileSync(configPath, JSON.stringify({
-  agents: { defaultTemplate: "ephemeral-project-agent", retry: { enabled: true, maxAttempts: 3, baseDelayMs: 1500, maxDelayMs: 15000, jitterRatio: 0.2, retryOn: ["provider_rate_limited"], respectRetryAfter: true, maxRetryWindowSecs: 60 } },
+  subagents: { defaultTemplate: "ephemeral-project-subagent", retry: { enabled: true, maxAttempts: 3, baseDelayMs: 1500, maxDelayMs: 15000, jitterRatio: 0.2, retryOn: ["provider_rate_limited"], respectRetryAfter: true, maxRetryWindowSecs: 60 } },
   traversal: { excludedPatterns: [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"] }
 }, null, 2), "utf8");
 process.env.DOTENV_CONFIG_PATH = dotenvPath;

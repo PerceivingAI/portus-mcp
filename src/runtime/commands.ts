@@ -54,7 +54,7 @@ export async function runProjectCommand(rootPath: string, command: string, args:
 }
 
 function limitCommandOutput(command: string, args: string[], exitCode: number | null, stdoutText: string, stderrText: string): ProjectCommandResult {
-  const policy = loadPolicyConfig().limits.agentOutput;
+  const policy = loadPolicyConfig().limits.subagentOutput;
   const stdout = limitText(stdoutText, policy.maxStdoutChars);
   const stderr = limitText(stderrText, policy.maxStderrChars);
   return {

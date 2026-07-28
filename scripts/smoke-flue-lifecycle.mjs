@@ -36,8 +36,8 @@ process.exit(0);
 `, "utf8");
 
 writeFileSync(configPath, JSON.stringify({
-  agents: {
-    defaultTemplate: "ephemeral-project-agent",
+  subagents: {
+    defaultTemplate: "ephemeral-project-subagent",
     retry: {
       enabled: true,
       maxAttempts: 3,
@@ -64,7 +64,7 @@ writeFileSync(configPath, JSON.stringify({
 }, null, 2), "utf8");
 
 writeFileSync(policyPath, JSON.stringify({
-  agents: {
+  subagents: {
     concurrency: {
       maxConcurrent: 4,
       maxConcurrentPerProject: 2,
@@ -87,9 +87,9 @@ writeFileSync(policyPath, JSON.stringify({
   },
   chatgpt: {
     permissions: {
+      spawnSubagents: true,
       registerProjects: true,
       updatePermissions: true,
-      spawnAgents: true,
       projectContext: true,
       projectRead: true,
       projectSearch: true,
@@ -125,7 +125,7 @@ writeFileSync(policyPath, JSON.stringify({
     skills: {
       maxReadChars: 200000,
     },
-    agentOutput: {
+    subagentOutput: {
       maxStdoutChars: 200000,
       maxStderrChars: 200000,
     },
@@ -172,16 +172,16 @@ async function waitForTerminalStatus(sessionId) {
 }
 
 try {
-  const writeRun = await runFlueTask({ projectAlias: "smoke", task: "DIRECT WRITE", agentTemplate: "ephemeral-project-agent" });
+  const writeRun = await runFlueTask({ projectAlias: "smoke", task: "DIRECT WRITE", agentTemplate: "ephemeral-project-subagent" });
   const writeDone = await waitForTerminalStatus(writeRun.sessionId);
   if (writeDone.status !== "completed") throw new Error("Direct write task did not complete.");
   readFileSync(path.join(projectRoot, "FLUE_LIFECYCLE_TEST.md"), "utf8");
 
-  const checkRun = await runFlueTask({ projectAlias: "smoke", task: "CHECK COMMAND", agentTemplate: "ephemeral-project-agent" });
+  const checkRun = await runFlueTask({ projectAlias: "smoke", task: "CHECK COMMAND", agentTemplate: "ephemeral-project-subagent" });
   const checkDone = await waitForTerminalStatus(checkRun.sessionId);
   if (checkDone.status !== "completed") throw new Error("Check command task did not complete.");
 
-  const failRun = await runFlueTask({ projectAlias: "smoke", task: "CONTROLLED FAILURE", agentTemplate: "ephemeral-project-agent" });
+  const failRun = await runFlueTask({ projectAlias: "smoke", task: "CONTROLLED FAILURE", agentTemplate: "ephemeral-project-subagent" });
   const failDone = await waitForTerminalStatus(failRun.sessionId);
   if (failDone.status !== "failed") throw new Error("Controlled failure task did not fail as expected.");
 

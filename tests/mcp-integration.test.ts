@@ -53,7 +53,7 @@ writeFileSync(path.join(skillsDir, "sample", "references", "unicode.md"), "a🙂
 writeFileSync(path.join(skillsDir, "sample", "assets", "sample.bin"), Buffer.from([0x00, 0xff, 0x10, 0x80]));
 writeFileSync(path.join(skillsDir, "loose.md"), "# Loose Skill\n\nThis must be ignored.\n", "utf8");
 writeFileSync(policyPath, JSON.stringify({
-  agents: {
+  subagents: {
     concurrency: {
       maxConcurrent: 4,
       maxConcurrentPerProject: 2,
@@ -78,7 +78,7 @@ writeFileSync(policyPath, JSON.stringify({
     permissions: {
       registerProjects: true,
       updatePermissions: true,
-      spawnAgents: true,
+      spawnSubagents: true,
       projectContext: true,
       projectRead: true,
       projectSearch: true,
@@ -115,7 +115,7 @@ writeFileSync(policyPath, JSON.stringify({
     skills: {
       maxReadChars: 200000,
     },
-    agentOutput: {
+    subagentOutput: {
       maxStdoutChars: 200000,
       maxStderrChars: 200000,
     },
@@ -135,8 +135,8 @@ writeFileSync(policyPath, JSON.stringify({
   }
 }, null, 2), "utf8");
 writeFileSync(configPath, JSON.stringify({
-  agents: {
-    defaultTemplate: "ephemeral-project-agent",
+  subagents: {
+    defaultTemplate: "ephemeral-project-subagent",
     retry: {
       enabled: true,
       maxAttempts: 3,
@@ -204,20 +204,18 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   t.after(async () => client.close());
 
   const tools = await client.listTools();
-  const toolNames = new Set(tools.tools.map((tool) => tool.name));
-  for (const expected of [
-    "project_context", "project_read", "project_search", "project_edit", "project_patch", "project_run", "project_policy",
-    "agent_run_task", "agent_spawn"
-  ]) {
-    assert.equal(toolNames.has(expected), true, `missing tool: ${expected}`);
-  }
-  for (const removed of [
-    "project_register", "project_list", "permission_update", "audit_list", "audit_read",
-    "project_git_status", "project_git_diff", "project_git_diff_file", "project_git_show_untracked",
-    "skill_list", "skill_read", "skill_run", "agent_run_skill", "skill_activate", "skill_resource_read", "skill_script_run"
-  ]) {
-    assert.equal(toolNames.has(removed), false, `${removed} should not be registered`);
-  }
+  const toolNames = tools.tools.map((tool) => tool.name).sort();
+  assert.deepEqual(toolNames, [
+    "project_context",
+    "project_edit",
+    "project_patch",
+    "project_policy",
+    "project_read",
+    "project_run",
+    "project_search",
+    "subagent_context",
+    "subagent_task"
+  ]);
   const serverInstructions = client.getInstructions() ?? "";
   assert.match(serverInstructions, /root-alias="skill\/sample"/);
   assert.match(serverInstructions, /Sample skill for integration tests/);
@@ -376,9 +374,9 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
 
   const updated = resultOf(await client.callTool({
     name: "project_policy",
-    arguments: { action: { type: "update_permissions", projectAlias: "mcp", permissions: { agents: { network: true }, chatgpt: { } } } }
+    arguments: { action: { type: "update_permissions", projectAlias: "mcp", permissions: { subagents: { network: true }, chatgpt: { } } } }
   }));
-  assert.equal(updated.permissions.agents.network, true);
+  assert.equal(updated.permissions.subagents.network, true);
   assert.equal(updated.permissions.chatgpt.projectEdit, true);
   const obsoletePermission = await client.callTool({
     name: "project_policy",
@@ -485,7 +483,7 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   const completedSessionDir = path.join(stateDir, "sessions", "mcp_completed_public");
   mkdirSync(completedSessionDir, { recursive: true });
   const completedSession = upsertSession({
-    sessionId: "mcp_completed_public", projectAlias: "mcp", agentTemplate: "ephemeral-project-agent", task: "SECRET TASK SHOULD NOT BE RETURNED",
+    sessionId: "mcp_completed_public", projectAlias: "mcp", agentTemplate: "ephemeral-project-subagent", task: "SECRET TASK SHOULD NOT BE RETURNED",
     status: "completed", startedAt: "2026-05-15T00:00:00.000Z", completedAt: "2026-05-15T00:00:01.000Z",
     stdoutPath: path.join(completedSessionDir, "stdout.log"), stderrPath: path.join(completedSessionDir, "stderr.log"), resultPath: path.join(completedSessionDir, "result.md"),
     metadataPath: path.join(completedSessionDir, "metadata.json"), eventsPath: path.join(completedSessionDir, "events.jsonl"), exitCode: 0
@@ -495,18 +493,47 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   const runningSessionDir = path.join(stateDir, "sessions", "mcp_running_public");
   mkdirSync(runningSessionDir, { recursive: true });
   const runningSession = upsertSession({
-    sessionId: "mcp_running_public", projectAlias: "mcp", agentTemplate: "ephemeral-project-agent", task: "RUNNING SECRET TASK SHOULD NOT BE RETURNED", status: "running", startedAt: "2026-05-15T00:00:02.000Z",
+    sessionId: "mcp_running_public", projectAlias: "mcp", agentTemplate: "ephemeral-project-subagent", task: "RUNNING SECRET TASK SHOULD NOT BE RETURNED", status: "running", startedAt: "2026-05-15T00:00:02.000Z",
     stdoutPath: path.join(runningSessionDir, "stdout.log"), stderrPath: path.join(runningSessionDir, "stderr.log"), resultPath: path.join(runningSessionDir, "result.md"), metadataPath: path.join(runningSessionDir, "metadata.json"), eventsPath: path.join(runningSessionDir, "events.jsonl")
   });
   for (const file of [runningSession.stdoutPath, runningSession.stderrPath, runningSession.resultPath, runningSession.eventsPath!]) writeFileSync(file, "", "utf8");
   writeFileSync(runningSession.metadataPath, JSON.stringify({ rawInternalMetadata: true }), "utf8");
-  const agentStatus = resultOf(await client.callTool({ name: "agent_status", arguments: { sessionId: completedSession.sessionId } })); assertPublicSession(agentStatus);
-  const sessions = resultOf(await client.callTool({ name: "session_list", arguments: {} })); assert.equal(sessions.some((session: any) => session.sessionId === completedSession.sessionId), true); for (const session of sessions) assertPublicSession(session);
-  const activeSessions = resultOf(await client.callTool({ name: "session_list_active", arguments: { projectAlias: "mcp" } })); assert.equal(activeSessions.some((session: any) => session.sessionId === runningSession.sessionId), true);
-  const collected = resultOf(await client.callTool({ name: "agent_collect_result", arguments: { sessionId: completedSession.sessionId } })); assertPublicSession(collected.session); assert.match(collected.outputs.stdout, /session stdout/);
-  const artifacts = resultOf(await client.callTool({ name: "session_collect_artifacts", arguments: { sessionId: completedSession.sessionId } })); assertPublicSession(artifacts.session); assert.equal("metadata" in artifacts, false);
-  const stopped = await client.callTool({ name: "agent_stop", arguments: { sessionId: runningSession.sessionId } });
-  assert.equal(stopped.isError, true);
+  const contextResp = resultOf(await client.callTool({
+    name: "subagent_context",
+    arguments: {
+      requests: [
+        { type: "status", sessionId: completedSession.sessionId },
+        { type: "list" },
+        { type: "list", projectAlias: "mcp", activeOnly: true },
+        { type: "output", sessionId: completedSession.sessionId }
+      ]
+    }
+  })).results;
+
+  const agentStatus = contextResp[0].session;
+  assertPublicSession(agentStatus);
+
+  const sessions = contextResp[1].sessions as Array<Record<string, unknown>>;
+  assert.equal(sessions.some((session) => session.sessionId === completedSession.sessionId), true);
+  for (const session of sessions) assertPublicSession(session);
+
+  const activeSessions = contextResp[2].sessions as Array<Record<string, unknown>>;
+  assert.equal(activeSessions.some((session) => session.sessionId === runningSession.sessionId), true);
+
+  const collected = contextResp[3];
+  assertPublicSession(collected.session);
+  assert.match(collected.outputs.stdout, /session stdout/);
+  assert.equal("metadata" in collected, false);
+
+  const taskResp = resultOf(await client.callTool({
+    name: "subagent_task",
+    arguments: {
+      actions: [
+        { type: "stop", sessionId: runningSession.sessionId }
+      ]
+    }
+  }));
+  assert.equal(taskResp.results[0].ok, false);
   assert.equal(getSession(runningSession.sessionId).status, "running");
 
   const policyChecks = resultOf(await client.callTool({

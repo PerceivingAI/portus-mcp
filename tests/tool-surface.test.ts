@@ -29,8 +29,8 @@ test.after(() => {
 
 function writeConfig(extra: Record<string, unknown> = {}): void {
   writeFileSync(configPath, JSON.stringify({
-    agents: {
-      defaultTemplate: "ephemeral-project-agent",
+    subagents: {
+      defaultTemplate: "ephemeral-project-subagent",
       retry: {
         enabled: true,
         maxAttempts: 3,
@@ -69,14 +69,6 @@ async function discoveredTools(): Promise<string[]> {
 }
 
 const expectedNames = [
-  "agent_collect_result",
-  "agent_limits",
-  "agent_run_task",
-  "agent_spawn",
-  "agent_status",
-  "agent_stop",
-  "agent_template_describe",
-  "agent_templates",
   "project_context",
   "project_edit",
   "project_patch",
@@ -84,35 +76,14 @@ const expectedNames = [
   "project_read",
   "project_run",
   "project_search",
-  "session_cleanup",
-  "session_cleanup_completed",
-  "session_collect_artifacts",
-  "session_list",
-  "session_list_active",
-  "session_read_events",
-  "session_read_log",
-  "session_status",
-  "session_stop_all"
+  "subagent_context",
+  "subagent_task"
 ].sort();
-
-const obsoleteNames = [
-  "project_register", "project_list", "permission_update", "audit_list", "audit_read",
-  "project_read_file", "project_read_text_file", "project_read_file_range", "project_read_files",
-  "project_status", "project_tree", "project_list_files", "project_file_info", "project_exists", "project_list_scripts",
-  "project_search_files", "project_search_text", "project_search_symbols",
-  "project_prepare_patch", "project_apply_patch",
-  "project_run_checks", "project_run_script", "project_run_command",
-  "project_write_file", "project_replace_text", "project_insert_text", "project_copy_file", "project_move_file",
-  "project_delete_file", "project_create_directory", "project_delete_directory",
-  "policy_check_path", "policy_explain_permissions", "permission_get", "effective_config_show", "config_show_safe",
-  "skill_list", "skill_read", "skill_run", "agent_run_skill", "skill_activate", "skill_resource_read", "skill_script_run"
-];
 
 test("server exposes one complete tool surface", async () => {
   const names = await discoveredTools();
   assert.deepEqual(names, expectedNames);
   assert.equal(names.filter((name) => name === "project_read").length, 1);
-  for (const name of obsoleteNames) assert.equal(names.includes(name), false, `${name} must remain unavailable`);
 });
 
 test("retired toolSurface configuration fails closed", () => {

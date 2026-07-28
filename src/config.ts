@@ -11,7 +11,7 @@ export type { AgentProvider, AgentProviderConfig, AgentProviderDefinition } from
 export type ChatGptPermissionConfig = {
   registerProjects: boolean;
   updatePermissions: boolean;
-  spawnAgents: boolean;
+  spawnSubagents: boolean;
   projectContext: boolean;
   projectRead: boolean;
   projectSearch: boolean;
@@ -25,18 +25,18 @@ export type ChatGptPermissionConfig = {
   allowedCommands: string[];
 };
 
-export type AgentPermissionConfig = {
+export type SubagentPermissionConfig = {
   network: boolean;
   maxRuntimeSecs: number;
 };
 
 export type PermissionConfig = {
   chatgpt: ChatGptPermissionConfig;
-  agents: AgentPermissionConfig;
+  subagents: SubagentPermissionConfig;
 };
 
 export type PortusMcpConfig = {
-  agents: {
+  subagents: {
     defaultTemplate: string;
     retry: {
       enabled: boolean;
@@ -66,7 +66,7 @@ const retrySchema = z.object({
 }).strict();
 
 const configSchema = z.object({
-  agents: z.object({
+  subagents: z.object({
     defaultTemplate: z.string().min(1),
     retry: retrySchema
   }).strict(),

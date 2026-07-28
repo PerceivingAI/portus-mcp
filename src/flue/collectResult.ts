@@ -11,8 +11,8 @@ function readLimited(file: string, limit: number): string {
 export function collectFlueResult(sessionId: string): { result: string; stdout: string; stderr: string; summary: Record<string, unknown> | null } {
   const session = getSession(sessionId);
   const policy = loadPolicyConfig();
-  const stdoutMax = Math.max(1000, policy.limits.agentOutput.maxStdoutChars);
-  const stderrMax = Math.max(1000, policy.limits.agentOutput.maxStderrChars);
+  const stdoutMax = Math.max(1000, policy.limits.subagentOutput.maxStdoutChars);
+  const stderrMax = Math.max(1000, policy.limits.subagentOutput.maxStderrChars);
   const stdout = readLimited(session.stdoutPath, stdoutMax);
   const stderr = readLimited(session.stderrPath, stderrMax);
   const result = readLimited(session.resultPath, policy.limits.fileRead.maxChars);

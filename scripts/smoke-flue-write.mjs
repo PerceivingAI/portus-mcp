@@ -21,12 +21,14 @@ mkdirSync(projectRoot, { recursive: true });
 const sessionId = `smoke_${Date.now()}`;
 const flueCli = path.resolve(process.env.PORTUS_MCP_FLUE_CLI_PATH ?? path.join(process.cwd(), "node_modules", "@flue", "cli", "dist", "flue.js"));
 const agentName = `portus-${sessionId}`;
-const projectAgentsDir = path.join(projectRoot, "agents");
-mkdirSync(projectAgentsDir, { recursive: true });
-copyFileSync(path.join(process.cwd(), "agents", "ephemeral-project-agent.ts"), path.join(projectAgentsDir, `${agentName}.ts`));
-const projectNodeModulesDir = path.join(projectRoot, "node_modules");
+const workspaceDir = path.join(tempRoot, "flue-workspace");
+const internalAgentsDir = path.join(workspaceDir, "agents");
+mkdirSync(internalAgentsDir, { recursive: true });
+copyFileSync(path.join(process.cwd(), "subagents", "ephemeral-project-subagent.ts"), path.join(internalAgentsDir, `${agentName}.ts`));
+const projectNodeModulesDir = path.join(workspaceDir, "node_modules");
 mkdirSync(projectNodeModulesDir, { recursive: true });
 symlinkSync(path.join(process.cwd(), "node_modules", "@flue"), path.join(projectNodeModulesDir, "@flue"), process.platform === "win32" ? "junction" : "dir");
+symlinkSync(path.join(process.cwd(), "node_modules", "just-bash"), path.join(projectNodeModulesDir, "just-bash"), process.platform === "win32" ? "junction" : "dir");
 
 const payload = {
   provider,
@@ -44,7 +46,7 @@ const args = [
   "--session-id",
   sessionId,
   "--workspace",
-  projectRoot,
+  workspaceDir,
   "--output",
   path.join(process.cwd(), ".portus-mcp", "flue-smoke-builds", sessionId),
   "--payload",

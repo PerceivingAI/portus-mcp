@@ -4,7 +4,7 @@ import { z } from "zod";
 import { optionalEnv } from "../env.js";
 import type { PermissionConfig } from "../config.js";
 
-export type AgentCommandConfig = {
+export type SubagentCommandConfig = {
   allowedCommands: string[];
 };
 
@@ -15,7 +15,7 @@ export type ChatGptCommandConfig = {
 const safeCommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/);
 
 const policySchema = z.object({
-  agents: z.object({
+  subagents: z.object({
     concurrency: z.object({
       maxConcurrent: z.number().int().min(0),
       maxConcurrentPerProject: z.number().int().min(0),
@@ -40,7 +40,7 @@ const policySchema = z.object({
     permissions: z.object({
       registerProjects: z.boolean(),
       updatePermissions: z.boolean(),
-      spawnAgents: z.boolean(),
+      spawnSubagents: z.boolean(),
       projectContext: z.boolean(),
       projectRead: z.boolean(),
       projectSearch: z.boolean(),
@@ -79,7 +79,7 @@ const policySchema = z.object({
     skills: z.object({
       maxReadChars: z.number().int().positive()
     }).strict(),
-    agentOutput: z.object({
+    subagentOutput: z.object({
       maxStdoutChars: z.number().int().positive(),
       maxStderrChars: z.number().int().positive()
     }).strict(),
@@ -126,16 +126,16 @@ export function loadPolicyConfig(): PortusPolicyConfig {
 export function policyPermissions(policy = loadPolicyConfig()): PermissionConfig {
   return {
     chatgpt: { ...policy.chatgpt.permissions },
-    agents: {
-      network: policy.agents.permissions.networkAccess,
-      maxRuntimeSecs: policy.agents.lifecycle.maxRuntimeSecs
+    subagents: {
+      network: policy.subagents.permissions.networkAccess,
+      maxRuntimeSecs: policy.subagents.lifecycle.maxRuntimeSecs
     }
   };
 }
 
-export function loadAgentCommandConfig(policy = loadPolicyConfig()): AgentCommandConfig {
+export function loadSubagentCommandConfig(policy = loadPolicyConfig()): SubagentCommandConfig {
   return {
-    allowedCommands: normalizeCommandList(policy.agents.permissions.allowedCommands, "agents.permissions.allowedCommands")
+    allowedCommands: normalizeCommandList(policy.subagents.permissions.allowedCommands, "subagents.permissions.allowedCommands")
   };
 }
 

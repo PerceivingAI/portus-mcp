@@ -8,7 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { FlueContext, FlueSession, SessionInit } from "@flue/sdk/client";
 import type { Bash } from "just-bash";
-import projectAgent from "../agents/ephemeral-project-agent.js";
+import projectSubagent from "../subagents/ephemeral-project-subagent.js";
 import { createHttpServer } from "../src/server.js";
 import { loadSkillRegistry } from "../src/skills/SkillRegistry.js";
 
@@ -31,8 +31,8 @@ const previousEnvironment: Record<string, string | undefined> = {
 
 function writeConfig(): void {
   writeFileSync(configPath, JSON.stringify({
-    agents: {
-      defaultTemplate: "ephemeral-project-agent",
+    subagents: {
+      defaultTemplate: "ephemeral-project-subagent",
       retry: {
         enabled: true,
         maxAttempts: 3,
@@ -172,10 +172,10 @@ test("skill catalog changes become visible only after server restart", async () 
 test("spawned agent mounts configured skills read-only beside its writable project", async () => {
   const projectRoot = path.join(root, "agent-project");
   mkdirSync(projectRoot, { recursive: true });
-  const skillRoot = path.join(defaultCatalog, "default-skill");
+  const skillRoot = writeSkill(defaultCatalog, "default-skill", "Updated catalog skill.");
   mkdirSync(path.join(skillRoot, "scripts"), { recursive: true });
   writeFileSync(path.join(skillRoot, "scripts", "probe.sh"), "echo skill-script-ok\n", "utf8");
-  const response = await projectAgent({
+  const response = await projectSubagent({
     sessionId: "skills-test",
     payload: {
       projectRoot,
@@ -217,7 +217,7 @@ test("spawned agent mounts configured skills read-only beside its writable proje
     projectWrite: { exitCode: number };
   };
 
-  assert.match(response.prompt, /Configured skill catalog/);
+  assert.match(response.prompt, /Available subagent skills/);
   assert.match(response.prompt, /default-skill/);
   assert.equal(response.prompt.includes(skillRoot), false);
   assert.match(response.skillRead.stdout, /name: default-skill/);

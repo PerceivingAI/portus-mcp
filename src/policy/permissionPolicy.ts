@@ -1,4 +1,4 @@
-import type { AgentPermissionConfig, ChatGptPermissionConfig } from "../config.js";
+import type { SubagentPermissionConfig, ChatGptPermissionConfig } from "../config.js";
 import { getEffectivePermissions } from "../state/PermissionRegistry.js";
 
 type ChatGptBooleanPermissionKey = Exclude<keyof ChatGptPermissionConfig, "allowedCommands">;
@@ -18,9 +18,9 @@ export function assertChatGptCommandAllowed(command: string, projectAlias?: stri
   throw new Error(`Permission denied: chatgpt.allowedCommands does not include ${command}`);
 }
 
-export function assertAgentPermission(permission: keyof AgentPermissionConfig, projectAlias?: string): void {
-  const permissions = getEffectivePermissions(projectAlias).agents;
+export function assertSubagentPermission(permission: keyof SubagentPermissionConfig, projectAlias?: string): void {
+  const permissions = getEffectivePermissions(projectAlias).subagents;
   if (!permissions[permission]) {
-    throw new Error(`Permission denied: agents.${String(permission)} is false`);
+    throw new Error(`Permission denied: subagents.${String(permission)} is false`);
   }
 }
