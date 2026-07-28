@@ -10,7 +10,7 @@
     "check": "tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
     "build": "tsc",
-    "flue:check": "flue build --target node",
+    "flue:check": "node scripts/check-flue.mjs",
     "smoke:health": "node scripts/smoke-health.mjs",
     "smoke:flue-write": "node --import tsx scripts/smoke-flue-write.mjs",
     "smoke:flue-lifecycle": "node --import tsx scripts/smoke-flue-lifecycle.mjs",
