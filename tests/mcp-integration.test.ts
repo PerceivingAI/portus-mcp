@@ -150,8 +150,7 @@ writeFileSync(configPath, JSON.stringify({
   },
   traversal: {
     excludedPatterns: [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"]
-  },
-  toolSurface: "full"
+  }
 }, null, 2), "utf8");
 
 process.env.DOTENV_CONFIG_PATH = dotenvPath;
@@ -371,7 +370,6 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     name: "project_policy",
     arguments: { checks: [{ type: "config", projectAlias: "mcp" }] }
   })).results[0];
-  assert.equal(effectiveConfig.toolSurface, "full");
   assert.equal(effectiveConfig.permissions.chatgpt.projectRead, true);
   assert.deepEqual(effectiveConfig.pathPolicy.blockedPatterns, [".env"]);
   assert.deepEqual(effectiveConfig.traversal.excludedPatterns, [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"]);

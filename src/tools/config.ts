@@ -164,7 +164,6 @@ export function registerBroadPolicyTools(server: McpServer): void {
             return {
               type: "config" as const,
               projectAlias: check.projectAlias ?? null,
-              toolSurface: config.toolSurface,
               permissions: getEffectivePermissions(check.projectAlias),
               pathPolicy: { blockedPatterns: policy.pathPolicy.blockedPatterns.map((pattern) => path.isAbsolute(pattern) ? "[absolute pattern redacted]" : pattern) },
               traversal: { excludedPatterns: config.traversal.excludedPatterns.map((pattern) => path.isAbsolute(pattern) ? "[absolute pattern redacted]" : pattern) }

@@ -6,7 +6,6 @@ import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { loadConfig } from "../src/config.js";
-import type { ToolSurfaceProfile } from "../src/config.js";
 import { createHttpServer } from "../src/server.js";
 
 const root = mkdtempSync(path.join(tmpdir(), "portus-tool-surface-"));
@@ -28,9 +27,8 @@ test.after(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function writeConfig(toolSurface: ToolSurfaceProfile | string | undefined): void {
+function writeConfig(extra: Record<string, unknown> = {}): void {
   writeFileSync(configPath, JSON.stringify({
-    ...(toolSurface === undefined ? {} : { toolSurface }),
     agents: {
       defaultTemplate: "ephemeral-project-agent",
       retry: {
@@ -44,12 +42,13 @@ function writeConfig(toolSurface: ToolSurfaceProfile | string | undefined): void
         maxRetryWindowSecs: 60
       }
     },
-    traversal: { excludedPatterns: [".git", "node_modules", "dist", ".portus-mcp"] }
+    traversal: { excludedPatterns: [".git", "node_modules", "dist", ".portus-mcp"] },
+    ...extra
   }, null, 2), "utf8");
 }
 
-async function discoveredTools(toolSurface: ToolSurfaceProfile | undefined): Promise<string[]> {
-  writeConfig(toolSurface);
+async function discoveredTools(): Promise<string[]> {
+  writeConfig();
   const server = createHttpServer("/mcp");
   await new Promise<void>((resolve) => server.listen(0, resolve));
   try {
@@ -69,16 +68,32 @@ async function discoveredTools(toolSurface: ToolSurfaceProfile | undefined): Pro
   }
 }
 
-const broadNames = [
+const expectedNames = [
+  "agent_collect_result",
+  "agent_limits",
+  "agent_run_task",
+  "agent_spawn",
+  "agent_status",
+  "agent_stop",
+  "agent_template_describe",
+  "agent_templates",
   "project_context",
-  "project_read",
-  "project_search",
   "project_edit",
   "project_patch",
+  "project_policy",
+  "project_read",
   "project_run",
-  "project_policy"
+  "project_search",
+  "session_cleanup",
+  "session_cleanup_completed",
+  "session_collect_artifacts",
+  "session_list",
+  "session_list_active",
+  "session_read_events",
+  "session_read_log",
+  "session_status",
+  "session_stop_all"
 ].sort();
-
 
 const obsoleteNames = [
   "project_register", "project_list", "permission_update", "audit_list", "audit_read",
@@ -93,36 +108,16 @@ const obsoleteNames = [
   "skill_list", "skill_read", "skill_run", "agent_run_skill", "skill_activate", "skill_resource_read", "skill_script_run"
 ];
 
-test("missing toolSurface defaults to exactly the seven broad tools", async () => {
-  assert.deepEqual(await discoveredTools(undefined), broadNames);
-});
-
-test("management profile is invalid", () => {
-  writeConfig("management");
-  assert.throws(() => loadConfig(), /toolSurface.*Invalid enum value/i);
-});
-
-test("agent profile exposes agent sessions plus the shared bounded read capability", async () => {
-  const names = await discoveredTools("agent");
-  assert(names.includes("agent_run_task"));
-  assert(names.includes("session_list"));
-  assert(names.includes("project_read"));
-  for (const name of broadNames.filter((name) => name !== "project_read")) {
-    assert.equal(names.includes(name), false, `${name} must not be in the agent profile`);
-  }
+test("server exposes one complete tool surface", async () => {
+  const names = await discoveredTools();
+  assert.deepEqual(names, expectedNames);
+  assert.equal(names.filter((name) => name === "project_read").length, 1);
   for (const name of obsoleteNames) assert.equal(names.includes(name), false, `${name} must remain unavailable`);
 });
 
-test("full profile is exactly broad plus the agent and session groups", async () => {
-  const agentNames = await discoveredTools("agent");
-  const fullNames = await discoveredTools("full");
-  assert.deepEqual(fullNames, [...new Set([...broadNames, ...agentNames])].sort());
-  for (const name of obsoleteNames) assert.equal(fullNames.includes(name), false, `${name} must remain unavailable`);
-});
-
-test("unknown and legacy profiles fail closed", () => {
-  for (const profile of ["legacy", "unexpected"]) {
-    writeConfig(profile);
-    assert.throws(() => loadConfig(), /toolSurface.*Invalid enum value/i);
+test("retired toolSurface configuration fails closed", () => {
+  for (const value of ["broad", "agent", "full"]) {
+    writeConfig({ toolSurface: value });
+    assert.throws(() => loadConfig(), /toolSurface/i);
   }
 });

@@ -1,5 +1,4 @@
 {
-  "toolSurface": "broad",
   "agents": {
     "defaultTemplate": "ephemeral-project-agent",
     "retry": {

@@ -7,8 +7,6 @@ import type { AgentProvider, AgentProviderConfig, AgentProviderDefinition } from
 
 export type { AgentProvider, AgentProviderConfig, AgentProviderDefinition } from "./providers.js";
 
-export const toolSurfaceProfiles = ["broad", "agent", "full"] as const;
-export type ToolSurfaceProfile = typeof toolSurfaceProfiles[number];
 
 export type ChatGptPermissionConfig = {
   registerProjects: boolean;
@@ -38,7 +36,6 @@ export type PermissionConfig = {
 };
 
 export type PortusMcpConfig = {
-  toolSurface: ToolSurfaceProfile;
   agents: {
     defaultTemplate: string;
     retry: {
@@ -69,7 +66,6 @@ const retrySchema = z.object({
 }).strict();
 
 const configSchema = z.object({
-  toolSurface: z.enum(toolSurfaceProfiles).default("broad"),
   agents: z.object({
     defaultTemplate: z.string().min(1),
     retry: retrySchema

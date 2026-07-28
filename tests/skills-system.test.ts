@@ -31,7 +31,6 @@ const previousEnvironment: Record<string, string | undefined> = {
 
 function writeConfig(): void {
   writeFileSync(configPath, JSON.stringify({
-    toolSurface: "full",
     agents: {
       defaultTemplate: "ephemeral-project-agent",
       retry: {

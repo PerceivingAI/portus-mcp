@@ -5,11 +5,10 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { optionalEnv } from "./env.js";
-import { registerBroadProjectTools, registerProjectReadTool } from "./tools/projects.js";
+import { registerBroadProjectTools } from "./tools/projects.js";
 import { registerAgentTools } from "./tools/agents.js";
 import { registerBroadPolicyTools } from "./tools/config.js";
 import { readSessionEvents } from "./state/SessionEvents.js";
-import { loadConfig } from "./config.js";
 import { connectedSkillInstructions, loadSkillRegistry } from "./skills/SkillRegistry.js";
 import type { SkillRegistrySnapshot } from "./skills/SkillRegistry.js";
 
@@ -20,18 +19,9 @@ export function createMcpServer(skillRegistry: SkillRegistrySnapshot = loadSkill
   }, {
     instructions: connectedSkillInstructions(skillRegistry)
   });
-  const { toolSurface } = loadConfig();
-
-  if (toolSurface === "broad" || toolSurface === "full") {
-    registerBroadProjectTools(server, skillRegistry);
-    registerBroadPolicyTools(server);
-  }
-  if (toolSurface === "agent") {
-    registerProjectReadTool(server, skillRegistry);
-  }
-  if (toolSurface === "agent" || toolSurface === "full") {
-    registerAgentTools(server, skillRegistry);
-  }
+  registerBroadProjectTools(server, skillRegistry);
+  registerBroadPolicyTools(server);
+  registerAgentTools(server, skillRegistry);
 
   return server;
 }
