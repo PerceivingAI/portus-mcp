@@ -214,6 +214,12 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     "subagent_context",
     "subagent_task"
   ]);
+  const readTool = tools.tools.find((tool) => tool.name === "project_read");
+  const contextTool = tools.tools.find((tool) => tool.name === "project_context");
+  assert.match(readTool?.description ?? "", /skill rootAlias returned by project_context/);
+  assert.match(contextTool?.description ?? "", /catalog-provided skill rootAlias/);
+  const includeProperties = ((contextTool?.inputSchema.properties?.include as { properties?: Record<string, unknown> } | undefined)?.properties) ?? {};
+  assert.equal("skills" in includeProperties, true);
   const serverInstructions = client.getInstructions() ?? "";
   assert.match(serverInstructions, /root-alias="skill\/sample"/);
   assert.match(serverInstructions, /Sample skill for integration tests/);
@@ -233,9 +239,15 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   upsertProject({ projectAlias: "mcp", rootPath: projectRoot });
   const discovery = resultOf(await client.callTool({
     name: "project_context",
-    arguments: { include: { projects: true } }
+    arguments: { include: { projects: true, skills: true } }
   }));
   assert.equal(discovery.sections.projects.value.projectAliases.includes("mcp"), true);
+  assert.deepEqual(discovery.sections.skills.value.skills, [{
+    name: "sample",
+    description: "Sample skill for integration tests.",
+    rootAlias: "skill/sample",
+    entrypoint: "SKILL.md"
+  }]);
   assert.equal(JSON.stringify(discovery).includes(projectRoot), false);
   for (const privateField of ["rootPath", "createdAt", "updatedAt"]) {
     assert.equal(JSON.stringify(discovery).includes(privateField), false);
@@ -399,6 +411,52 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.equal(registry.connected.byName.get("sample")?.description, "Sample skill for integration tests.");
   assert.equal(registry.connected.byName.get("sample")?.openai?.interface?.display_name, "Sample");
   assert.equal(registry.connected.byName.get("sample")?.openai?.interface?.default_prompt, "Use $sample for integration testing.");
+
+  const skillContext = resultOf(await client.callTool({
+    name: "project_context",
+    arguments: {
+      projectAlias: "skill/sample",
+      include: {
+        tree: { relativePath: ".", maxDepth: 3, includeFiles: true, includeDirs: true, format: "json" },
+        files: { relativePath: ".", maxEntries: 100 },
+        paths: [{ relativePath: "references" }]
+      }
+    }
+  }));
+  const skillTreeEntries: unknown = skillContext.sections.tree.value.entries;
+  assert(Array.isArray(skillTreeEntries));
+  const skillTreePaths = skillTreeEntries.map((entry: unknown) => {
+    assert(entry && typeof entry === "object" && "relativePath" in entry && typeof entry.relativePath === "string");
+    return entry.relativePath;
+  });
+  for (const expectedPath of ["SKILL.md", "agents", "agents/openai.yaml", "assets", "assets/sample.bin", "references", "references/guide.md"]) {
+    assert.equal(skillTreePaths.includes(expectedPath), true, `skill tree missing ${expectedPath}`);
+  }
+  const skillFileEntries: unknown = skillContext.sections.files.value.files;
+  assert(Array.isArray(skillFileEntries));
+  const skillFilePaths = skillFileEntries.map((entry: unknown) => {
+    assert(entry && typeof entry === "object" && "relativePath" in entry && typeof entry.relativePath === "string");
+    return entry.relativePath;
+  });
+  for (const expectedPath of ["SKILL.md", "agents/openai.yaml", "assets/sample.bin", "references/guide.md", "references/unicode.md"]) {
+    assert.equal(skillFilePaths.includes(expectedPath), true, `skill file listing missing ${expectedPath}`);
+  }
+  assert.equal(skillContext.sections.paths.value[0].kind, "directory");
+  assert.equal(JSON.stringify(skillContext).includes(skillsDir), false);
+
+  const escapedSkillContext = resultOf(await client.callTool({
+    name: "project_context",
+    arguments: { projectAlias: "skill/sample", include: { tree: { relativePath: ".." } } }
+  }));
+  assert.equal(escapedSkillContext.sections.tree.ok, false);
+  assert.match(escapedSkillContext.sections.tree.error, /escapes skill root/);
+
+  const invalidSkillContext = await client.callTool({
+    name: "project_context",
+    arguments: { projectAlias: "skill/sample", include: { status: true } }
+  });
+  assert.equal(invalidSkillContext.isError, true);
+  assert.match(JSON.stringify(invalidSkillContext.structuredContent), /only tree, files, and paths/);
 
   const skillEntrypoint = resultOf(await client.callTool({
     name: "project_read",

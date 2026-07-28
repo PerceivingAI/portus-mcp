@@ -72,13 +72,21 @@ AGENT_SKILL_PATHS=./skills
 SUBAGENTS_SKILL_PATHS=./skills
 ```
 
-- `AGENT_SKILL_PATHS` populates the catalog advertised to the connected MCP client. The client reads a selected package through `project_read` with aliases such as `skill/project-inspector`.
+- `AGENT_SKILL_PATHS` populates the catalog available to the connected MCP client through `project_context` with `include.skills=true`.
 - `SUBAGENTS_SKILL_PATHS` populates the catalog and read-only `/skills/<name>` mounts given to Portus-spawned agents.
 - Each value accepts semicolon-separated individual skill directories or catalog directories.
 - Relative paths resolve from the directory containing `portus-mcp.config.json`.
 - An unset variable uses the local `./skills` catalog when it exists. An explicitly empty value disables that audience.
 - No user, system, Codex, or other host skill directory is scanned implicitly.
 - The current set of skills on the `./skills` folder are examples which should be replaced with your own skills.
+
+Connected MCP clients use the catalog without registering skills as projects:
+
+1. Call `project_context` with `include.skills=true` and no `projectAlias`. Each catalog entry includes `name`, `description`, `rootAlias`, and `entrypoint`.
+2. Pass the selected `rootAlias` as `projectAlias` to `project_context` with `include.tree`, `include.files`, or `include.paths` to inspect the skill package. Skill paths are relative to the skill root; host filesystem paths are not exposed.
+3. Pass the same `rootAlias` to `project_read` to read the catalog-provided entrypoint or any discovered supporting file.
+
+`project_context` status and package-script sections remain available only for registered projects. Skills remain read-only.
 
 Skills are startup snapshots. After adding, deleting, changing, or reconfiguring a skill, restart Portus; reconnect the MCP client or start a new spawned-agent session. There are no `skill_list`, `skill_read`, `skill_run`, or `agent_run_skill` tools.
 

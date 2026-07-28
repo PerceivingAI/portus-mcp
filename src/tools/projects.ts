@@ -208,34 +208,35 @@ export function canReadProjectRelativePath(projectAlias: string, relativePath: s
   }
 }
 
-function shouldSkipTraversal(projectAlias: string, fullPath: string, entryName: string, excludedPatterns: string[], allowGitIgnored: boolean): boolean {
-  const projectRoot = getProject(projectAlias).rootPath;
-  const relativePath = path.relative(projectRoot, fullPath).replace(/\\/g, "/");
+function shouldSkipTraversal(rootAlias: string, readableRoot: string, fullPath: string, entryName: string, excludedPatterns: string[], allowGitIgnored: boolean, registry?: SkillRegistrySnapshot): boolean {
+  const relativePath = path.relative(readableRoot, fullPath).replace(/\\/g, "/");
   const relativeToStateRoot = path.relative(stateStore.root, fullPath);
   if (!relativeToStateRoot || (!relativeToStateRoot.startsWith("..") && !path.isAbsolute(relativeToStateRoot))) return true;
   if (excludedPatterns.some((pattern) => pathMatchesPattern(relativePath, entryName, pattern))) return true;
-  return !allowGitIgnored && isGitIgnored(projectRoot, fullPath);
+  if (registry?.connected.byAlias.has(rootAlias)) return false;
+  return !allowGitIgnored && isGitIgnored(readableRoot, fullPath);
 }
 
-export function collectPaths(projectAlias: string, root: string, maxEntries: number, includeFiles: boolean, includeDirs: boolean): Array<{ relativePath: string; kind: "file" | "directory"; bytes?: number; modifiedAt?: string }> {
+export function collectPaths(projectAlias: string, root: string, maxEntries: number, includeFiles: boolean, includeDirs: boolean, registry?: SkillRegistrySnapshot): Array<{ relativePath: string; kind: "file" | "directory"; bytes?: number; modifiedAt?: string }> {
   const out: Array<{ relativePath: string; kind: "file" | "directory"; bytes?: number; modifiedAt?: string }> = [];
   const queue = [root];
   const excludedPatterns = getExcludedTraversalPatterns();
-  const projectRoot = getProject(projectAlias).rootPath;
-  const allowGitIgnored = getEffectivePermissions(projectAlias).chatgpt.readGitIgnoredFiles;
+  const skill = registry?.connected.byAlias.get(projectAlias);
+  const readableRoot = skill?.rootPath ?? getProject(projectAlias).rootPath;
+  const allowGitIgnored = skill ? true : getEffectivePermissions(projectAlias).chatgpt.readGitIgnoredFiles;
   while (queue.length > 0 && out.length < maxEntries) {
     const dir = queue.shift()!;
     const entries = readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
-      const rel = path.relative(projectRoot, full).replace(/\\/g, "/") || ".";
-      if (!canReadProjectRelativePath(projectAlias, rel)) continue;
+      const rel = path.relative(readableRoot, full).replace(/\\/g, "/") || ".";
+      if (!canReadProjectRelativePath(projectAlias, rel, registry)) continue;
       if (entry.isDirectory()) {
-        if (shouldSkipTraversal(projectAlias, full, entry.name, excludedPatterns, allowGitIgnored)) continue;
+        if (shouldSkipTraversal(projectAlias, readableRoot, full, entry.name, excludedPatterns, allowGitIgnored, registry)) continue;
         if (includeDirs) out.push({ relativePath: rel, kind: "directory" });
         queue.push(full);
       } else if (entry.isFile() && includeFiles) {
-        if (shouldSkipTraversal(projectAlias, full, entry.name, excludedPatterns, allowGitIgnored)) continue;
+        if (shouldSkipTraversal(projectAlias, readableRoot, full, entry.name, excludedPatterns, allowGitIgnored, registry)) continue;
         const st = statSync(full);
         out.push({ relativePath: rel, kind: "file", bytes: st.size, modifiedAt: st.mtime.toISOString() });
       }

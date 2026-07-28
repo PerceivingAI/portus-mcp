@@ -98,25 +98,34 @@ function packageScripts(projectAlias: string): string[] {
   return Object.keys(parsed.scripts).slice(0, 200);
 }
 
-function treeSection(projectAlias: string, options: { relativePath?: string; maxDepth?: number; includeFiles?: boolean; includeDirs?: boolean; maxEntries?: number; format?: "tree" | "json" | "flat" }): Record<string, unknown> {
+function treeSection(rootAlias: string, options: { relativePath?: string; maxDepth?: number; includeFiles?: boolean; includeDirs?: boolean; maxEntries?: number; format?: "tree" | "json" | "flat" }, registry: SkillRegistrySnapshot): Record<string, unknown> {
   const relativePath = options.relativePath ?? ".";
   const maxDepth = Math.min(options.maxDepth ?? 4, 12);
   const maxEntries = Math.min(options.maxEntries ?? 500, 5000);
   const includeFiles = options.includeFiles ?? true;
   const includeDirs = options.includeDirs ?? true;
   const format = options.format ?? "tree";
-  const base = resolveProjectPath(projectAlias, relativePath);
-  assertCanReadProjectPath(projectAlias, base, relativePath);
+  const base = resolveReadablePath(rootAlias, relativePath, registry);
+  assertCanReadProjectPath(rootAlias, base, relativePath, registry);
   const depthFromBase = (entryRelativePath: string): number => {
-    const target = resolveProjectPath(projectAlias, entryRelativePath);
+    const target = resolveReadablePath(rootAlias, entryRelativePath, registry);
     const fromBase = path.relative(base, target).replace(/\\/g, "/");
     return fromBase === "." ? 0 : fromBase.split("/").length;
   };
-  const entries = collectPaths(projectAlias, base, maxEntries, includeFiles, includeDirs)
+  const entries = collectPaths(rootAlias, base, maxEntries, includeFiles, includeDirs, registry)
     .filter((entry) => depthFromBase(entry.relativePath) <= maxDepth);
   if (format === "flat" || format === "json") return { relativePath, format, entries, truncated: entries.length >= maxEntries, maxEntries };
   const output = [relativePath, ...entries.map((entry) => `${"  ".repeat(Math.max(0, depthFromBase(entry.relativePath) - 1))}${entry.kind === "directory" ? "[D] " : ""}${entry.relativePath}`)].join("\n");
   return { relativePath, format, output, truncated: entries.length >= maxEntries, maxEntries };
+}
+
+function filesSection(rootAlias: string, options: { relativePath?: string; maxEntries?: number }, registry: SkillRegistrySnapshot): Record<string, unknown> {
+  const relativePath = options.relativePath ?? ".";
+  const maxEntries = options.maxEntries ?? 200;
+  const root = resolveReadablePath(rootAlias, relativePath, registry);
+  assertCanReadProjectPath(rootAlias, root, relativePath, registry);
+  const files = collectPaths(rootAlias, root, maxEntries, true, false, registry).filter((entry) => entry.kind === "file");
+  return { relativePath, files, truncated: files.length >= maxEntries, maxEntries };
 }
 
 function filesSearch(projectAlias: string, query: string, relativePath: string, maxResults: number, caseSensitive: boolean) {
@@ -318,7 +327,7 @@ function performEdit(projectAlias: string, operation: EditOperation, dryRun: boo
 }
 
 export function registerProjectReadTool(server: McpServer, registry: SkillRegistrySnapshot): void {
-  registerStrictProjectTool(server, "project_read", "Read text, binary content, metadata, or existence for 1–20 registered project or read-only skill paths with ordered per-item results.", {
+  registerStrictProjectTool(server, "project_read", "Read content or metadata from registered project paths and configured read-only skill paths. Use a project alias or a skill rootAlias returned by project_context; skill entrypoints and supporting files use their catalog-provided relative paths. Supports 1–20 batched content, binary, metadata, or existence requests with ordered per-item results.", {
     projectAlias: z.string().min(1),
     requests: z.array(z.object({ relativePath: z.string().min(1), mode: z.enum(["content", "binary", "metadata", "exists"]).default("content"), startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional() }).strict().superRefine((request, context) => { if (request.mode !== "content" && (request.startLine !== undefined || request.endLine !== undefined)) context.addIssue({ code: z.ZodIssueCode.custom, message: "Line ranges are only valid for content mode" }); })).min(1).max(20)
   }, readAnnotations, async ({ projectAlias, requests }) => {
@@ -350,18 +359,26 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
   registerProjectReadTool(server, registry);
 
   const treeSchema = z.object({ relativePath: z.string().min(1).optional(), maxDepth: z.number().int().positive().max(12).optional(), includeFiles: z.boolean().optional(), includeDirs: z.boolean().optional(), maxEntries: z.number().int().positive().max(5000).optional(), format: z.enum(["tree", "json", "flat"]).optional() }).strict();
-  registerStrictProjectTool(server, "project_context", "Return registered project aliases or bounded project status, tree, file listing, path metadata, and package-script context without file contents.", {
-    projectAlias: z.string().min(1).optional(), include: z.object({ projects: z.boolean().optional(), status: z.boolean().optional(), tree: treeSchema.optional(), files: z.object({ relativePath: z.string().min(1).optional(), maxEntries: z.number().int().positive().max(1000).optional() }).strict().optional(), paths: z.array(z.object({ relativePath: z.string().min(1), includeHash: z.boolean().optional() }).strict()).max(20).optional(), scripts: z.boolean().optional() }).strict().optional()
+  registerStrictProjectTool(server, "project_context", "Discover registered projects and available read-only skills, or inspect bounded trees, file listings, and path metadata using either a registered project alias or a catalog-provided skill rootAlias. Project status and package scripts are available only for registered projects.", {
+    projectAlias: z.string().min(1).optional().describe("Registered project alias, or a skill rootAlias returned by include.skills for tree, files, and paths."), include: z.object({ projects: z.boolean().optional(), skills: z.boolean().optional(), status: z.boolean().optional(), tree: treeSchema.optional(), files: z.object({ relativePath: z.string().min(1).optional(), maxEntries: z.number().int().positive().max(1000).optional() }).strict().optional(), paths: z.array(z.object({ relativePath: z.string().min(1), includeHash: z.boolean().optional() }).strict()).max(20).optional(), scripts: z.boolean().optional() }).strict().optional()
   }, readAnnotations, async ({ projectAlias, include }) => {
     const requested = include ?? { status: true, tree: { maxDepth: 2, maxEntries: 200 }, scripts: true };
     const hasScopedRequest = requested.status === true || requested.tree !== undefined || requested.files !== undefined || requested.paths !== undefined || requested.scripts === true;
+    const hasDiscoveryRequest = requested.projects === true || requested.skills === true;
+    const isSkillRoot = projectAlias !== undefined && registry.connected.byAlias.has(projectAlias);
     if (hasScopedRequest && !projectAlias) throw new Error("projectAlias is required for project-scoped context sections");
-    if (!hasScopedRequest && requested.projects !== true) throw new Error("Request at least one context section");
-    if (requested.projects) assertChatGptPermission("projectContext");
-    if (hasScopedRequest) assertChatGptPermission("projectContext", projectAlias);
+    if (!hasScopedRequest && !hasDiscoveryRequest) throw new Error("Request at least one context section");
+    if (isSkillRoot && (requested.status === true || requested.scripts === true)) {
+      throw new Error("Skill rootAlias supports only tree, files, and paths context sections.");
+    }
+    if (hasDiscoveryRequest) assertChatGptPermission("projectContext");
+    if (hasScopedRequest) assertChatGptPermission("projectContext", isSkillRoot ? undefined : projectAlias);
     const sections: Record<string, unknown> = {};
     const isolate = (name: string, action: () => unknown) => { try { sections[name] = { ok: true, value: action() }; } catch (error) { sections[name] = { ok: false, error: safeError(error) }; } };
     if (requested.projects) isolate("projects", () => ({ projectAliases: listProjects().map((project) => project.projectAlias) }));
+    if (requested.skills) isolate("skills", () => ({
+      skills: registry.connected.catalog.map(({ name, description, rootAlias, entrypoint }) => ({ name, description, rootAlias, entrypoint }))
+    }));
     if (requested.status) isolate("status", () => {
       const project = getProject(projectAlias!);
       return {
@@ -372,9 +389,9 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
         }
       };
     });
-    if (requested.tree) isolate("tree", () => treeSection(projectAlias!, requested.tree ?? {}));
-    if (requested.files) isolate("files", () => { const relativePath = requested.files?.relativePath ?? "."; const maxEntries = requested.files?.maxEntries ?? 200; const root = resolveProjectPath(projectAlias!, relativePath); assertCanReadProjectPath(projectAlias!, root, relativePath); const files = collectPaths(projectAlias!, root, maxEntries, true, false).filter((entry) => entry.kind === "file"); return { relativePath, files, truncated: files.length >= maxEntries, maxEntries }; });
-    if (requested.paths) isolate("paths", () => requested.paths?.map((item) => { try { return { ok: true, ...pathMetadata(projectAlias!, item.relativePath, item.includeHash ?? false) }; } catch (error) { return { ok: false, relativePath: safeRelativePath(item.relativePath), error: safeError(error, item.relativePath) }; } }) ?? []);
+    if (requested.tree) isolate("tree", () => treeSection(projectAlias!, requested.tree ?? {}, registry));
+    if (requested.files) isolate("files", () => filesSection(projectAlias!, requested.files ?? {}, registry));
+    if (requested.paths) isolate("paths", () => requested.paths?.map((item) => { try { return { ok: true, ...pathMetadata(projectAlias!, item.relativePath, item.includeHash ?? false, registry) }; } catch (error) { return { ok: false, relativePath: safeRelativePath(item.relativePath), error: safeError(error, item.relativePath) }; } }) ?? []);
     if (requested.scripts) isolate("scripts", () => ({ scripts: packageScripts(projectAlias!) }));
     return { projectAlias: projectAlias ?? null, sections };
   });
