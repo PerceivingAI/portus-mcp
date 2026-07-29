@@ -127,3 +127,21 @@ test("extractTailscaleUser extracts user identity headers when present", () => {
   });
   assert.deepEqual(extracted, { userLogin: "alice@example.com", userName: "Alice Smith" });
 });
+test("MCP routes support nested secret path obscurity ending in /mcp", async (t) => {
+  const server = createHttpServer("/secret-prefix/mcp");
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  t.after(() => server.close());
+
+  const address = server.address() as { port: number };
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  const standardPath = await fetch(`${baseUrl}/mcp`);
+  assert.equal(standardPath.status, 404);
+
+  const secretPath = await fetch(`${baseUrl}/secret-prefix/mcp`);
+  assert.equal(secretPath.status, 200);
+  const body = await secretPath.json() as { name: string; mcp: string; status: string };
+  assert.equal(body.name, "portus-mcp");
+  assert.equal(body.mcp, "/secret-prefix/mcp");
+  assert.equal(body.status, "ok");
+});
