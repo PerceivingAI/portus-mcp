@@ -4,11 +4,10 @@ import { optionalEnv } from "../env.js";
 import { loadPolicyConfig } from "../policy/policyConfig.js";
 
 export class StateStore {
-  readonly root: string;
-
-  constructor(root = optionalEnv("PORTUS_MCP_STATE_DIR", ".portus-mcp")) {
-    this.root = path.resolve(root);
-    mkdirSync(this.root, { recursive: true });
+  get root(): string {
+    const dir = path.resolve(optionalEnv("PORTUS_MCP_STATE_DIR", ".portus-mcp"));
+    mkdirSync(dir, { recursive: true });
+    return dir;
   }
 
   path(name: string): string {
