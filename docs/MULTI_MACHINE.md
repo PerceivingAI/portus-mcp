@@ -38,8 +38,7 @@ It also helps security. Most MCP clients let you enable or disable specific MCP 
 
 ## Network Exposure
 
-Expose target machines using Tailscale Funnel for MCP clients like Claude Desktop, Cursor, or Codex (`tailscale funnel 8789`). For ChatGPT connections, configure OpenAI `tunnel-client` profiles (`docs/TUNNEL_CLIENT.md`).
-
+Expose target machines using Tailscale (Tailscale Serve for private mesh or Tailscale Funnel for public cloud connectors; see `docs/TAILSCALE.md`). For ChatGPT connections, configure OpenAI `tunnel-client` profiles (`docs/TUNNEL_CLIENT.md`).
 On the target machine, start Portus MCP:
 
 ```text

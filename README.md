@@ -227,10 +227,15 @@ On Windows, you can usually stop each process with `Ctrl+C`.
 
 Portus MCP and `tunnel-client` are separate processes. Both are required while ChatGPT is using the MCP.
 
-## Use From Another Client
+## Use From Another Client & Tailscale Setup
 
-Expose the server through Tailscale:
+For complete, detailed instructions on using Tailscale (Tailscale Serve for private inter-device mesh access and Tailscale Funnel for public cloud connectors like Perplexity), see the authoritative guide:
 
+```text
+docs/TAILSCALE.md
+```
+
+### Quick Exposure via Tailscale
 ```text
 tailscale funnel 8789
 ```

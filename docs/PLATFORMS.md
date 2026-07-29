@@ -24,7 +24,7 @@ Start the server with:
 npm start
 ```
 
-Expose it when needed:
+Expose it when needed via Tailscale (see `docs/TAILSCALE.md` for full guide):
 
 ```text
 tailscale funnel 8789

@@ -6,13 +6,13 @@ Portus MCP is a Streamable HTTP MCP server and you can make it accessible by usi
 https://machine.tailnet.ts.net/mcp
 ```
 
-For example, I use Tailscale Funnel which prints only the root URL:
+For Tailscale setup (Tailscale Serve for private devices, Tailscale Funnel for public cloud connectors), see `docs/TAILSCALE.md`. Tailscale prints a root URL:
 
 ```text
 https://machine.tailnet.ts.net/
 ```
 
-Where you have to add `/mcp` manually in the MCP client.
+Add `/mcp` (or your configured `PORTUS_MCP_PATH`) manually in the MCP client.
 
 ## ChatGPT
 

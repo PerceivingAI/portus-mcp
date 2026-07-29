@@ -37,25 +37,12 @@ If an agent spawn fails with a missing key message, set the credential values fo
 
 ## Network Exposure & Client Connection
 
-### Tailscale Funnel
+### Tailscale Integration (Serve & Funnel)
 
-Tailscale Funnel exposes the local server to MCP clients such as Claude Desktop, Cursor, or custom HTTP MCP clients. Tailscale prints a base URL:
-
-```text
-https://machine.tailnet.ts.net/
-```
-
-Append `/mcp` in your client configuration:
+For all Tailscale setup, configuration, Funnel/Serve commands, status verification (`npm run tailscale:status`), and troubleshooting details, see the authoritative guide:
 
 ```text
-https://machine.tailnet.ts.net/mcp
-```
-On Linux, elevated permissions may be required (`sudo tailscale funnel 8789`).
-
-You can check your active Tailscale connection and get your ready-to-copy target MCP URL at any time by running:
-
-```bash
-npm run tailscale:status
+docs/TAILSCALE.md
 ```
 ### ChatGPT Connection via `tunnel-client`
 
