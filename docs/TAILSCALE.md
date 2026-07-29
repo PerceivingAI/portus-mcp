@@ -23,7 +23,7 @@ Tailscale offers two distinct ways to expose Portus MCP:
 | **Access Scope** | 100% Private (Logged-in devices on your Tailnet) | Public Internet (Proxied via Tailscale edge) |
 | **Tailscale Identity Headers** | ✅ Injected (`Tailscale-User-Login`, `Tailscale-User-Name`) | ❌ Not injected (Public visitors have no Tailnet identity) |
 | **Use Case** | Local IDEs (Codex Desktop, Cursor), secondary laptops, mobile devices | Third-party cloud connectors (Perplexity Custom Remote Connectors) |
-| **TLS / HTTPS** | Automatic valid Let's Encrypt certificates | Automatic valid Let's Encrypt certificates |
+│ **TLS / HTTPS** │ Valid HTTPS certificates are provisioned after HTTPS is enabled for the tailnet │ Valid HTTPS certificates are provisioned after Funnel prerequisites are enabled │
 | **Reachability by Perplexity** | ❌ Unreachable (Cloud servers are not in your Tailnet) | ✅ Reachable |
 ---
 
@@ -78,7 +78,7 @@ npm run start:funnel
 4. In Perplexity AI:
    * Go to **Settings** -> **Connectors** -> **Add Custom Remote Connector**.
    * Set **URL**: `https://<machine-name>.<tailnet-name>.ts.net/mcp`
-   * Set **Auth**: Select *Bearer Token* and enter your configured `PORTUS_MCP_BEARER_TOKEN` (or *No Auth* if running in an isolated test environment).
+   * Set **Auth**: Select *Bearer Token* and enter `PORTUS_MCP_BEARER_TOKEN`. Do not use *No Auth* for a public Funnel endpoint except during a brief, controlled test with no sensitive or action-capable tools exposed.
 
 ### Development-Only Path Obscurity
 If you test Funnel without a Bearer token, setting a secret route path in `.env` reduces automated scanner traffic:
@@ -105,9 +105,23 @@ Portus MCP provides environment variables to tune network exposure and paths:
 | `PORTUS_MCP_HOST` | `127.0.0.1` | Host adapter binding. Confines unencrypted HTTP to loopback, blocking raw physical LAN exposure. |
 | `PORTUS_MCP_PORT` | `8789` | Local TCP port for the HTTP MCP server. |
 | `PORTUS_MCP_PATH` | `/mcp` | Base HTTP path for MCP routes. Supports secret paths (e.g. `/secret-key/mcp`). |
-| `PORTUS_MCP_BEARER_TOKEN` | *(empty)* | Optional static bearer token. Left empty for No-Auth client flows. |
+│ `PORTUS_MCP_BEARER_TOKEN` │ *(empty)* │ Static bearer token. Recommended for public Funnel endpoints. │
 
----
+### Secure Configuration Example
+
+Generate a long, random secret token:
+```bash
+openssl rand -base64 32
+```
+
+Set the token in your local `.env`:
+```env
+PORTUS_MCP_HOST=127.0.0.1
+PORTUS_MCP_PORT=8789
+PORTUS_MCP_PATH=/mcp
+PORTUS_MCP_BEARER_TOKEN=replace-with-a-long-random-secret
+```
+*(Do not commit `.env` to git repository. Portus automatically redacts `Authorization` headers from session audit logs).*
 
 ## 6. Tailscale Status & Endpoint Helper (`npm run tailscale:status`)
 
@@ -122,12 +136,15 @@ npm run tailscale:status
 ==================================================
   Portus MCP - Tailscale Status Summary
 ==================================================
-Portus MCP State: Listening on http://127.0.0.1:8789/mcp
-Configured Path:  /mcp
-Tailscale Status: Connected (desktop-main.tail1234.ts.net)
-Exposure Mode:    PUBLIC FUNNEL (tailscale funnel)
-Target URL:       https://desktop-main.tail1234.ts.net/mcp
-Status:           Ready for external cloud connectors (e.g. Perplexity).
+Portus Bind Address:  127.0.0.1:8789
+MCP Route:            /mcp
+Authentication:       Required (Bearer Token set)
+Tailscale Status:     Connected (desktop-main.tail1234.ts.net)
+Exposure Mode:        PUBLIC FUNNEL (tailscale funnel)
+Public Exposure:      YES (Accessible from public internet)
+Identity Headers:     None (Funnel traffic carries no Tailnet identity)
+Target MCP URL:       https://desktop-main.tail1234.ts.net/mcp
+External Readiness:   READY for external connectors (Perplexity)
 ==================================================
 ```
 
@@ -187,6 +204,7 @@ curl -i \
 ```
 *(Should establish valid HTTPS and return the MCP protocol endpoint status).*
 
+**MCP Protocol Caveat**: A successful test proves external DNS/TLS connectivity and expected authorization behavior. Depending on Portus's Streamable HTTP implementation, a bare `curl` request may return `405 Method Not Allowed`, `406 Not Acceptable`, or an MCP-specific error after authentication; use an MCP client to validate protocol-level tool discovery and calls.
 ---
 
 ## 10. Summary & Best Practices

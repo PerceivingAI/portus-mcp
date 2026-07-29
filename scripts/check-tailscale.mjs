@@ -40,7 +40,7 @@ if (tailscaleInstalled && isConnected) {
 const hasAuth = Boolean(process.env.PORTUS_MCP_BEARER_TOKEN?.trim());
 
 console.log("==================================================");
-console.log("  Portus MCP - Tailscale & Exposure Status");
+console.log("  Portus MCP - Tailscale Status Summary");
 console.log("==================================================");
 console.log(`Portus Bind Address:  ${host}:${port}`);
 console.log(`MCP Route:            ${mcpPath}`);
@@ -64,7 +64,7 @@ if (!tailscaleInstalled) {
   if (dnsName) {
     console.log(`Target MCP URL:       https://${dnsName}${mcpPath}`);
   }
-  console.log(`External Readiness:   ${hasAuth ? "READY for external connectors (Perplexity)" : "WARN: Public Funnel without Bearer Token authentication"}`);
+  console.log(`External Readiness:   Funnel active. ${hasAuth ? "Bearer token set." : "WARN: Bearer token unconfigured."} Verify external reachability before adding URL to Perplexity.`);
 } else if (serveMode === "serve") {
   console.log(`Tailscale Status:     Connected (${dnsName || "Tailnet Node"})`);
   console.log("Exposure Mode:        PRIVATE TAILNET MESH (tailscale serve)");
