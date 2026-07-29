@@ -235,6 +235,12 @@ Expose the server through Tailscale:
 tailscale funnel 8789
 ```
 
+To check your active Tailscale status and inspect your complete target MCP URL:
+
+```bash
+npm run tailscale:status
+```
+
 On systems where Tailscale requires elevation:
 
 ```text

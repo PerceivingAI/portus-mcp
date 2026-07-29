@@ -50,9 +50,13 @@ Append `/mcp` in your client configuration:
 ```text
 https://machine.tailnet.ts.net/mcp
 ```
-
 On Linux, elevated permissions may be required (`sudo tailscale funnel 8789`).
 
+You can check your active Tailscale connection and get your ready-to-copy target MCP URL at any time by running:
+
+```bash
+npm run tailscale:status
+```
 ### ChatGPT Connection via `tunnel-client`
 
 ChatGPT connects via OpenAI `tunnel-client` (`docs/TUNNEL_CLIENT.md`).

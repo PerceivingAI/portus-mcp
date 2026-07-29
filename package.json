@@ -14,7 +14,8 @@
     "smoke:health": "node scripts/smoke-health.mjs",
     "smoke:flue-write": "node --import tsx scripts/smoke-flue-write.mjs",
     "smoke:flue-lifecycle": "node --import tsx scripts/smoke-flue-lifecycle.mjs",
-    "clean-state": "node scripts/clean-state.mjs"
+    "clean-state": "node scripts/clean-state.mjs",
+    "tailscale:status": "node scripts/check-tailscale.mjs"
   },
   "dependencies": {
     "@flue/cli": "^0.2.0",
