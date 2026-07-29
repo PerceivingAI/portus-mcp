@@ -37,39 +37,52 @@ if (tailscaleInstalled && isConnected) {
   }
 }
 
+const hasAuth = Boolean(process.env.PORTUS_MCP_BEARER_TOKEN?.trim());
+
 console.log("==================================================");
-console.log("  Portus MCP - Tailscale Status Summary");
+console.log("  Portus MCP - Tailscale & Exposure Status");
 console.log("==================================================");
-console.log(`Portus MCP State: Listening on http://${host}:${port}${mcpPath}`);
-console.log(`Configured Path:  ${mcpPath}`);
+console.log(`Portus Bind Address:  ${host}:${port}`);
+console.log(`MCP Route:            ${mcpPath}`);
+console.log(`Authentication:       ${hasAuth ? "Required (Bearer Token set)" : "Disabled (No-Auth flow)"}`);
 
 if (!tailscaleInstalled) {
-  console.log("Tailscale Status: CLI not found or disabled");
-  console.log("Exposure Mode:    LOCAL LOOPBACK ONLY");
+  console.log("Tailscale Status:     CLI not found or disabled");
+  console.log("Exposure Mode:        LOCAL LOOPBACK ONLY");
+  console.log("Public Exposure:      No");
+  console.log("Identity Headers:     N/A (Local loopback)");
 } else if (!isConnected) {
-  console.log("Tailscale Status: Disconnected or logging in");
-  console.log("Exposure Mode:    LOCAL LOOPBACK ONLY");
+  console.log("Tailscale Status:     Disconnected or logging in");
+  console.log("Exposure Mode:        LOCAL LOOPBACK ONLY");
+  console.log("Public Exposure:      No");
+  console.log("Identity Headers:     N/A (Disconnected)");
 } else if (serveMode === "funnel") {
-  console.log(`Tailscale Status: Connected (${dnsName || "Tailnet Node"})`);
-  console.log("Exposure Mode:    PUBLIC FUNNEL (tailscale funnel)");
+  console.log(`Tailscale Status:     Connected (${dnsName || "Tailnet Node"})`);
+  console.log("Exposure Mode:        PUBLIC FUNNEL (tailscale funnel)");
+  console.log("Public Exposure:      YES (Accessible from public internet)");
+  console.log("Identity Headers:     None (Funnel traffic carries no Tailnet identity)");
   if (dnsName) {
-    console.log(`Target URL:       https://${dnsName}${mcpPath}`);
+    console.log(`Target MCP URL:       https://${dnsName}${mcpPath}`);
   }
-  console.log("Status:           Ready for external cloud connectors (e.g. Perplexity).");
+  console.log(`External Readiness:   ${hasAuth ? "READY for external connectors (Perplexity)" : "WARN: Public Funnel without Bearer Token authentication"}`);
 } else if (serveMode === "serve") {
-  console.log(`Tailscale Status: Connected (${dnsName || "Tailnet Node"})`);
-  console.log("Exposure Mode:    PRIVATE TAILNET MESH (tailscale serve)");
+  console.log(`Tailscale Status:     Connected (${dnsName || "Tailnet Node"})`);
+  console.log("Exposure Mode:        PRIVATE TAILNET MESH (tailscale serve)");
+  console.log("Public Exposure:      No (Restricted to devices on your Tailnet)");
+  console.log("Identity Headers:     Expected (Tailscale-User-Login injected)");
   if (dnsName) {
-    console.log(`Target URL:       https://${dnsName}${mcpPath}`);
+    console.log(`Target MCP URL:       https://${dnsName}${mcpPath}`);
   }
-  console.log("Status:           Ready for private devices on your Tailnet.");
+  console.log("External Readiness:   READY for private Tailnet devices (Codex, Cursor, laptops)");
 } else {
-  console.log(`Tailscale Status: Connected (${dnsName || "Tailnet Node"})`);
-  console.log("Exposure Mode:    LOCAL LOOPBACK ONLY");
+  console.log(`Tailscale Status:     Connected (${dnsName || "Tailnet Node"})`);
+  console.log("Exposure Mode:        LOCAL LOOPBACK ONLY");
+  console.log("Public Exposure:      No");
+  console.log("Identity Headers:     N/A (Local loopback)");
   if (dnsName) {
     console.log("\nQuick Exposure Commands:");
-    console.log(`  • Private Tailnet Mesh: tailscale serve ${port}`);
-    console.log(`  • Public Funnel:       tailscale funnel ${port}`);
+    console.log(`  • Private Tailnet Mesh: tailscale serve ${port}  (npm run start:serve)`);
+    console.log(`  • Public Funnel:       tailscale funnel ${port} (npm run start:funnel)`);
     console.log(`  • Target URL will be:  https://${dnsName}${mcpPath}`);
   }
 }
