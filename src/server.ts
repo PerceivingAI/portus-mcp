@@ -26,6 +26,19 @@ export function createMcpServer(skillRegistry: SkillRegistrySnapshot = loadSkill
   return server;
 }
 
+export function extractTailscaleUser(headers: IncomingMessage["headers"]): { userLogin?: string; userName?: string } {
+  const userLoginHeader = headers["tailscale-user-login"];
+  const userNameHeader = headers["tailscale-user-name"];
+
+  const userLogin = Array.isArray(userLoginHeader) ? userLoginHeader[0] : userLoginHeader;
+  const userName = Array.isArray(userNameHeader) ? userNameHeader[0] : userNameHeader;
+
+  return {
+    ...(userLogin?.trim() ? { userLogin: userLogin.trim() } : {}),
+    ...(userName?.trim() ? { userName: userName.trim() } : {})
+  };
+}
+
 export function createHttpServer(mcpPath = optionalEnv("PORTUS_MCP_PATH", "/mcp")) {
   const skillRegistry = loadSkillRegistry();
   const bearerToken = optionalEnv("PORTUS_MCP_BEARER_TOKEN", "").trim();
@@ -48,13 +61,13 @@ export function createHttpServer(mcpPath = optionalEnv("PORTUS_MCP_PATH", "/mcp"
 
   const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
   const isMcpRoute = url.pathname === mcpPath || url.pathname.startsWith(`${mcpPath}/`);
+  const tsUser = extractTailscaleUser(req.headers);
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "POST, GET, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "content-type, mcp-session-id, mcp-protocol-version, authorization, last-event-id",
+    "Access-Control-Allow-Headers": "content-type, mcp-session-id, mcp-protocol-version, authorization, last-event-id, tailscale-user-login, tailscale-user-name",
     "Access-Control-Expose-Headers": "Mcp-Session-Id, mcp-session-id"
   };
-
   if (req.method === "OPTIONS" && isMcpRoute) {
     res.writeHead(204, corsHeaders);
     res.end();

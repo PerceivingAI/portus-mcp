@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-const { createHttpServer } = await import("../src/server.js");
+const { createHttpServer, extractTailscaleUser } = await import("../src/server.js");
 
 async function listenWithToken(token: string | undefined) {
   const original = process.env.PORTUS_MCP_BEARER_TOKEN;
@@ -116,4 +116,14 @@ test("MCP POST route normalizes Accept header to support clients like Perplexity
     body: initPayload
   });
   assert.equal(bothAccept.status, 200);
+});
+test("extractTailscaleUser extracts user identity headers when present", () => {
+  const empty = extractTailscaleUser({});
+  assert.deepEqual(empty, {});
+
+  const extracted = extractTailscaleUser({
+    "tailscale-user-login": "alice@example.com",
+    "tailscale-user-name": "Alice Smith"
+  });
+  assert.deepEqual(extracted, { userLogin: "alice@example.com", userName: "Alice Smith" });
 });
