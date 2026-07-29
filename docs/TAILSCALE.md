@@ -33,14 +33,16 @@ Tailscale offers two distinct ways to expose Portus MCP:
 Use **Tailscale Serve** to connect to Portus MCP from your other personal devices (laptops, tablets, secondary workstations) without exposing port `8789` to the public internet.
 
 ### Quick Setup
-1. Start Portus MCP locally:
-   ```bash
-   npm start
-   ```
-2. Enable Tailscale Serve in another terminal:
-   ```bash
-   tailscale serve 8789
-   ```
+
+#### Option A: Single-Command Launcher (Recommended)
+```bash
+npm run start:serve
+```
+*(Spawns both Portus MCP and `tailscale serve 8789` together in one terminal).*
+
+#### Option B: Two-Terminal Setup
+1. Terminal 1: `npm start`
+2. Terminal 2: `tailscale serve 8789`
 3. Copy the private HTTPS URL displayed:
    ```text
    https://<machine-name>.<tailnet-name>.ts.net/mcp
@@ -59,15 +61,16 @@ tailscale serve off
 Use **Tailscale Funnel** when a cloud-hosted service (such as **Perplexity AI Custom Remote Connectors**) needs inbound HTTPS access to your local Portus MCP server.
 
 ### Quick Setup for Perplexity
-1. Start Portus MCP locally:
-   ```bash
-   npm start
-   ```
-2. Enable Tailscale Funnel in another terminal:
-   ```bash
-   tailscale funnel 8789
-   ```
-   *(On Linux/macOS, `sudo tailscale funnel 8789` may be required).*
+
+#### Option A: Single-Command Launcher (Recommended)
+```bash
+npm run start:funnel
+```
+*(Spawns both Portus MCP and `tailscale funnel 8789` together in one terminal).*
+
+#### Option B: Two-Terminal Setup
+1. Terminal 1: `npm start`
+2. Terminal 2: `tailscale funnel 8789`
 3. Copy the public HTTPS URL displayed by Tailscale:
    ```text
    https://<machine-name>.<tailnet-name>.ts.net/mcp

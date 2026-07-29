@@ -129,27 +129,28 @@ cd C:\tools\tunnel-client
 
 ### Daily startup
 
-Run Portus MCP in one terminal:
+#### Single-Command Launcher (Recommended)
 
+Run both Portus MCP and `tunnel-client` together in one terminal:
+
+```bash
+npm run start:tunnel
+```
+*(Press `Ctrl+C` once to stop both processes cleanly).*
+
+#### Two-Terminal Setup (Alternative)
+
+Terminal 1 (Portus MCP):
 ```powershell
 cd C:\path\to\portus-mcp
 npm start
 ```
 
-Run `tunnel-client` in a second terminal:
-
+Terminal 2 (`tunnel-client`):
 ```powershell
 cd C:\tools\tunnel-client
 .\tunnel-client.exe run --profile portus-local
 ```
-
-Keep both terminals open while ChatGPT is using Portus MCP:
-
-```text
-Terminal 1: Portus MCP
-Terminal 2: tunnel-client
-```
-
 ### Add the plugin in ChatGPT
 
 In ChatGPT web:
@@ -234,11 +235,19 @@ For complete, detailed instructions on using Tailscale (Tailscale Serve for priv
 ```text
 docs/TAILSCALE.md
 ```
+### Single-Command Launchers
 
-### Quick Exposure via Tailscale
-```text
-tailscale funnel 8789
-```
+Launch Portus MCP and Tailscale together in one terminal:
+
+* **Public Cloud Connectors (Perplexity)**:
+  ```bash
+  npm run start:funnel
+  ```
+* **Private Inter-Device Mesh (Personal Devices)**:
+  ```bash
+  npm run start:serve
+  ```
+*(Press `Ctrl+C` once to stop both processes cleanly).*
 
 To check your active Tailscale status and inspect your complete target MCP URL:
 
