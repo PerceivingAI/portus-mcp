@@ -10,6 +10,7 @@
     "start:tunnel": "node scripts/start-all.mjs --tunnel",
     "start:funnel": "node scripts/start-all.mjs --funnel",
     "start:serve": "node scripts/start-all.mjs --serve",
+    "check": "tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
     "build": "tsc",
     "flue:check": "node scripts/check-flue.mjs",

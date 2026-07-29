@@ -434,16 +434,26 @@ The admin UI is local. It is for checking whether `tunnel-client` is healthy, re
 
 ## 12. Daily workflow
 
-After the one-time setup, the normal workflow is:
+### Option A: Single-Command Launcher (Recommended)
 
-Terminal 1:
+Run both Portus MCP and `tunnel-client` together in one terminal:
+
+```powershell
+cd C:\path\to\portus-mcp
+npm run start:tunnel
+```
+*(Press `Ctrl+C` once to stop both processes cleanly).*
+
+### Option B: Two-Terminal Setup (Alternative)
+
+Terminal 1 (Portus MCP):
 
 ```powershell
 cd C:\path\to\portus-mcp
 npm start
 ```
 
-Terminal 2:
+Terminal 2 (`tunnel-client`):
 
 ```powershell
 cd C:\tools\tunnel-client
@@ -451,7 +461,6 @@ cd C:\tools\tunnel-client
 ```
 
 Both processes must stay running while an MCP client uses the tunnel.
-
 ## Troubleshooting
 
 ### `tunnel-client` says the API key is not set

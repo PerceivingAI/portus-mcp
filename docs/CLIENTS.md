@@ -17,10 +17,9 @@ Add `/mcp` (or your configured `PORTUS_MCP_PATH`) manually in the MCP client.
 ## ChatGPT
 
 ChatGPT connects to Portus MCP via OpenAI Secure MCP Tunnel using `tunnel-client` (`docs/TUNNEL_CLIENT.md`).
-1. Start Portus MCP locally (`npm start`) on `http://127.0.0.1:8789/mcp`.
-2. Run `tunnel-client` in a second terminal using your OpenAI Platform tunnel profile.
-3. In ChatGPT web: account button -> Settings -> Plugins -> Browse plugins -> click + to add plugin -> select Tunnel -> pick your tunnel -> select No Auth -> tick disclaimer -> Connect.
-4. `PORTUS_MCP_BEARER_TOKEN` must be left empty in `.env` for the No Auth tunnel configuration.
+1. Launch Portus MCP and `tunnel-client` together with `npm run start:tunnel` (or start Portus MCP with `npm start` and `tunnel-client` in a second terminal).
+2. In ChatGPT web: account button -> Settings -> Plugins -> Browse plugins -> click + to add plugin -> select Tunnel -> pick your tunnel -> select No Auth -> tick disclaimer -> Connect.
+3. `PORTUS_MCP_BEARER_TOKEN` must be left empty in `.env` for the No Auth tunnel configuration.
 ## Codex Desktop
 
 For the Codex Desktop App (Windows and Mac), go to Settings, MCP Servers, Add Server, and select `Streamable HTTP MCP server`. Add the name and URL of the Portus MCP.

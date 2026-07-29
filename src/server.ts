@@ -61,7 +61,6 @@ export function createHttpServer(mcpPath = optionalEnv("PORTUS_MCP_PATH", "/mcp"
 
   const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
   const isMcpRoute = url.pathname === mcpPath || url.pathname.startsWith(`${mcpPath}/`);
-  const tsUser = extractTailscaleUser(req.headers);
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "POST, GET, DELETE, OPTIONS",

@@ -62,9 +62,11 @@ PORTUS_MCP_HOST=127.0.0.1
 PORTUS_MCP_PORT=8789
 PORTUS_MCP_PATH=/mcp
 PORTUS_MCP_BEARER_TOKEN=
+PORTUS_TUNNEL_CLIENT_PATH=
+PORTUS_TUNNEL_PROFILE=portus-local
 ```
 
-The host defaults to `127.0.0.1`, the port defaults to `8789`, the MCP route defaults to `/mcp`, and an empty bearer token disables static bearer authentication.
+The host defaults to `127.0.0.1`, the port defaults to `8789`, the MCP route defaults to `/mcp`, and an empty bearer token disables static bearer authentication. `PORTUS_TUNNEL_CLIENT_PATH` and `PORTUS_TUNNEL_PROFILE` tune single-command launcher orchestration (`npm run start:tunnel`).
 
 Pre-register projects with semicolon-separated `alias=absolute/path` entries:
 
