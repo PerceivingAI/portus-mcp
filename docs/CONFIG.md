@@ -58,12 +58,13 @@ Example `portus-mcp.config.json`:
 Server and authentication variables:
 
 ```text
+PORTUS_MCP_HOST=127.0.0.1
 PORTUS_MCP_PORT=8789
 PORTUS_MCP_PATH=/mcp
 PORTUS_MCP_BEARER_TOKEN=
 ```
 
-The port defaults to `8789`, the MCP route defaults to `/mcp`, and an empty bearer token disables static bearer authentication. (`src/server.ts:39-51`, `src/server.ts:191-196`)
+The host defaults to `127.0.0.1`, the port defaults to `8789`, the MCP route defaults to `/mcp`, and an empty bearer token disables static bearer authentication.
 
 Pre-register projects with semicolon-separated `alias=absolute/path` entries:
 

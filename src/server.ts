@@ -179,10 +179,11 @@ export function createHttpServer(mcpPath = optionalEnv("PORTUS_MCP_PATH", "/mcp"
 }
 
 export function startServer(): void {
+  const host = optionalEnv("PORTUS_MCP_HOST", "127.0.0.1");
   const port = Number(optionalEnv("PORTUS_MCP_PORT", "8789"));
   const mcpPath = optionalEnv("PORTUS_MCP_PATH", "/mcp");
-  createHttpServer(mcpPath).listen(port, () => {
-    console.log(`portus-mcp MCP server listening on http://localhost:${port}${mcpPath}`);
+  createHttpServer(mcpPath).listen(port, host, () => {
+    console.log(`portus-mcp MCP server listening on http://${host}:${port}${mcpPath}`);
   });
 }
 
