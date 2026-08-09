@@ -269,6 +269,13 @@ test("canonical project boundary permits internal links and rejects external jun
   assert.equal(search.sections.text.ok, false);
   assert.match(search.sections.text.error, /Path escapes project root/);
 
+  const escapedFileSearch = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: { projectAlias, mode: "text", query: "outside secret", relativePath: "outside-link/secret.txt" }
+  }));
+  assert.equal(escapedFileSearch.sections.text.ok, false);
+  assert.match(escapedFileSearch.sections.text.error, /Path escapes project root/);
+
   const edits = resultOf(await client.callTool({
     name: "project_edit",
     arguments: {
@@ -367,6 +374,20 @@ test("MCP denies gitignored-file reads and excludes traversal patterns", async (
     assert.equal(matches.some((match: { relativePath: string }) =>
       match.relativePath.includes("ignored") || match.relativePath.includes(".portus-mcp") || match.relativePath.includes("skip-me")), false);
   }
+
+  const ignoredFileSearch = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: { projectAlias: "sec", mode: "text", query: "hidden ignored content", relativePath: "ignored.txt" }
+  }));
+  assert.equal(ignoredFileSearch.sections.text.ok, false);
+  assert.match(ignoredFileSearch.sections.text.error, /readGitIgnoredFiles/);
+
+  const excludedFileSearch = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: { projectAlias: "sec", mode: "text", query: "excluded traversal content", relativePath: "skip-me/visible.txt" }
+  }));
+  assert.equal(excludedFileSearch.sections.text.ok, true);
+  assert.deepEqual(excludedFileSearch.sections.text.matches, []);
 });
 
 test("MCP package script tools cannot consume ignored package.json files when ignored reads are disabled", async (t) => {

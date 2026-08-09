@@ -368,11 +368,30 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.equal(broadSearchFiles.matches.some((match: { relativePath: string; matchedTokens: string[] }) => match.relativePath === "generated.txt" && match.matchedTokens.includes("generated")), true);
   assert.equal(broadSearchFiles.matches.some((match: { relativePath: string; matchedTokens: string[] }) => match.relativePath === "README.md" && match.matchedTokens.includes("readme")), true);
 
+  const directFileNameSearch = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: { projectAlias: "mcp", mode: "files", query: "generated", relativePath: "generated.txt", maxResults: 10 }
+  })).sections.files;
+  assert.equal(directFileNameSearch.ok, true);
+  assert.deepEqual(directFileNameSearch.matches.map((match: { relativePath: string }) => match.relativePath), ["generated.txt"]);
+  assert.equal(directFileNameSearch.truncated, false);
+
   const searchText = resultOf(await client.callTool({
     name: "project_search",
     arguments: { projectAlias: "mcp", mode: "text", query: "written through MCP", maxResults: 10 }
   })).sections.text;
   assert.equal(searchText.matches.length > 0, true);
+
+  const directFileAllSearch = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: { projectAlias: "mcp", mode: "all", query: "written through MCP", relativePath: "generated.txt", maxResults: 10 }
+  })).sections;
+  assert.equal(directFileAllSearch.files.ok, true);
+  assert.deepEqual(directFileAllSearch.files.matches, []);
+  for (const mode of ["text", "symbols"] as const) {
+    assert.equal(directFileAllSearch[mode].ok, true);
+    assert.deepEqual(directFileAllSearch[mode].matches.map((match: { relativePath: string }) => match.relativePath), ["generated.txt"]);
+  }
 
   const regexSearch = resultOf(await client.callTool({
     name: "project_search",
@@ -380,6 +399,21 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   })).sections.text;
   assert.equal(regexSearch.ok, true);
   assert.equal(regexSearch.matches.some((match: { relativePath: string }) => match.relativePath === "generated.txt"), true);
+
+  const directFileRegexSearch = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: { projectAlias: "mcp", mode: "text", query: "written\\s+through\\s+MCP", relativePath: "generated.txt", regex: true, maxResults: 10 }
+  })).sections.text;
+  assert.equal(directFileRegexSearch.ok, true);
+  assert.deepEqual(directFileRegexSearch.matches.map((match: { relativePath: string }) => match.relativePath), ["generated.txt"]);
+
+  const directFileNoMatch = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: { projectAlias: "mcp", mode: "text", query: "absent from generated file", relativePath: "generated.txt", maxResults: 10 }
+  })).sections.text;
+  assert.equal(directFileNoMatch.ok, true);
+  assert.deepEqual(directFileNoMatch.matches, []);
+  assert.equal(directFileNoMatch.truncated, false);
 
   // This deliberately exercises the real worker deadline: fake timers cannot interrupt
   // catastrophic backtracking inside a worker thread.

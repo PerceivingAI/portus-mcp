@@ -24,7 +24,7 @@ subagent_context
 |---|---|
 | `project_context` | With `include.projects=true` and no `projectAlias`, discover registered aliases only. With a `projectAlias`, retrieve effective execution capabilities, bounded project status, tree, file-list, path metadata/existence, and package-script sections. The default scoped response includes execution capability; any project-scoped section requires `projectAlias`. The tool never returns file contents. |
 | `project_read` | Submit 1–20 ordered content, binary, line-range, metadata, or existence requests. Per-item runtime failures are isolated. Resolves configured connected-agent skills through reserved `skill/<name>` aliases. |
-| `project_search` | Search files, text, symbols, or all supported modes with server-bounded results and scanning. JavaScript regex matching runs in an isolated worker with a generous policy-owned execution budget. |
+| `project_search` | Search files, text, symbols, or all supported modes with server-bounded results and scanning. `relativePath` accepts a project-relative regular file or directory; a file scopes the search to that file. JavaScript regex matching runs in an isolated worker with a generous policy-owned execution budget. |
 | `project_edit` | Run ordered write, replace, insert, copy, move, delete, mkdir, or rmdir operations, optionally as a dry run. The batch is ordered but not atomic. |
 | `project_patch` | Prepare or apply a unified patch with policy checks, preconditions, dry-run behavior, and destructive confirmation where required. |
 | `project_run` | Run approved checks, package scripts, or allowlisted device-installed commands without shell command-string parsing. |

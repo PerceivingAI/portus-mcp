@@ -23,6 +23,7 @@ import {
   assertProjectCommandStaysInProject,
   canReadProjectRelativePath,
   collectPaths,
+  collectSearchableFiles,
   commandRequiresConfirmation,
   ensureExpectedHash,
   hashSha256,
@@ -129,11 +130,9 @@ function filesSection(rootAlias: string, options: { relativePath?: string; maxEn
 }
 
 function filesSearch(projectAlias: string, query: string, relativePath: string, maxResults: number, caseSensitive: boolean) {
-  const root = resolveProjectPath(projectAlias, relativePath);
-  assertCanReadProjectPath(projectAlias, root, relativePath);
   const tokens = tokenizeFileSearchQuery(query, caseSensitive);
   const scanLimit = loadPolicyConfig().limits.search.maxScanEntries;
-  const ranked = collectPaths(projectAlias, root, scanLimit, true, false)
+  const ranked = collectSearchableFiles(projectAlias, relativePath, scanLimit)
     .map((item) => ({ item, ...scoreFileSearchPath(item.relativePath, query, tokens, caseSensitive) }))
     .filter((item) => item.score > 0)
     .sort((left, right) => right.score - left.score || left.item.relativePath.localeCompare(right.item.relativePath));
@@ -211,14 +210,12 @@ class IsolatedRegexMatcher {
 }
 
 async function textSearch(projectAlias: string, query: string, relativePath: string, maxResults: number, contextLines: number, caseSensitive: boolean, regex: boolean, symbols: boolean) {
-  const root = resolveProjectPath(projectAlias, relativePath);
-  assertCanReadProjectPath(projectAlias, root, relativePath);
   const limits = loadPolicyConfig().limits.search;
   const matches: Array<Record<string, unknown>> = [];
   const needle = caseSensitive ? query : query.toLowerCase();
   const matcher = regex ? new IsolatedRegexMatcher(query, caseSensitive ? "" : "i", limits.maxRegexExecutionMs) : null;
   try {
-    for (const entry of collectPaths(projectAlias, root, limits.maxScanEntries, true, false)) {
+    for (const entry of collectSearchableFiles(projectAlias, relativePath, limits.maxScanEntries)) {
       if (matches.length >= maxResults) break;
       if (!canReadProjectRelativePath(projectAlias, entry.relativePath)) continue;
       const target = resolveProjectPath(projectAlias, entry.relativePath);
@@ -406,7 +403,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
   });
 
   registerStrictProjectTool(server, "project_search", "Search project file paths, text, symbols, or all three within authoritative scan and output limits.", {
-    projectAlias: z.string().min(1), mode: z.enum(["files", "text", "symbols", "all"]), query: z.string().min(1), relativePath: z.string().min(1).default("."), regex: z.boolean().default(false), caseSensitive: z.boolean().default(false), contextLines: z.number().int().min(0).max(20).default(0), maxResults: z.number().int().positive().max(20000).default(100)
+    projectAlias: z.string().min(1), mode: z.enum(["files", "text", "symbols", "all"]), query: z.string().min(1), relativePath: z.string().min(1).default(".").describe("Project-relative regular file or directory to search"), regex: z.boolean().default(false), caseSensitive: z.boolean().default(false), contextLines: z.number().int().min(0).max(20).default(0), maxResults: z.number().int().positive().max(20000).default(100)
   }, readAnnotations, async ({ projectAlias, mode, query, relativePath, regex, caseSensitive, contextLines, maxResults }) => {
     assertChatGptPermission("projectSearch", projectAlias); const bounded = Math.min(maxResults, loadPolicyConfig().limits.search.maxScanEntries); const sections: Record<string, unknown> = {};
     const run = async (name: string, action: () => Record<string, unknown> | Promise<Record<string, unknown>>) => { try { sections[name] = { ok: true, ...await action() }; } catch (error) { sections[name] = { ok: false, error: safeError(error, relativePath) }; } };

@@ -246,6 +246,24 @@ export function collectPaths(projectAlias: string, root: string, maxEntries: num
   return out;
 }
 
+export function collectSearchableFiles(projectAlias: string, relativePath: string, maxEntries: number): Array<{ relativePath: string; kind: "file" | "directory"; bytes?: number; modifiedAt?: string }> {
+  const root = resolveProjectPath(projectAlias, relativePath);
+  assertCanReadProjectPath(projectAlias, root, relativePath);
+  const info = statSync(root);
+  if (info.isDirectory()) return collectPaths(projectAlias, root, maxEntries, true, false);
+  if (!info.isFile()) throw new Error(`Search root is not a regular file or directory: ${relativePath}`);
+
+  const projectRoot = getProject(projectAlias).rootPath;
+  const normalizedRelativePath = path.relative(projectRoot, root).replace(/\\/g, "/") || ".";
+  const excludedPatterns = getExcludedTraversalPatterns();
+  const allowGitIgnored = getEffectivePermissions(projectAlias).chatgpt.readGitIgnoredFiles;
+  if (!canReadProjectRelativePath(projectAlias, normalizedRelativePath)
+    || shouldSkipTraversal(projectAlias, projectRoot, root, path.basename(root), excludedPatterns, allowGitIgnored)) {
+    return [];
+  }
+  return [{ relativePath: normalizedRelativePath, kind: "file", bytes: info.size, modifiedAt: info.mtime.toISOString() }];
+}
+
 export function tokenizeFileSearchQuery(query: string, caseSensitive: boolean): string[] {
   const normalized = caseSensitive ? query.trim() : query.trim().toLowerCase();
   return normalized.split(/\s+/).map((token) => token.trim()).filter(Boolean);
