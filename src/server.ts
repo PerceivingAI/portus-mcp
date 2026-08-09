@@ -12,12 +12,14 @@ import { readSessionEvents } from "./state/SessionEvents.js";
 import { connectedSkillInstructions, loadSkillRegistry } from "./skills/SkillRegistry.js";
 import type { SkillRegistrySnapshot } from "./skills/SkillRegistry.js";
 
+const PROJECT_DISCOVERY_INSTRUCTIONS = "Discover registered projects with project_context using include.projects=true. After selecting a project alias, call scoped project_context; its execution section reports the device commands permitted through project_run.";
+
 export function createMcpServer(skillRegistry: SkillRegistrySnapshot = loadSkillRegistry()): McpServer {
   const server = new McpServer({
     name: "portus-mcp",
     version: "0.1.1"
   }, {
-    instructions: connectedSkillInstructions(skillRegistry)
+    instructions: `${PROJECT_DISCOVERY_INSTRUCTIONS}\n${connectedSkillInstructions(skillRegistry)}`
   });
   registerBroadProjectTools(server, skillRegistry);
   registerBroadPolicyTools(server);

@@ -53,7 +53,7 @@ projectRun
 projectPolicy
 ```
 
-Each tool checks its corresponding permission once at entry (`subagent_task` requires `subagentTask`, `project_read` requires `projectRead`, etc.). `project_policy` requires `projectPolicy` for all checks and native actions (`register_project`, `update_permissions`, `list_audit`, `read_audit`). `readGitIgnoredFiles` and `allowedCommands` remain internal constraints of relevant tools.
+Each tool checks its corresponding permission once at entry (`subagent_task` requires `subagentTask`, `project_read` requires `projectRead`, etc.). `project_policy` requires `projectPolicy` for all checks and native actions (`register_project`, `update_permissions`, `list_audit`, `read_audit`). `readGitIgnoredFiles` remains an internal constraint. Scoped `project_context` safely projects the effective direct-agent command boundary so clients with `projectContext` can discover `projectRun`, `allowedCommands`, `useShell`, and confirmation behavior without administrative policy access.
 
 Spawned-agent permissions include:
 
@@ -65,7 +65,7 @@ maxRuntimeSecs
 
 Direct tool permissions and spawned-agent permissions are separate and can be found on `portus-mcp.policy.json`.
 
-`chatgpt.permissions.allowedCommands` is broader than the direct file tools. If it includes `git`, ChatGPT can use real Git command access inside the registered project root, and Git can expose or change repository state beyond the narrower file-tool path policy.
+Portus ships with only `git` in `chatgpt.permissions.allowedCommands`. Operators explicitly grant other device-installed executables; direct tool permissions and spawned-agent permissions remain separate. Git, shells, interpreters, and other granted commands can expose or change state beyond the narrower file-tool path policy. A project-root working directory is not a hard filesystem sandbox: allowlisting Bash, PowerShell, Python, Node.js, or another general-purpose interpreter grants the authority available to that executable under the Portus OS account. Add only commands the connected agent is intended to control.
 
 ## Spawned Agents
 

@@ -64,8 +64,8 @@ They receive only the credentials needed for the selected provider. They do not 
 Agent command access is controlled by:
 
 ```text
-agents.permissions.allowedCommands in portus-mcp.policy.json
-agent capability gates in portus-mcp.policy.json
+subagents.permissions.allowedCommands in portus-mcp.policy.json
+subagent capability gates in portus-mcp.policy.json
 ```
 
 Grant only commands you want spawned agents to use.

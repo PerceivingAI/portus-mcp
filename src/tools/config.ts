@@ -138,7 +138,7 @@ function toPublicAuditEvent(event: Record<string, unknown>): PublicAuditEvent | 
 
 export function registerBroadPolicyTools(server: McpServer): void {
   registerStrictProjectTool(server, "project_policy", "Evaluate policy checks or perform one native project-policy action.", {
-    checks: z.array(policyCheckSchema).min(1).max(100).optional(),
+    checks: z.array(policyCheckSchema).min(1).max(250).optional(),
     action: policyActionSchema.optional()
   }, { readOnlyHint: false, destructiveHint: true, openWorldHint: false }, async ({ checks, action }) => {
     if ((checks === undefined) === (action === undefined)) throw new Error("Provide exactly one of checks or action");

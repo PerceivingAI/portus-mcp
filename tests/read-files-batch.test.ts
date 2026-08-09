@@ -135,7 +135,7 @@ test("project_read exposes and enforces its complete MCP batch contract", async 
   };
   assert.equal(requestsSchema.type, "array");
   assert.equal(requestsSchema.minItems, 1);
-  assert.equal(requestsSchema.maxItems, 20);
+  assert.equal(requestsSchema.maxItems, 50);
   assert.deepEqual(Object.keys(requestsSchema.items?.properties ?? {}).sort(), ["endLine", "mode", "relativePath", "startLine"]);
   assert.equal(requestsSchema.items?.additionalProperties, false);
   const published = JSON.stringify(tool.inputSchema);
@@ -203,7 +203,7 @@ test("project_read exposes and enforces its complete MCP batch contract", async 
   });
 
   await t.test("rejects malformed and out-of-cardinality batches at the top level", async () => {
-    for (const requests of [[], Array.from({ length: 21 }, () => ({ relativePath: "one.txt", mode: "content" })), [{ relativePath: "one.txt", mode: "content", startLine: "1" }]]) {
+    for (const requests of [[], Array.from({ length: 51 }, () => ({ relativePath: "one.txt", mode: "content" })), [{ relativePath: "one.txt", mode: "content", startLine: "1" }]]) {
       errorOf(await callRead(client, requests));
     }
   });

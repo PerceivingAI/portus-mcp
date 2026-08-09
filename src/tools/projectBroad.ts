@@ -100,8 +100,8 @@ function packageScripts(projectAlias: string): string[] {
 
 function treeSection(rootAlias: string, options: { relativePath?: string; maxDepth?: number; includeFiles?: boolean; includeDirs?: boolean; maxEntries?: number; format?: "tree" | "json" | "flat" }, registry: SkillRegistrySnapshot): Record<string, unknown> {
   const relativePath = options.relativePath ?? ".";
-  const maxDepth = Math.min(options.maxDepth ?? 4, 12);
-  const maxEntries = Math.min(options.maxEntries ?? 500, 5000);
+  const maxDepth = Math.min(options.maxDepth ?? 4, 20);
+  const maxEntries = Math.min(options.maxEntries ?? 500, 20000);
   const includeFiles = options.includeFiles ?? true;
   const includeDirs = options.includeDirs ?? true;
   const format = options.format ?? "tree";
@@ -327,9 +327,9 @@ function performEdit(projectAlias: string, operation: EditOperation, dryRun: boo
 }
 
 export function registerProjectReadTool(server: McpServer, registry: SkillRegistrySnapshot): void {
-  registerStrictProjectTool(server, "project_read", "Read content or metadata from registered project paths and configured read-only skill paths. Use a project alias or a skill rootAlias returned by project_context; skill entrypoints and supporting files use their catalog-provided relative paths. Supports 1–20 batched content, binary, metadata, or existence requests with ordered per-item results.", {
+  registerStrictProjectTool(server, "project_read", "Read content or metadata from registered project paths and configured read-only skill paths. Use a project alias or a skill rootAlias returned by project_context; skill entrypoints and supporting files use their catalog-provided relative paths. Supports 1–50 batched content, binary, metadata, or existence requests with ordered per-item results.", {
     projectAlias: z.string().min(1),
-    requests: z.array(z.object({ relativePath: z.string().min(1), mode: z.enum(["content", "binary", "metadata", "exists"]).default("content"), startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional() }).strict().superRefine((request, context) => { if (request.mode !== "content" && (request.startLine !== undefined || request.endLine !== undefined)) context.addIssue({ code: z.ZodIssueCode.custom, message: "Line ranges are only valid for content mode" }); })).min(1).max(20)
+    requests: z.array(z.object({ relativePath: z.string().min(1), mode: z.enum(["content", "binary", "metadata", "exists"]).default("content"), startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional() }).strict().superRefine((request, context) => { if (request.mode !== "content" && (request.startLine !== undefined || request.endLine !== undefined)) context.addIssue({ code: z.ZodIssueCode.custom, message: "Line ranges are only valid for content mode" }); })).min(1).max(50)
   }, readAnnotations, async ({ projectAlias, requests }) => {
     assertChatGptPermission("projectRead", registry.connected.byAlias.has(projectAlias) ? undefined : projectAlias);
     const results: Array<Record<string, unknown>> = [];
@@ -358,17 +358,17 @@ export function registerProjectReadTool(server: McpServer, registry: SkillRegist
 export function registerBroadProjectTools(server: McpServer, registry: SkillRegistrySnapshot): void {
   registerProjectReadTool(server, registry);
 
-  const treeSchema = z.object({ relativePath: z.string().min(1).optional(), maxDepth: z.number().int().positive().max(12).optional(), includeFiles: z.boolean().optional(), includeDirs: z.boolean().optional(), maxEntries: z.number().int().positive().max(5000).optional(), format: z.enum(["tree", "json", "flat"]).optional() }).strict();
-  registerStrictProjectTool(server, "project_context", "Discover registered projects and available read-only skills, or inspect bounded trees, file listings, and path metadata using either a registered project alias or a catalog-provided skill rootAlias. Project status and package scripts are available only for registered projects.", {
-    projectAlias: z.string().min(1).optional().describe("Registered project alias, or a skill rootAlias returned by include.skills for tree, files, and paths."), include: z.object({ projects: z.boolean().optional(), skills: z.boolean().optional(), status: z.boolean().optional(), tree: treeSchema.optional(), files: z.object({ relativePath: z.string().min(1).optional(), maxEntries: z.number().int().positive().max(1000).optional() }).strict().optional(), paths: z.array(z.object({ relativePath: z.string().min(1), includeHash: z.boolean().optional() }).strict()).max(20).optional(), scripts: z.boolean().optional() }).strict().optional()
+  const treeSchema = z.object({ relativePath: z.string().min(1).optional(), maxDepth: z.number().int().positive().max(20).optional(), includeFiles: z.boolean().optional(), includeDirs: z.boolean().optional(), maxEntries: z.number().int().positive().max(20000).optional(), format: z.enum(["tree", "json", "flat"]).optional() }).strict();
+  registerStrictProjectTool(server, "project_context", "Discover registered projects and available read-only skills, or inspect effective execution capabilities, bounded trees, file listings, and path metadata using either a registered project alias or a catalog-provided skill rootAlias. Project status, execution capabilities, and package scripts are available only for registered projects.", {
+    projectAlias: z.string().min(1).optional().describe("Registered project alias, or a skill rootAlias returned by include.skills for tree, files, and paths."), include: z.object({ projects: z.boolean().optional(), skills: z.boolean().optional(), status: z.boolean().optional(), execution: z.boolean().optional(), tree: treeSchema.optional(), files: z.object({ relativePath: z.string().min(1).optional(), maxEntries: z.number().int().positive().max(10000).optional() }).strict().optional(), paths: z.array(z.object({ relativePath: z.string().min(1), includeHash: z.boolean().optional() }).strict()).max(100).optional(), scripts: z.boolean().optional() }).strict().optional()
   }, readAnnotations, async ({ projectAlias, include }) => {
-    const requested = include ?? { status: true, tree: { maxDepth: 2, maxEntries: 200 }, scripts: true };
-    const hasScopedRequest = requested.status === true || requested.tree !== undefined || requested.files !== undefined || requested.paths !== undefined || requested.scripts === true;
+    const requested = include ?? { status: true, execution: true, tree: { maxDepth: 2, maxEntries: 200 }, scripts: true };
+    const hasScopedRequest = requested.status === true || requested.execution === true || requested.tree !== undefined || requested.files !== undefined || requested.paths !== undefined || requested.scripts === true;
     const hasDiscoveryRequest = requested.projects === true || requested.skills === true;
     const isSkillRoot = projectAlias !== undefined && registry.connected.byAlias.has(projectAlias);
     if (hasScopedRequest && !projectAlias) throw new Error("projectAlias is required for project-scoped context sections");
     if (!hasScopedRequest && !hasDiscoveryRequest) throw new Error("Request at least one context section");
-    if (isSkillRoot && (requested.status === true || requested.scripts === true)) {
+    if (isSkillRoot && (requested.status === true || requested.execution === true || requested.scripts === true)) {
       throw new Error("Skill rootAlias supports only tree, files, and paths context sections.");
     }
     if (hasDiscoveryRequest) assertChatGptPermission("projectContext");
@@ -389,6 +389,15 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
         }
       };
     });
+    if (requested.execution) isolate("execution", () => {
+      const permissions = getEffectivePermissions(projectAlias!).chatgpt;
+      return {
+        enabled: permissions.projectRun,
+        allowedCommands: permissions.allowedCommands,
+        useShell: permissions.useShell,
+        requireConfirmation: permissions.requireConfirmation
+      };
+    });
     if (requested.tree) isolate("tree", () => treeSection(projectAlias!, requested.tree ?? {}, registry));
     if (requested.files) isolate("files", () => filesSection(projectAlias!, requested.files ?? {}, registry));
     if (requested.paths) isolate("paths", () => requested.paths?.map((item) => { try { return { ok: true, ...pathMetadata(projectAlias!, item.relativePath, item.includeHash ?? false, registry) }; } catch (error) { return { ok: false, relativePath: safeRelativePath(item.relativePath), error: safeError(error, item.relativePath) }; } }) ?? []);
@@ -397,7 +406,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
   });
 
   registerStrictProjectTool(server, "project_search", "Search project file paths, text, symbols, or all three within authoritative scan and output limits.", {
-    projectAlias: z.string().min(1), mode: z.enum(["files", "text", "symbols", "all"]), query: z.string().min(1), relativePath: z.string().min(1).default("."), regex: z.boolean().default(false), caseSensitive: z.boolean().default(false), contextLines: z.number().int().min(0).max(10).default(0), maxResults: z.number().int().positive().max(5000).default(100)
+    projectAlias: z.string().min(1), mode: z.enum(["files", "text", "symbols", "all"]), query: z.string().min(1), relativePath: z.string().min(1).default("."), regex: z.boolean().default(false), caseSensitive: z.boolean().default(false), contextLines: z.number().int().min(0).max(20).default(0), maxResults: z.number().int().positive().max(20000).default(100)
   }, readAnnotations, async ({ projectAlias, mode, query, relativePath, regex, caseSensitive, contextLines, maxResults }) => {
     assertChatGptPermission("projectSearch", projectAlias); const bounded = Math.min(maxResults, loadPolicyConfig().limits.search.maxScanEntries); const sections: Record<string, unknown> = {};
     const run = async (name: string, action: () => Record<string, unknown> | Promise<Record<string, unknown>>) => { try { sections[name] = { ok: true, ...await action() }; } catch (error) { sections[name] = { ok: false, error: safeError(error, relativePath) }; } };
@@ -425,17 +434,17 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
   });
 
   registerStrictProjectTool(server, "project_run", "Run an approved check, package script, or allowlisted command with bounded timeout and output.", {
-    projectAlias: z.string().min(1), type: z.enum(["check", "script", "command"]), name: z.string().min(1).optional(), command: z.string().min(1).optional(), args: z.array(z.string()).max(200).optional(), timeoutSecs: z.number().int().positive().max(900).optional(), confirm: z.boolean().optional()
+    projectAlias: z.string().min(1), type: z.enum(["check", "script", "command"]), name: z.string().min(1).optional(), command: z.string().min(1).optional(), args: z.array(z.string()).max(500).optional(), timeoutSecs: z.number().int().positive().max(3600).optional(), confirm: z.boolean().optional()
   }, mutateAnnotations, async ({ projectAlias, type, name, command, args, timeoutSecs, confirm }) => {
     assertChatGptPermission("projectRun", projectAlias);
-    const timeout = Math.min(timeoutSecs ?? 120, 900); const commandArgs = args ?? [];
+    const timeout = Math.min(timeoutSecs ?? 120, 3600); const commandArgs = args ?? [];
     if (type === "check") { if (command !== undefined || confirm !== undefined || commandArgs.length > 0) throw new Error("Command fields are not valid for check type"); assertCanReadProjectPath(projectAlias, resolveProjectPath(projectAlias, "package.json"), "package.json"); stateStore.requireAuditWritable(); const result = await runProjectCheck(resolveProjectPath(projectAlias, "."), name ?? "check", timeout); stateStore.audit({ tool: "project_run", type, projectAlias, name: name ?? "check", exitCode: result.exitCode }); return { projectAlias, type, ...result }; }
     if (type === "script") { if (!name || command !== undefined || confirm !== undefined) throw new Error("Script type requires name and forbids command fields"); assertCanReadProjectPath(projectAlias, resolveProjectPath(projectAlias, "package.json"), "package.json"); stateStore.requireAuditWritable(); const result = await runProjectScript(resolveProjectPath(projectAlias, "."), name, commandArgs, timeout); stateStore.audit({ tool: "project_run", type, projectAlias, name, args: commandArgs, exitCode: result.exitCode }); return { projectAlias, type, name, args: commandArgs, ...result }; }
     if (!command || name !== undefined) throw new Error("Command type requires command and forbids name"); assertChatGptCommandAllowed(command, projectAlias); assertProjectCommandStaysInProject(command, commandArgs); const requiresConfirmation = getEffectivePermissions(projectAlias).chatgpt.requireConfirmation && commandRequiresConfirmation(command, commandArgs); if (requiresConfirmation && !confirm) throw new Error("Confirmation required: set confirm=true"); stateStore.requireAuditWritable(); const result = await runProjectCommand(resolveProjectPath(projectAlias, "."), command, commandArgs, timeout, projectAlias); stateStore.audit({ tool: "project_run", type, projectAlias, command, args: commandArgs, exitCode: result.exitCode, confirm: confirm ?? false }); return { projectAlias, type, requiresConfirmation, ...result };
   });
 
   registerStrictProjectTool(server, "project_edit", "Apply an ordered, non-atomic batch of policy-checked project file and directory edits.", {
-    projectAlias: z.string().min(1), operations: z.array(editOperationSchema).min(1).max(20), dryRun: z.boolean().default(false)
+    projectAlias: z.string().min(1), operations: z.array(editOperationSchema).min(1).max(50), dryRun: z.boolean().default(false)
   }, mutateAnnotations, async ({ projectAlias, operations, dryRun }) => {
     assertChatGptPermission("projectEdit", projectAlias);
     const results: Array<Record<string, unknown>> = [];

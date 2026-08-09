@@ -14,6 +14,7 @@ const skillsDir = path.join(root, "skills");
 const configPath = path.join(root, "config.json");
 const policyPath = path.join(root, "policy.json");
 const dotenvPath = path.join(root, "missing.env");
+const connectedAllowedCommands = ["git", "modal-cli", "bash", "cargo"];
 
 mkdirSync(projectRoot, { recursive: true });
 mkdirSync(skillsDir, { recursive: true });
@@ -220,7 +221,9 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.match(contextTool?.description ?? "", /catalog-provided skill rootAlias/);
   const includeProperties = ((contextTool?.inputSchema.properties?.include as { properties?: Record<string, unknown> } | undefined)?.properties) ?? {};
   assert.equal("skills" in includeProperties, true);
+  assert.equal("execution" in includeProperties, true);
   const serverInstructions = client.getInstructions() ?? "";
+  assert.match(serverInstructions, /execution section reports the device commands permitted through project_run/);
   assert.match(serverInstructions, /root-alias="skill\/sample"/);
   assert.match(serverInstructions, /Sample skill for integration tests/);
   assert.equal(serverInstructions.includes("# Sample Skill"), false);
@@ -237,6 +240,7 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     /reserved for configured read-only skills/
   );
   upsertProject({ projectAlias: "mcp", rootPath: projectRoot });
+  updatePermissions({ projectAlias: "mcp", permissions: { chatgpt: { allowedCommands: connectedAllowedCommands } } });
   const discovery = resultOf(await client.callTool({
     name: "project_context",
     arguments: { include: { projects: true, skills: true } }
@@ -248,6 +252,7 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     rootAlias: "skill/sample",
     entrypoint: "SKILL.md"
   }]);
+  assert.equal(JSON.stringify(discovery).includes("allowedCommands"), false);
   assert.equal(JSON.stringify(discovery).includes(projectRoot), false);
   for (const privateField of ["rootPath", "createdAt", "updatedAt"]) {
     assert.equal(JSON.stringify(discovery).includes(privateField), false);
@@ -264,9 +269,21 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   }));
   assert.equal(registered.action, "register_project");
   assert.equal(registered.project.projectAlias, "policy-registered");
+  const defaultContext = resultOf(await client.callTool({
+    name: "project_context",
+    arguments: { projectAlias: "mcp" }
+  }));
+  assert.deepEqual(defaultContext.sections.execution.value, {
+    enabled: true,
+    allowedCommands: connectedAllowedCommands,
+    useShell: false,
+    requireConfirmation: true
+  });
+  assert.equal(JSON.stringify(defaultContext).includes(projectRoot), false);
+
   const context = resultOf(await client.callTool({
     name: "project_context",
-    arguments: { projectAlias: "mcp", include: { status: true, files: { maxEntries: 50 }, tree: { maxDepth: 3, format: "json" } } }
+    arguments: { projectAlias: "mcp", include: { status: true, execution: true, files: { maxEntries: 50 }, tree: { maxDepth: 3, format: "json" } } }
   }));
   assert(context.sections.files.value.files.some((file: any) => file.relativePath === "README.md"));
   assert.equal(context.sections.tree.value.format, "json");
@@ -274,6 +291,40 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.equal(context.sections.status.value.project.projectAlias, "mcp");
   assert.equal("rootPath" in context.sections.status.value.project, false);
   assert.equal(JSON.stringify(context).includes(projectRoot), false);
+  assert.deepEqual(context.sections.execution.value, {
+    enabled: true,
+    allowedCommands: connectedAllowedCommands,
+    useShell: false,
+    requireConfirmation: true
+  });
+
+  updatePermissions({ projectAlias: "mcp", permissions: { chatgpt: { allowedCommands: ["git", "cargo"] } } });
+  const refreshedExecution = resultOf(await client.callTool({
+    name: "project_context",
+    arguments: { projectAlias: "mcp", include: { execution: true } }
+  })).sections.execution.value;
+  assert.deepEqual(refreshedExecution.allowedCommands, ["git", "cargo"]);
+
+  updatePermissions({ projectAlias: "mcp", permissions: { chatgpt: { projectPolicy: false } } });
+  const policyIndependentExecution = resultOf(await client.callTool({
+    name: "project_context",
+    arguments: { projectAlias: "mcp", include: { execution: true } }
+  })).sections.execution.value;
+  assert.deepEqual(policyIndependentExecution.allowedCommands, ["git", "cargo"]);
+  const deniedPolicyInspection = await client.callTool({
+    name: "project_policy",
+    arguments: { checks: [{ type: "config", projectAlias: "mcp" }] }
+  });
+  assert.equal(deniedPolicyInspection.isError, true);
+
+  updatePermissions({ projectAlias: "mcp", permissions: { chatgpt: { projectPolicy: true, projectRun: false } } });
+  const disabledExecution = resultOf(await client.callTool({
+    name: "project_context",
+    arguments: { projectAlias: "mcp", include: { execution: true } }
+  })).sections.execution.value;
+  assert.equal(disabledExecution.enabled, false);
+  assert.deepEqual(disabledExecution.allowedCommands, ["git", "cargo"]);
+  updatePermissions({ projectAlias: "mcp", permissions: { chatgpt: { projectRun: true, allowedCommands: connectedAllowedCommands } } });
 
   const read = resultOf(await client.callTool({
     name: "project_read",
@@ -457,6 +508,13 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   });
   assert.equal(invalidSkillContext.isError, true);
   assert.match(JSON.stringify(invalidSkillContext.structuredContent), /only tree, files, and paths/);
+
+  const invalidSkillExecution = await client.callTool({
+    name: "project_context",
+    arguments: { projectAlias: "skill/sample", include: { execution: true } }
+  });
+  assert.equal(invalidSkillExecution.isError, true);
+  assert.match(JSON.stringify(invalidSkillExecution.structuredContent), /only tree, files, and paths/);
 
   const skillEntrypoint = resultOf(await client.callTool({
     name: "project_read",

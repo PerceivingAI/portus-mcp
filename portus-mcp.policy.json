@@ -9,7 +9,7 @@
     "lifecycle": {
       "queuedTaskTtlSecs": 300,
       "projectLockTimeoutSecs": 1800,
-      "maxRuntimeSecs": 900,
+      "maxRuntimeSecs": 3600,
       "startupWatchdogMs": 15000,
       "forcedCloseGraceMs": 8000,
       "killEscalationDelayMs": 1200,

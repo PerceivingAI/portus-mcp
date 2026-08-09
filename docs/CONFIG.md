@@ -95,6 +95,8 @@ PORTUS_MCP_STATE_DIR=.portus-mcp
 
 Those values resolve the application config, policy config, and durable state directory respectively. (`src/config.ts:82-102`, `src/policy/policyConfig.ts:104-124`, `src/state/StateStore.ts:6-12`)
 
+For a private command-policy override, copy the complete shipped `portus-mcp.policy.json` to the Git-ignored `portus-mcp.policy.local.json`, set `PORTUS_MCP_POLICY_PATH=./portus-mcp.policy.local.json`, and retain the full strict policy structure while editing it. (`.gitignore:11`, `src/policy/policyConfig.ts:17-121`)
+
 Provider variables are needed only for spawned-agent work. `PORTUS_MCP_DEFAULT_PROVIDER` selects the provider; the selected provider determines its model and credential variables. Connected-agent catalog and read access, and the seven broad project tools, do not need provider credentials. (`src/config.ts:105-132`, `src/server.ts:16-34`)
 
 ## Application Configuration
@@ -122,7 +124,13 @@ projectPolicy
 
 Each tool maps 1:1 to its permission flag (`subagent_task` requires `subagentTask`, `project_read` requires `projectRead`, etc.). `project_policy` requires `projectPolicy` for all checks and native actions (`register_project`, `update_permissions`, `list_audit`, `read_audit`). Legacy permission flags `registerProjects`, `updatePermissions`, and `spawnSubagents` have been removed. `requireConfirmation` controls whether mutating operations require `confirm: true` (defaults to `true`). `useShell` controls whether commands execute within a shell wrapper (defaults to `false`). (`src/policy/permissionPolicy.ts:10-45`, `src/tools/config.ts:148-196`, `src/tools/subagents.ts:98-175`)
 
-Project discovery is not a configuration profile or permission bypass. `project_context` with `include.projects=true` and no `projectAlias` returns registered aliases only; project-scoped sections still require `projectAlias`. Environment pre-registration through `PORTUS_MCP_PROJECTS` and operator-owned configuration/state files remain operator-side facilities, while model-accessible registration, permission updates, and audit reads are confined to native `project_policy` actions and gated by `projectPolicy`. (`src/tools/projectBroad.ts:328-355`, `src/state/ProjectRegistry.ts:35-103`)
+Portus ships with only `git` in `chatgpt.permissions.allowedCommands`. Add direct connected-agent executables under that field; spawned subagents use the separate `subagents.permissions.allowedCommands`. Command entries are executable names containing only letters, digits, `.`, `_`, and `-`; arguments and shell command strings do not belong in the allowlist. On Windows, an invocation ending in `.exe`, `.cmd`, or `.bat` can match its configured basename. (`portus-mcp.policy.json:18-37`, `src/policy/policyConfig.ts:15-53`, `src/policy/permissionPolicy.ts:13-18`)
+
+`useShell` controls whether Portus wraps command execution in the platform shell; it does not grant an executable and is separate from allowlisting `bash` or another shell directly. Shells and general-purpose interpreters such as Python and Node.js have the authority of the Portus OS account and are not hard-confined to the registered project merely because execution starts there. Grant only commands the operator intends the connected agent to control. (`src/runtime/commands.ts:18-37`, `src/tools/projects.ts:372-387`)
+
+After alias selection, scoped `project_context` exposes the effective direct-agent execution projection: `enabled`, `allowedCommands`, `useShell`, and `requireConfirmation`. It resolves policy defaults plus global and project-specific runtime overrides, requires `projectContext` rather than administrative `projectPolicy`, and reports permission to attempt a command rather than proof that the executable is installed. (`src/tools/projectBroad.ts:358-406`, `src/state/PermissionRegistry.ts:21-37`)
+
+Project discovery is not a configuration profile or permission bypass. `project_context` with `include.projects=true` and no `projectAlias` returns registered aliases only; after alias selection, default scoped context includes the effective execution projection. Environment pre-registration through `PORTUS_MCP_PROJECTS` and operator-owned configuration/state files remain operator-side facilities, while model-accessible registration, permission updates, and audit reads are confined to native `project_policy` actions and gated by `projectPolicy`. (`src/tools/projectBroad.ts:358-406`, `src/state/ProjectRegistry.ts:35-103`)
 
 Server policy owns file-read, file-write, patch, text-edit, search, per-skill read, agent-output, session-event, audit, timeout, and process bounds. Caller bounds may narrow an authoritative maximum but cannot raise it; callers cannot override blocked paths, Git-ignore handling, permissions, confirmation, or audit. (`src/policy/policyConfig.ts:55-98`, `src/flue/runTask.ts:155-169`)
 
@@ -151,6 +159,7 @@ Missing or invalid JSON configuration fails startup with file and validation det
 
 - Fixed nine-tool surface: `src/server.ts:15-25`, `src/config.ts:11-24`
 - Direct permission model: `src/config.ts:11-24`, `src/policy/policyConfig.ts:39-56`
+- Direct command policy and scoped capability projection: `src/policy/permissionPolicy.ts:13-18`, `src/state/PermissionRegistry.ts:21-37`, `src/tools/projectBroad.ts:358-406`
 - HTTP path, bearer token, and port: `src/server.ts:39-51`, `src/server.ts:181-187`
 - Project pre-registration and reserved skill alias namespace: `src/state/ProjectRegistry.ts:35-95`
 - Policy path: `src/policy/policyConfig.ts:102-122`

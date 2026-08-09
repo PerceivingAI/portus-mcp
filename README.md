@@ -49,6 +49,24 @@ Separate several projects with semicolons:
 PORTUS_MCP_PROJECTS=app=C:/path/to/app;api=C:/path/to/api
 ```
 
+### Allow device commands
+
+Portus ships with only `git` in `chatgpt.permissions.allowedCommands`. This prevents a new installation from running general-purpose shells or interpreters without the operator explicitly granting them. Most projects will need additional device tools, so command configuration is the recommended next setup step after registering projects.
+
+Copy `portus-mcp.policy.json` to the Git-ignored `portus-mcp.policy.local.json`, set `PORTUS_MCP_POLICY_PATH=./portus-mcp.policy.local.json` in `.env`, and edit the local policy while retaining its complete structure:
+
+```json
+{
+  "chatgpt": {
+    "permissions": {
+      "allowedCommands": ["git", "python", "cargo"]
+    }
+  }
+}
+```
+
+Add executable basenames, not arguments or shell command strings; omit Windows `.exe`, `.cmd`, and `.bat` suffixes. Grant only commands you intend the connected agent to control: allowlisting Bash, PowerShell, Python, Node.js, or another interpreter gives it the broad authority that executable has under the Portus OS account. Direct-agent commands use `chatgpt.permissions.allowedCommands`; spawned subagents use the separate `subagents.permissions.allowedCommands`. Restart Portus after the initial `.env` and policy setup.
+
 The shipped `portus-mcp.config.json` configures default subagent retry behavior and traversal exclusions:
 
 ```json
@@ -305,13 +323,13 @@ Spawned subagents are command-capable processes bounded by Flue workspace isolat
 
 ## Project Cold Start
 
-A client that does not yet know a project alias calls `project_context` with `include.projects=true` and no `projectAlias`. The result contains registered aliases only. It then selects an alias, calls `project_context` with that `projectAlias` to inspect the project, and uses the same alias with the other project tools. Any project-scoped context section still requires `projectAlias`.
+A client that does not yet know a project alias calls `project_context` with `include.projects=true` and no `projectAlias`. The result contains registered aliases only. It then selects an alias and calls scoped `project_context`; the default response includes effective execution capabilities such as `allowedCommands` before the client uses `project_run`. Any project-scoped context section still requires `projectAlias`.
 
 Registration, permission updates, and audit inspection are native `project_policy` actions rather than separate management tools. See `docs/TOOLS.md` for their permission boundaries.
 
 ## Tool Operations
 
-Use `project_read.requests[]` for reads, `project_context.include` for status and metadata, `project_search.mode` for search, `project_patch.mode` for patches, `project_run.type` for execution, `project_edit.operations[]` for filesystem changes, and `project_policy` for policy checks or its four native actions.
+Use `project_read.requests[]` for reads, `project_context.include` for status, effective execution capabilities, and metadata, `project_search.mode` for search, `project_patch.mode` for patches, `project_run.type` for execution of permitted device commands, `project_edit.operations[]` for filesystem changes, and `project_policy` for policy checks or its four native actions.
 
 See `docs/TOOLS.md` for the current tool contract and `docs/BROAD_MOBILITY_SURFACE.md` for the architectural decision.
 

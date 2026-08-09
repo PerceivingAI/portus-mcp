@@ -83,8 +83,8 @@ After the client discovers the nine MCP tools, use this sequence:
 
 1. Call `project_context` with `include.projects=true` and omit `projectAlias`.
 2. Choose one alias from the alias-only response. The response must not contain an absolute root or internal registry metadata.
-3. Call `project_context` again with that `projectAlias` and a project-scoped section such as status, tree, files, paths, or scripts.
-4. Reuse the alias with the other allowed project tools.
+3. Call scoped `project_context` with that `projectAlias`. The default response reports effective execution capabilities plus status, tree, and scripts; inspect `execution.enabled` and `execution.allowedCommands` before using `project_run`.
+4. Reuse the alias with the other allowed project tools and invoke only the device commands reported for that project.
 
 Any project-scoped `project_context` section requires `projectAlias`; only alias discovery can omit it. Registration, permission updates, and audit inspection—when permitted to the model—are native `project_policy` actions. Operator configuration, environment pre-registration, and direct state administration remain operator-only.
 

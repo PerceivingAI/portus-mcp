@@ -24,12 +24,12 @@ The adapters divide work by intent:
 
 | Adapter | Responsibility |
 |---|---|
-| `project_context` | Alias-only discovery with `include.projects=true` and no `projectAlias`; with an alias, bounded status, tree, file-list, path metadata/existence, and package-script context. Project-scoped sections require `projectAlias`. |
+| `project_context` | Alias-only discovery with `include.projects=true` and no `projectAlias`; with an alias, effective execution capabilities plus bounded status, tree, file-list, path metadata/existence, and package-script context. The default scoped response includes execution; project-scoped sections require `projectAlias`. |
 | `project_read` | Ordered, bounded content, range, metadata, and existence requests. |
 | `project_search` | File, text, symbol, or combined search. |
 | `project_edit` | Ordered write, replace, insert, copy, move, delete, mkdir, and rmdir operations; batches are not atomic. |
 | `project_patch` | Patch preparation or application, including preconditions and dry runs. |
-| `project_run` | Approved checks, package scripts, or allowlisted commands. |
+| `project_run` | Approved checks, package scripts, or allowlisted device-installed commands. |
 | `project_policy` | Ordered permission, path-decision, and safe effective-configuration checks, or one native registration, permission-update, or audit action. |
 | `subagent_task` | Subagent lifecycle management using discriminated action union (`start`, `stop`, `cleanup`). |
 | `subagent_context` | Batch read subagent status, events, stdout/stderr logs, and collected results. |
@@ -60,7 +60,7 @@ Read, search, context, policy inspection, and patch preparation are unaudited. M
 
 ## Cold-Start Discovery
 
-A client with no prior alias knowledge calls `project_context` with `include.projects=true` and omits `projectAlias`. The response contains registered aliases only, never absolute roots or registry metadata. The client selects an alias, inspects it through project-scoped `project_context`, then reuses it with the other project tools. Any request that includes a project-scoped context section still requires `projectAlias`.
+A client with no prior alias knowledge calls `project_context` with `include.projects=true` and omits `projectAlias`. The response contains registered aliases only, never absolute roots, registry metadata, or command policy. The client selects an alias and calls scoped `project_context`; the default response includes effective `enabled`, `allowedCommands`, `useShell`, and `requireConfirmation` execution values before the client uses `project_run`. Effective execution discovery requires `projectContext`, not administrative `projectPolicy`. Any request that includes another project-scoped context section still requires `projectAlias`.
 
 
 ## Subagent and Skill Boundaries
