@@ -421,7 +421,8 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     name: "project_search",
     arguments: { projectAlias: "mcp", requests: [{ mode: "text", query: "written through MCP", expect: "absent" }] }
   })).results[0].sections.text;
-  assert.equal(absenceMatchFound.ok, true);
+  assert.equal(absenceMatchFound.ok, false);
+  assert.equal(absenceMatchFound.outcome, "completed");
   assert.equal(absenceMatchFound.expectation.kind, "absent");
   assert.equal(absenceMatchFound.expectation.met, false);
   assert.equal(absenceMatchFound.matches.length > 0, true);
@@ -436,6 +437,27 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.equal(absenceCleanPattern.scan.complete, true);
   assert.deepEqual(absenceCleanPattern.matches, []);
 
+  // Batch expectation assertion propagation test (4 passing expectations, 1 failing expectation)
+  const expectationBatch = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: {
+      projectAlias: "mcp",
+      requests: [
+        { mode: "text", query: "MCP", expect: "present" },
+        { mode: "text", query: "written", expect: "present" },
+        { mode: "text", query: "stale_absent_1", expect: "absent" },
+        { mode: "text", query: "stale_absent_2", expect: "absent" },
+        { mode: "text", query: "stale_absent_3", expect: "present" } // Fails expectation
+      ]
+    }
+  }));
+  assert.equal(expectationBatch.requestedCount, 5);
+  assert.equal(expectationBatch.successCount, 4);
+  assert.equal(expectationBatch.failedCount, 1);
+  assert.equal(expectationBatch.errorCount, 0);
+  assert.equal(expectationBatch.results[4].ok, false);
+  assert.equal(expectationBatch.results[4].outcome, "completed");
+  assert.equal(expectationBatch.results[4].sections.text.expectation.met, false);
   const batch20Search = resultOf(await client.callTool({
     name: "project_search",
     arguments: {
@@ -865,6 +887,39 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.equal(gitGrepSmoke.outcome, "exited");
   assert.equal(gitGrepSmoke.exitCode, 0);
   assert.match(gitGrepSmoke.stdout, /README/);
+  // Smart default expectedExitCodes for git grep ([0, 1]) allows exit code 1 to return ok: true without requiring explicit expectedExitCodes
+  const gitGrepAbsentSmartDefault = resultOf(await client.callTool({
+    name: "project_run",
+    arguments: {
+      projectAlias: "mcp",
+      requests: [
+        { type: "command", command: "git", args: ["grep", "-e", "definitely_absent_pattern_xyz_9999"], shell: false }
+      ]
+    }
+  }));
+  assert.equal(gitGrepAbsentSmartDefault.successCount, 1);
+  assert.equal(gitGrepAbsentSmartDefault.failedCount, 0);
+  assert.equal(gitGrepAbsentSmartDefault.errorCount, 0);
+  assert.equal(gitGrepAbsentSmartDefault.results[0].ok, true);
+  assert.equal(gitGrepAbsentSmartDefault.results[0].outcome, "exited");
+  assert.equal(gitGrepAbsentSmartDefault.results[0].exitCode, 1);
+
+  // Explicit expectedExitCodes ([0]) overrides smart default and classifies exit code 1 as failedCount: 1, errorCount: 0
+  const gitGrepAbsentExplicitZero = resultOf(await client.callTool({
+    name: "project_run",
+    arguments: {
+      projectAlias: "mcp",
+      requests: [
+        { type: "command", command: "git", args: ["grep", "-e", "definitely_absent_pattern_xyz_9999"], shell: false, expectedExitCodes: [0] }
+      ]
+    }
+  }));
+  assert.equal(gitGrepAbsentExplicitZero.successCount, 0);
+  assert.equal(gitGrepAbsentExplicitZero.failedCount, 1);
+  assert.equal(gitGrepAbsentExplicitZero.errorCount, 0);
+  assert.equal(gitGrepAbsentExplicitZero.results[0].ok, false);
+  assert.equal(gitGrepAbsentExplicitZero.results[0].outcome, "exited");
+  assert.equal(gitGrepAbsentExplicitZero.results[0].exitCode, 1);
 
   // Public audit projection surfaces executionType, name, and batchIndex
   const auditList = resultOf(await client.callTool({

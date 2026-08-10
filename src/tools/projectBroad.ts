@@ -538,9 +538,12 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
       const runSection = async (name: "files" | "text" | "symbols", action: () => Record<string, unknown> | Promise<Record<string, unknown>>) => {
         try {
           const res = await action();
-          sections[name] = { ok: true, ...res };
+          const exp = res.expectation;
+          const expectationMet = req.expect !== undefined && exp && typeof exp === "object" && "met" in exp ? exp.met : undefined;
+          const sectionOk = expectationMet === undefined ? true : expectationMet === true;
+          sections[name] = { ok: sectionOk, outcome: "completed", ...res };
         } catch (error) {
-          sections[name] = { ok: false, error: safeError(error, req.relativePath) };
+          sections[name] = { ok: false, outcome: "failed", error: safeError(error, req.relativePath) };
         }
       };
 
@@ -556,6 +559,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
 
       const sectionEntries = Object.entries(sections) as Array<[string, Record<string, unknown>]>;
       const requestOk = sectionEntries.length > 0 && sectionEntries.every(([_, sec]) => sec.ok === true);
+      const requestOutcome = sectionEntries.some(([_, sec]) => sec.outcome === "failed") ? "failed" : "completed";
 
       if (sectionEntries.some(([_, sec]) => sec.matchesTruncated === true)) {
         matchesTruncated = true;
@@ -563,6 +567,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
 
       results.push({
         ok: requestOk,
+        outcome: requestOutcome,
         index,
         mode: req.mode,
         query: req.query,
@@ -571,12 +576,14 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     }
 
     const successCount = results.filter((r) => r.ok).length;
-    const errorCount = results.filter((r) => !r.ok).length;
+    const failedCount = results.filter((r) => !r.ok && r.outcome === "completed").length;
+    const errorCount = results.filter((r) => !r.ok && r.outcome === "failed").length;
 
     return {
       projectAlias,
       requestedCount: requests.length,
       successCount,
+      failedCount,
       errorCount,
       matchesTruncated,
       results
@@ -640,13 +647,15 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     z.object({
       type: z.literal("check"),
       name: z.string().min(1).max(256).optional(),
-      timeoutSecs: z.number().int().positive().max(3600).optional()
+      timeoutSecs: z.number().int().positive().max(3600).optional(),
+      expectedExitCodes: z.array(z.number().int().min(0).max(255)).optional().describe("Allowed exit codes for successful completion, e.g. [0, 1]")
     }).strict(),
     z.object({
       type: z.literal("script"),
       name: z.string().min(1).max(256),
       args: z.array(z.string().max(4096)).max(500).optional(),
-      timeoutSecs: z.number().int().positive().max(3600).optional()
+      timeoutSecs: z.number().int().positive().max(3600).optional(),
+      expectedExitCodes: z.array(z.number().int().min(0).max(255)).optional().describe("Allowed exit codes for successful completion, e.g. [0, 1]")
     }).strict(),
     z.object({
       type: z.literal("command"),
@@ -654,10 +663,26 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
       args: z.array(z.string().max(4096)).max(500).optional(),
       timeoutSecs: z.number().int().positive().max(3600).optional(),
       confirm: z.boolean().optional(),
-      shell: z.boolean().optional()
+      shell: z.boolean().optional(),
+      expectedExitCodes: z.array(z.number().int().min(0).max(255)).optional().describe("Allowed exit codes for successful completion, e.g. [0, 1]")
     }).strict()
   ]);
 
+  type RunRequest = z.infer<typeof runRequestSchema>;
+
+  function resolveExpectedExitCodes(req: RunRequest): number[] {
+    if (req.expectedExitCodes && req.expectedExitCodes.length > 0) {
+      return req.expectedExitCodes;
+    }
+    if (req.type === "command") {
+      const base = req.command.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
+      const sub = req.args?.[0]?.toLowerCase();
+      if (base === "git" && (sub === "grep" || sub === "diff")) {
+        return [0, 1];
+      }
+    }
+    return [0];
+  }
   registerStrictProjectTool(server, "project_run", "Run an approved check, package script, or allowlisted command with bounded timeout and output.", {
     projectAlias: z.string().min(1),
     batchTimeoutSecs: z.number().int().positive().max(3600).optional(),
@@ -730,16 +755,19 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
         remainingMs
       );
 
+      const allowedExitCodes = resolveExpectedExitCodes(req);
       let itemResult: Record<string, unknown>;
       try {
         if (req.type === "check") {
           const checkRes = await runProjectCheck(projectRoot, req.name ?? "check", itemTimeoutMs);
           stateStore.audit({ tool: "project_run", type: "check", projectAlias, name: req.name ?? "check", exitCode: checkRes.exitCode, batchIndex: index });
-          itemResult = { ok: checkRes.exitCode === 0, index, type: "check", name: req.name ?? "check", status: "executed", ...checkRes };
+          const ok = checkRes.outcome === "exited" && checkRes.exitCode !== null && allowedExitCodes.includes(checkRes.exitCode);
+          itemResult = { ok, index, type: "check", name: req.name ?? "check", status: "executed", ...checkRes };
         } else if (req.type === "script") {
           const scriptRes = await runProjectScript(projectRoot, req.name, req.args ?? [], itemTimeoutMs);
           stateStore.audit({ tool: "project_run", type: "script", projectAlias, name: req.name, args: req.args ?? [], exitCode: scriptRes.exitCode, batchIndex: index });
-          itemResult = { ok: scriptRes.exitCode === 0, index, type: "script", name: req.name, status: "executed", ...scriptRes };
+          const ok = scriptRes.outcome === "exited" && scriptRes.exitCode !== null && allowedExitCodes.includes(scriptRes.exitCode);
+          itemResult = { ok, index, type: "script", name: req.name, status: "executed", ...scriptRes };
         } else {
           const requiresConfirmation = permissions.requireConfirmation && commandRequiresConfirmation(req.command, req.args ?? []);
           if (requiresConfirmation && !req.confirm) {
@@ -747,7 +775,8 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
           }
           const cmdRes = await runProjectCommand(projectRoot, req.command, req.args ?? [], itemTimeoutMs, projectAlias, req.shell ?? false);
           stateStore.audit({ tool: "project_run", type: "command", projectAlias, command: req.command, args: req.args ?? [], exitCode: cmdRes.exitCode, confirm: req.confirm ?? false, batchIndex: index });
-          itemResult = { ok: cmdRes.exitCode === 0, index, type: "command", requiresConfirmation, status: "executed", ...cmdRes };
+          const ok = cmdRes.outcome === "exited" && cmdRes.exitCode !== null && allowedExitCodes.includes(cmdRes.exitCode);
+          itemResult = { ok, index, type: "command", requiresConfirmation, status: "executed", ...cmdRes };
         }
         executedCount++;
       } catch (error) {
@@ -803,8 +832,8 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     }
 
     const successCount = results.filter((r) => r.ok).length;
-    const failedCount = results.filter((r) => !r.ok && r.status === "executed").length;
-    const errorCount = results.filter((r) => !r.ok).length;
+    const failedCount = results.filter((r) => !r.ok && r.status === "executed" && r.outcome === "exited").length;
+    const errorCount = results.filter((r) => !r.ok && (r.status === "skipped" || r.outcome !== "exited" || r.error !== undefined)).length;
 
     return {
       projectAlias,
