@@ -40,7 +40,7 @@ writeFileSync(policyPath, JSON.stringify({
       allowedCommands: ["git"]
     }
   },
-  chatgpt: {
+  main_agent: {
     permissions: {
       subagentTask: true,
       projectContext: true,
@@ -127,12 +127,14 @@ const { listAgentProviderDefinitions, loadAgentProviderConfig, loadConfig } = aw
 
 test("project checks return successful stdout", async () => {
   const result = await runProjectCheck(projectRoot, "check", 10);
+  assert.equal(result.outcome, "exited");
   assert.equal(result.exitCode, 0);
   assert.match(result.stdout, /ok/);
 });
 
 test("project checks return failure stderr and exit code", async () => {
   const result = await runProjectCheck(projectRoot, "fail", 10);
+  assert.equal(result.outcome, "exited");
   assert.equal(result.exitCode, 3);
   assert.match(result.stderr, /bad/);
 });

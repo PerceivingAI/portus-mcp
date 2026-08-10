@@ -1,21 +1,26 @@
-import type { SubagentPermissionConfig, ChatGptPermissionConfig } from "../config.js";
+import type { SubagentPermissionConfig, MainAgentPermissionConfig } from "../config.js";
 import { getEffectivePermissions } from "../state/PermissionRegistry.js";
 
-type ChatGptBooleanPermissionKey = Exclude<keyof ChatGptPermissionConfig, "allowedCommands">;
+type MainAgentBooleanPermissionKey = Exclude<keyof MainAgentPermissionConfig, "allowedCommands">;
 
-export function assertChatGptPermission(permission: ChatGptBooleanPermissionKey, projectAlias?: string): void {
-  const permissions = getEffectivePermissions(projectAlias).chatgpt;
+export function assertMainAgentPermission(permission: MainAgentBooleanPermissionKey, projectAlias?: string): void {
+  const permissions = getEffectivePermissions(projectAlias).main_agent;
   if (!permissions[permission]) {
-    throw new Error(`Permission denied: chatgpt.${String(permission)} is false`);
+    throw new Error(`Permission denied: main_agent.${String(permission)} is false`);
   }
 }
 
-export function assertChatGptCommandAllowed(command: string, projectAlias?: string): void {
-  const permissions = getEffectivePermissions(projectAlias).chatgpt;
+export function normalizeCommandName(command: string): string {
+  return command.replace(/\.(bat|cmd|exe)$/i, "").toLowerCase();
+}
+
+export function assertMainAgentCommandAllowed(command: string, projectAlias?: string): void {
+  const permissions = getEffectivePermissions(projectAlias).main_agent;
   if (permissions.allowedCommands.includes(command)) return;
-  const baseCommand = process.platform === "win32" ? command.replace(/\.(bat|cmd|exe)$/i, "") : command;
-  if (permissions.allowedCommands.includes(baseCommand)) return;
-  throw new Error(`Permission denied: chatgpt.allowedCommands does not include ${command}`);
+  const baseCommand = normalizeCommandName(command);
+  const normalizedAllowed = permissions.allowedCommands.map((cmd) => normalizeCommandName(cmd));
+  if (normalizedAllowed.includes(baseCommand)) return;
+  throw new Error(`Permission denied: main_agent.allowedCommands does not include ${command}`);
 }
 
 export function assertSubagentPermission(permission: keyof SubagentPermissionConfig, projectAlias?: string): void {

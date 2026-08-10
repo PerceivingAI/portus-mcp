@@ -37,7 +37,7 @@ function writePolicy(strictMode: boolean): void {
         allowedCommands: ["git"]
       }
     },
-    chatgpt: {
+    main_agent: {
       permissions: {
         subagentTask: true,
         projectContext: true,
@@ -172,7 +172,7 @@ test("strict audit mode blocks selected mutations when audit log is not writable
 
     const permissionDenied = await client.callTool({
       name: "project_policy",
-      arguments: { action: { type: "update_permissions", projectAlias: "audit", permissions: { chatgpt: { } } } }
+      arguments: { action: { type: "update_permissions", projectAlias: "audit", permissions: { main_agent: { } } } }
     });
     assert.equal(permissionDenied.isError, true);
     assert.match(JSON.stringify(permissionDenied), /audit/i);

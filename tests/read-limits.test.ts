@@ -38,7 +38,7 @@ const basePolicy = {
       allowedCommands: ["git"]
     }
   },
-  chatgpt: {
+  main_agent: {
     permissions: {
       subagentTask: true,
       projectContext: true,
@@ -240,9 +240,9 @@ test("policy validation rejects the removed flat policy layout", () => {
 test("policy validation rejects obsolete operation-level permissions", () => {
   writePolicy({
     ...basePolicy,
-    chatgpt: {
+    main_agent: {
       permissions: {
-        ...basePolicy.chatgpt.permissions,
+        ...basePolicy.main_agent.permissions,
         readFiles: true
       }
     }

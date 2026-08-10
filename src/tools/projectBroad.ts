@@ -11,7 +11,7 @@ import { getProject, listProjects } from "../state/ProjectRegistry.js";
 import { getEffectivePermissions } from "../state/PermissionRegistry.js";
 import { stateStore } from "../state/StateStore.js";
 import { resolveProjectPath, resolveReadablePath } from "../policy/pathPolicy.js";
-import { assertChatGptCommandAllowed, assertChatGptPermission } from "../policy/permissionPolicy.js";
+import { assertMainAgentCommandAllowed, assertMainAgentPermission } from "../policy/permissionPolicy.js";
 import { loadPolicyConfig } from "../policy/policyConfig.js";
 import { countChars, limitText } from "../runtime/outputLimits.js";
 import { runProjectCheck, runProjectScript } from "../runtime/checks.js";
@@ -113,11 +113,12 @@ function treeSection(rootAlias: string, options: { relativePath?: string; maxDep
     const fromBase = path.relative(base, target).replace(/\\/g, "/");
     return fromBase === "." ? 0 : fromBase.split("/").length;
   };
-  const entries = collectPaths(rootAlias, base, maxEntries, includeFiles, includeDirs, registry)
-    .filter((entry) => depthFromBase(entry.relativePath) <= maxDepth);
-  if (format === "flat" || format === "json") return { relativePath, format, entries, truncated: entries.length >= maxEntries, maxEntries };
+  const traversal = collectPaths(rootAlias, base, maxEntries, includeFiles, includeDirs, registry);
+  const entries = traversal.entries.filter((entry) => depthFromBase(entry.relativePath) <= maxDepth);
+  const truncated = traversal.stoppedAtCap || traversal.entries.length >= maxEntries;
+  if (format === "flat" || format === "json") return { relativePath, format, entries, truncated, maxEntries, filesVisited: traversal.filesVisited, reasons: traversal.reasons };
   const output = [relativePath, ...entries.map((entry) => `${"  ".repeat(Math.max(0, depthFromBase(entry.relativePath) - 1))}${entry.kind === "directory" ? "[D] " : ""}${entry.relativePath}`)].join("\n");
-  return { relativePath, format, output, truncated: entries.length >= maxEntries, maxEntries };
+  return { relativePath, format, output, truncated, maxEntries, filesVisited: traversal.filesVisited, reasons: traversal.reasons };
 }
 
 function filesSection(rootAlias: string, options: { relativePath?: string; maxEntries?: number }, registry: SkillRegistrySnapshot): Record<string, unknown> {
@@ -125,18 +126,30 @@ function filesSection(rootAlias: string, options: { relativePath?: string; maxEn
   const maxEntries = options.maxEntries ?? 200;
   const root = resolveReadablePath(rootAlias, relativePath, registry);
   assertCanReadProjectPath(rootAlias, root, relativePath, registry);
-  const files = collectPaths(rootAlias, root, maxEntries, true, false, registry).filter((entry) => entry.kind === "file");
-  return { relativePath, files, truncated: files.length >= maxEntries, maxEntries };
+  const traversal = collectPaths(rootAlias, root, maxEntries, true, false, registry);
+  const files = traversal.entries.filter((entry) => entry.kind === "file");
+  const truncated = traversal.stoppedAtCap || traversal.entries.length >= maxEntries;
+  return { relativePath, files, truncated, maxEntries, filesVisited: traversal.filesVisited, reasons: traversal.reasons };
 }
 
-function filesSearch(projectAlias: string, query: string, relativePath: string, maxResults: number, caseSensitive: boolean) {
+function filesSearch(projectAlias: string, query: string, relativePath: string, maxResults: number, caseSensitive: boolean, expect?: "present" | "absent") {
   const tokens = tokenizeFileSearchQuery(query, caseSensitive);
   const scanLimit = loadPolicyConfig().limits.search.maxScanEntries;
-  const ranked = collectSearchableFiles(projectAlias, relativePath, scanLimit)
+  const traversal = collectSearchableFiles(projectAlias, relativePath, scanLimit);
+  const ranked = traversal.entries
     .map((item) => ({ item, ...scoreFileSearchPath(item.relativePath, query, tokens, caseSensitive) }))
     .filter((item) => item.score > 0)
     .sort((left, right) => right.score - left.score || left.item.relativePath.localeCompare(right.item.relativePath));
-  return { matches: ranked.slice(0, maxResults).map(({ item, score, matchedTokens }) => ({ ...item, score, matchedTokens })), truncated: ranked.length > maxResults };
+  const matches = ranked.slice(0, maxResults).map(({ item, score, matchedTokens }) => ({ ...item, score, matchedTokens }));
+  const matchesTruncated = ranked.length > maxResults;
+  const scanComplete = !traversal.stoppedAtCap && traversal.reasons.length === 0;
+  const expectKind = expect ?? "present";
+  const expectationMet = expectKind === "present"
+    ? matches.length > 0
+    : matches.length > 0
+      ? false
+      : scanComplete ? true : null;
+  return { matches, matchesTruncated, scan: { complete: scanComplete, reasons: traversal.reasons, filesVisited: traversal.filesVisited }, expectation: { kind: expectKind, met: expectationMet } };
 }
 
 const REGEX_WORKER_SOURCE = `
@@ -161,15 +174,16 @@ class IsolatedRegexMatcher {
   private readonly worker: Worker;
   private nextId = 1;
   private remainingExecutionMs: number;
+  private closed = false;
 
   constructor(query: string, flags: string, maxExecutionMs: number) {
-    // Validate syntax synchronously; matching untrusted input happens only in the worker.
     new RegExp(query, flags);
     this.worker = new Worker(REGEX_WORKER_SOURCE, { eval: true, workerData: { query, flags } });
     this.remainingExecutionMs = maxExecutionMs;
   }
 
   async matchingIndexes(lines: string[]): Promise<Set<number>> {
+    if (this.closed) throw new Error("Regex worker is closed");
     if (this.remainingExecutionMs <= 0) throw new Error("regex_search_timeout");
     const id = this.nextId++;
     const startedAt = Date.now();
@@ -187,7 +201,7 @@ class IsolatedRegexMatcher {
         ]);
       } catch (error) {
         if (abortController.signal.aborted) {
-          void this.worker.terminate();
+          void this.close();
           throw new Error("regex_search_timeout");
         }
         throw error;
@@ -204,36 +218,125 @@ class IsolatedRegexMatcher {
     }
   }
 
-  close(): void {
-    void this.worker.terminate();
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    await this.worker.terminate();
   }
 }
 
-async function textSearch(projectAlias: string, query: string, relativePath: string, maxResults: number, contextLines: number, caseSensitive: boolean, regex: boolean, symbols: boolean) {
+type SearchBatchBudget = {
+  maxMatches: number;
+  maxChars: number;
+  currentMatches: number;
+  currentChars: number;
+};
+
+async function textSearch(
+  projectAlias: string,
+  query: string,
+  relativePath: string,
+  maxResults: number,
+  contextLines: number,
+  caseSensitive: boolean,
+  regex: boolean,
+  symbols: boolean,
+  expect?: "present" | "absent",
+  budget?: SearchBatchBudget
+) {
   const limits = loadPolicyConfig().limits.search;
   const matches: Array<Record<string, unknown>> = [];
   const needle = caseSensitive ? query : query.toLowerCase();
+  const traversal = collectSearchableFiles(projectAlias, relativePath, limits.maxScanEntries);
+  const scanReasons = [...traversal.reasons];
+  let stoppedEarly = traversal.stoppedAtCap;
+  let regexTimedOut = false;
+  let shortCircuitedWitness = false;
+
   const matcher = regex ? new IsolatedRegexMatcher(query, caseSensitive ? "" : "i", limits.maxRegexExecutionMs) : null;
   try {
-    for (const entry of collectSearchableFiles(projectAlias, relativePath, limits.maxScanEntries)) {
+    for (const entry of traversal.entries) {
       if (matches.length >= maxResults) break;
+      if (budget && (budget.currentMatches >= budget.maxMatches || budget.currentChars >= budget.maxChars)) {
+        stoppedEarly = true;
+        if (!scanReasons.includes("max_batch_matches") && budget.currentMatches >= budget.maxMatches) scanReasons.push("max_batch_matches");
+        if (!scanReasons.includes("max_batch_output_chars") && budget.currentChars >= budget.maxChars) scanReasons.push("max_batch_output_chars");
+        break;
+      }
       if (!canReadProjectRelativePath(projectAlias, entry.relativePath)) continue;
       const target = resolveProjectPath(projectAlias, entry.relativePath);
       if (!isTextLikely(target)) continue;
-      const lines = limitText(readFileSync(target, "utf8"), limits.maxTextFileChars).text.split(/\r?\n/);
-      const regexIndexes = matcher ? await matcher.matchingIndexes(lines) : null;
+      let lines: string[];
+      try {
+        lines = limitText(readFileSync(target, "utf8"), limits.maxTextFileChars).text.split(/\r?\n/);
+      } catch {
+        if (!scanReasons.includes("read_error")) scanReasons.push("read_error");
+        continue;
+      }
+      let regexIndexes: Set<number> | null = null;
+      if (matcher) {
+        try {
+          regexIndexes = await matcher.matchingIndexes(lines);
+        } catch (err) {
+          if (err instanceof Error && err.message === "regex_search_timeout") {
+            regexTimedOut = true;
+            stoppedEarly = true;
+            if (!scanReasons.includes("regex_timeout")) scanReasons.push("regex_timeout");
+            break;
+          }
+          throw err;
+        }
+      }
       for (let index = 0; index < lines.length; index += 1) {
         const text = lines[index] ?? "";
         const candidate = caseSensitive ? text : text.toLowerCase();
         if (!(regexIndexes ? regexIndexes.has(index) : candidate.includes(needle))) continue;
-        matches.push({ relativePath: entry.relativePath, line: index + 1, text, ...(symbols ? {} : { before: lines.slice(Math.max(0, index - contextLines), index), after: lines.slice(index + 1, index + 1 + contextLines) }) });
+        const matchObj = {
+          relativePath: entry.relativePath,
+          line: index + 1,
+          text,
+          ...(symbols ? {} : { before: lines.slice(Math.max(0, index - contextLines), index), after: lines.slice(index + 1, index + 1 + contextLines) })
+        };
+        const matchChars = countChars(JSON.stringify(matchObj));
+        if (budget && (budget.currentMatches + 1 > budget.maxMatches || budget.currentChars + matchChars > budget.maxChars)) {
+          stoppedEarly = true;
+          if (!scanReasons.includes("max_batch_matches") && budget.currentMatches + 1 > budget.maxMatches) scanReasons.push("max_batch_matches");
+          if (!scanReasons.includes("max_batch_output_chars") && budget.currentChars + matchChars > budget.maxChars) scanReasons.push("max_batch_output_chars");
+          break;
+        }
+        matches.push(matchObj);
+        if (budget) {
+          budget.currentMatches += 1;
+          budget.currentChars += matchChars;
+        }
+        if (expect === "absent") {
+          shortCircuitedWitness = true;
+          stoppedEarly = true;
+          if (!scanReasons.includes("short_circuited_after_witness")) scanReasons.push("short_circuited_after_witness");
+          break;
+        }
         if (matches.length >= maxResults) break;
       }
+      if (regexTimedOut || shortCircuitedWitness) break;
     }
-    return { matches, truncated: matches.length >= maxResults };
   } finally {
-    matcher?.close();
+    if (matcher) await matcher.close();
   }
+
+  const scanComplete = !stoppedEarly && scanReasons.length === 0;
+  const expectKind = expect ?? "present";
+  const expectationMet = expectKind === "present"
+    ? matches.length > 0
+    : matches.length > 0
+      ? false
+      : scanComplete ? true : null;
+
+  return {
+    matches,
+    matchesTruncated: matches.length >= maxResults,
+    scan: { complete: scanComplete, reasons: scanReasons, filesVisited: traversal.filesVisited },
+    expectation: { kind: expectKind, met: expectationMet }
+  };
 }
 
 const expectedFileSchema = z.object({ relativePath: z.string().min(1), sha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(), sizeBytes: z.number().int().nonnegative().optional(), modifiedAt: z.string().optional() }).strict();
@@ -302,7 +405,7 @@ function performEdit(projectAlias: string, operation: EditOperation, dryRun: boo
     stateStore.audit({ tool: "project_edit", operation: "move", projectAlias, sourceRelativePath: operation.sourceRelativePath, destinationRelativePath: operation.destinationRelativePath, overwrite: operation.overwrite, dryRun });
     return { sourceRelativePath: operation.sourceRelativePath, destinationRelativePath: operation.destinationRelativePath, overwrote: existed, dryRun };
   }
-  const requireConfirm = getEffectivePermissions(projectAlias).chatgpt.requireConfirmation;
+  const requireConfirm = getEffectivePermissions(projectAlias).main_agent.requireConfirmation;
   if (operation.type === "delete") {
     if (requireConfirm && !operation.confirm) throw new Error("Confirmation required: set confirm=true");
     const target = resolveProjectPath(projectAlias, operation.relativePath); assertCanReadProjectPath(projectAlias, target, operation.relativePath); const info = statSync(target);
@@ -328,7 +431,7 @@ export function registerProjectReadTool(server: McpServer, registry: SkillRegist
     projectAlias: z.string().min(1),
     requests: z.array(z.object({ relativePath: z.string().min(1), mode: z.enum(["content", "binary", "metadata", "exists"]).default("content"), startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional() }).strict().superRefine((request, context) => { if (request.mode !== "content" && (request.startLine !== undefined || request.endLine !== undefined)) context.addIssue({ code: z.ZodIssueCode.custom, message: "Line ranges are only valid for content mode" }); })).min(1).max(50)
   }, readAnnotations, async ({ projectAlias, requests }) => {
-    assertChatGptPermission("projectRead", registry.connected.byAlias.has(projectAlias) ? undefined : projectAlias);
+    assertMainAgentPermission("projectRead", registry.connected.byAlias.has(projectAlias) ? undefined : projectAlias);
     const results: Array<Record<string, unknown>> = [];
     for (const [index, request] of requests.entries()) {
       try {
@@ -368,8 +471,8 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     if (isSkillRoot && (requested.status === true || requested.execution === true || requested.scripts === true)) {
       throw new Error("Skill rootAlias supports only tree, files, and paths context sections.");
     }
-    if (hasDiscoveryRequest) assertChatGptPermission("projectContext");
-    if (hasScopedRequest) assertChatGptPermission("projectContext", isSkillRoot ? undefined : projectAlias);
+    if (hasDiscoveryRequest) assertMainAgentPermission("projectContext");
+    if (hasScopedRequest) assertMainAgentPermission("projectContext", isSkillRoot ? undefined : projectAlias);
     const sections: Record<string, unknown> = {};
     const isolate = (name: string, action: () => unknown) => { try { sections[name] = { ok: true, value: action() }; } catch (error) { sections[name] = { ok: false, error: safeError(error) }; } };
     if (requested.projects) isolate("projects", () => ({ projectAliases: listProjects().map((project) => project.projectAlias) }));
@@ -387,11 +490,11 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
       };
     });
     if (requested.execution) isolate("execution", () => {
-      const permissions = getEffectivePermissions(projectAlias!).chatgpt;
+      const permissions = getEffectivePermissions(projectAlias!).main_agent;
       return {
         enabled: permissions.projectRun,
         allowedCommands: permissions.allowedCommands,
-        useShell: permissions.useShell,
+        allowShell: permissions.allowShell,
         requireConfirmation: permissions.requireConfirmation
       };
     });
@@ -402,48 +505,327 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     return { projectAlias: projectAlias ?? null, sections };
   });
 
+  const searchRequestSchema = z.object({
+    mode: z.enum(["files", "text", "symbols", "all"]),
+    query: z.string().min(1),
+    relativePath: z.string().min(1).default(".").describe("Project-relative regular file or directory to search"),
+    regex: z.boolean().default(false),
+    caseSensitive: z.boolean().default(false),
+    contextLines: z.number().int().min(0).max(30).default(0),
+    maxResults: z.number().int().positive().max(20000).default(100),
+    expect: z.enum(["present", "absent"]).optional()
+  }).strict();
+
   registerStrictProjectTool(server, "project_search", "Search project file paths, text, symbols, or all three within authoritative scan and output limits.", {
-    projectAlias: z.string().min(1), mode: z.enum(["files", "text", "symbols", "all"]), query: z.string().min(1), relativePath: z.string().min(1).default(".").describe("Project-relative regular file or directory to search"), regex: z.boolean().default(false), caseSensitive: z.boolean().default(false), contextLines: z.number().int().min(0).max(20).default(0), maxResults: z.number().int().positive().max(20000).default(100)
-  }, readAnnotations, async ({ projectAlias, mode, query, relativePath, regex, caseSensitive, contextLines, maxResults }) => {
-    assertChatGptPermission("projectSearch", projectAlias); const bounded = Math.min(maxResults, loadPolicyConfig().limits.search.maxScanEntries); const sections: Record<string, unknown> = {};
-    const run = async (name: string, action: () => Record<string, unknown> | Promise<Record<string, unknown>>) => { try { sections[name] = { ok: true, ...await action() }; } catch (error) { sections[name] = { ok: false, error: safeError(error, relativePath) }; } };
-    if (mode === "files" || mode === "all") await run("files", () => filesSearch(projectAlias, query, relativePath, bounded, caseSensitive));
-    if (mode === "text" || mode === "all") await run("text", () => textSearch(projectAlias, query, relativePath, bounded, contextLines, caseSensitive, regex, false));
-    if (mode === "symbols" || mode === "all") await run("symbols", () => textSearch(projectAlias, query, relativePath, bounded, 0, caseSensitive, regex, true));
-    return { projectAlias, mode, query, maxResults: bounded, sections };
+    projectAlias: z.string().min(1),
+    requests: z.array(searchRequestSchema).min(1).max(20)
+  }, readAnnotations, async ({ projectAlias, requests }) => {
+    assertMainAgentPermission("projectSearch", projectAlias);
+
+    const policy = loadPolicyConfig().limits.search;
+    const budget: SearchBatchBudget = {
+      maxMatches: policy.maxBatchMatches,
+      maxChars: policy.maxBatchOutputChars,
+      currentMatches: 0,
+      currentChars: 0
+    };
+
+    const results: Array<Record<string, unknown>> = [];
+    let matchesTruncated = false;
+
+    for (const [index, req] of requests.entries()) {
+      const boundedMax = Math.min(req.maxResults, policy.maxScanEntries);
+      const sections: Record<string, unknown> = {};
+
+      const runSection = async (name: "files" | "text" | "symbols", action: () => Record<string, unknown> | Promise<Record<string, unknown>>) => {
+        try {
+          const res = await action();
+          sections[name] = { ok: true, ...res };
+        } catch (error) {
+          sections[name] = { ok: false, error: safeError(error, req.relativePath) };
+        }
+      };
+
+      if (req.mode === "files" || req.mode === "all") {
+        await runSection("files", () => filesSearch(projectAlias, req.query, req.relativePath, boundedMax, req.caseSensitive, req.expect));
+      }
+      if (req.mode === "text" || req.mode === "all") {
+        await runSection("text", () => textSearch(projectAlias, req.query, req.relativePath, boundedMax, req.contextLines, req.caseSensitive, req.regex, false, req.expect, budget));
+      }
+      if (req.mode === "symbols" || req.mode === "all") {
+        await runSection("symbols", () => textSearch(projectAlias, req.query, req.relativePath, boundedMax, 0, req.caseSensitive, req.regex, true, req.expect, budget));
+      }
+
+      const sectionEntries = Object.entries(sections) as Array<[string, Record<string, unknown>]>;
+      const requestOk = sectionEntries.length > 0 && sectionEntries.every(([_, sec]) => sec.ok === true);
+
+      if (sectionEntries.some(([_, sec]) => sec.matchesTruncated === true)) {
+        matchesTruncated = true;
+      }
+
+      results.push({
+        ok: requestOk,
+        index,
+        mode: req.mode,
+        query: req.query,
+        sections
+      });
+    }
+
+    const successCount = results.filter((r) => r.ok).length;
+    const errorCount = results.filter((r) => !r.ok).length;
+
+    return {
+      projectAlias,
+      requestedCount: requests.length,
+      successCount,
+      errorCount,
+      matchesTruncated,
+      results
+    };
   });
 
   registerStrictProjectTool(server, "project_patch", "Prepare patch metadata or safely apply a unified diff inside a registered project.", {
     projectAlias: z.string().min(1), mode: z.enum(["prepare", "apply"]), patch: z.string().min(1), includeHash: z.boolean().optional(), expectedFiles: z.array(expectedFileSchema).optional(), dryRun: z.boolean().optional(), confirm: z.boolean().optional()
   }, mutateAnnotations, async ({ projectAlias, mode, patch, includeHash, expectedFiles, dryRun, confirm }) => {
-    assertChatGptPermission("projectPatch", projectAlias);
-    assertInputChars("limits.patch.maxChars", patch, loadPolicyConfig().limits.patch.maxChars); const parsed = parsePatchPaths(patch); getProject(projectAlias);
+    assertMainAgentPermission("projectPatch", projectAlias);
+    assertInputChars("limits.patch.maxChars", patch, loadPolicyConfig().limits.patch.maxChars);
+    const parsed = parsePatchPaths(patch);
+    getProject(projectAlias);
     if (mode === "prepare") {
       if (expectedFiles !== undefined || dryRun !== undefined || confirm !== undefined) throw new Error("Apply-only fields are not valid in prepare mode");
       return { projectAlias, mode, changedFiles: parsed.files, deletedFiles: [...parsed.deleted], expectedFiles: parsed.files.map((relativePath) => pathMetadata(projectAlias, relativePath, includeHash ?? true)), readyForApply: true };
     }
-    if (includeHash !== undefined) throw new Error("includeHash is only valid in prepare mode"); const metadata = expectedFiles ?? []; const byPath = new Map(metadata.map((item) => [item.relativePath, item]));
-    for (const file of parsed.files) { const target = resolveProjectPath(projectAlias, file); if (existsSync(target)) { assertCanReadProjectPath(projectAlias, target, file); if (!byPath.has(file)) throw new Error(`stale_file:${file}:missing_expected_metadata`); } }
-    if (parsed.deleted.size > 0 && getEffectivePermissions(projectAlias).chatgpt.requireConfirmation) { if (!confirm) throw new Error("Confirmation required: set confirm=true for file deletions"); }
-    for (const expected of metadata) { const target = resolveProjectPath(projectAlias, expected.relativePath); if (!existsSync(target)) continue; assertCanReadProjectPath(projectAlias, target, expected.relativePath); const info = statSync(target); if (expected.sizeBytes !== undefined && expected.sizeBytes !== info.size) throw new Error(`stale_file:${expected.relativePath}`); if (expected.modifiedAt && expected.modifiedAt !== info.mtime.toISOString()) throw new Error(`stale_file:${expected.relativePath}`); ensureExpectedHash(projectAlias, expected.sha256, expected.relativePath); }
-    const patchPath = path.join(os.tmpdir(), `portus-mcp-${Date.now()}-${Math.random().toString(36).slice(2)}.patch`); writeFileSync(patchPath, patch, "utf8");
-    try { for (const file of parsed.files) resolveProjectPath(projectAlias, file); const projectRoot = resolveProjectPath(projectAlias, "."); await execFileAsync("git", ["apply", "--check", patchPath], { cwd: projectRoot }); if (!dryRun) { stateStore.requireAuditWritable(); for (const file of parsed.files) resolveProjectPath(projectAlias, file); await execFileAsync("git", ["apply", patchPath], { cwd: resolveProjectPath(projectAlias, ".") }); } stateStore.audit({ tool: "project_patch", projectAlias, mode, dryRun: dryRun ?? false, files: parsed.files, deletedFiles: [...parsed.deleted] }); return { projectAlias, mode, applied: !dryRun, dryRun: dryRun ?? false, changedFiles: parsed.files, deletedFiles: [...parsed.deleted] }; } catch { return { projectAlias, mode, applied: false, errorType: "patch_does_not_apply", message: "Patch could not be applied" }; } finally { try { rmSync(patchPath, { force: true }); } catch { /* temporary cleanup is best effort */ } }
+    if (includeHash !== undefined) throw new Error("includeHash is only valid in prepare mode");
+    const metadata = expectedFiles ?? [];
+    const byPath = new Map(metadata.map((item) => [item.relativePath, item]));
+    for (const file of parsed.files) {
+      const target = resolveProjectPath(projectAlias, file);
+      if (existsSync(target)) {
+        assertCanReadProjectPath(projectAlias, target, file);
+        if (!byPath.has(file)) throw new Error(`stale_file:${file}:missing_expected_metadata`);
+      }
+    }
+    if (parsed.deleted.size > 0 && getEffectivePermissions(projectAlias).main_agent.requireConfirmation) {
+      if (!confirm) throw new Error("Confirmation required: set confirm=true for file deletions");
+    }
+    for (const expected of metadata) {
+      const target = resolveProjectPath(projectAlias, expected.relativePath);
+      if (!existsSync(target)) continue;
+      assertCanReadProjectPath(projectAlias, target, expected.relativePath);
+      const info = statSync(target);
+      if (expected.sizeBytes !== undefined && expected.sizeBytes !== info.size) throw new Error(`stale_file:${expected.relativePath}`);
+      if (expected.modifiedAt && expected.modifiedAt !== info.mtime.toISOString()) throw new Error(`stale_file:${expected.relativePath}`);
+      ensureExpectedHash(projectAlias, expected.sha256, expected.relativePath);
+    }
+    const patchPath = path.join(os.tmpdir(), `portus-mcp-${Date.now()}-${Math.random().toString(36).slice(2)}.patch`);
+    writeFileSync(patchPath, patch, "utf8");
+    try {
+      for (const file of parsed.files) resolveProjectPath(projectAlias, file);
+      const projectRoot = resolveProjectPath(projectAlias, ".");
+      await execFileAsync("git", ["apply", "--check", patchPath], { cwd: projectRoot });
+      if (!dryRun) {
+        stateStore.requireAuditWritable();
+        for (const file of parsed.files) resolveProjectPath(projectAlias, file);
+        await execFileAsync("git", ["apply", patchPath], { cwd: resolveProjectPath(projectAlias, ".") });
+      }
+      stateStore.audit({ tool: "project_patch", projectAlias, mode, dryRun: dryRun ?? false, files: parsed.files, deletedFiles: [...parsed.deleted] });
+      return { projectAlias, mode, applied: !dryRun, dryRun: dryRun ?? false, changedFiles: parsed.files, deletedFiles: [...parsed.deleted] };
+    } catch (error) {
+      return { projectAlias, mode, applied: false, dryRun: dryRun ?? false, changedFiles: parsed.files, deletedFiles: [...parsed.deleted], error: safeError(error) };
+    } finally {
+      if (existsSync(patchPath)) unlinkSync(patchPath);
+    }
   });
 
+  const runRequestSchema = z.discriminatedUnion("type", [
+    z.object({
+      type: z.literal("check"),
+      name: z.string().min(1).max(256).optional(),
+      timeoutSecs: z.number().int().positive().max(3600).optional()
+    }).strict(),
+    z.object({
+      type: z.literal("script"),
+      name: z.string().min(1).max(256),
+      args: z.array(z.string().max(4096)).max(500).optional(),
+      timeoutSecs: z.number().int().positive().max(3600).optional()
+    }).strict(),
+    z.object({
+      type: z.literal("command"),
+      command: z.string().min(1).max(256),
+      args: z.array(z.string().max(4096)).max(500).optional(),
+      timeoutSecs: z.number().int().positive().max(3600).optional(),
+      confirm: z.boolean().optional(),
+      shell: z.boolean().optional()
+    }).strict()
+  ]);
+
   registerStrictProjectTool(server, "project_run", "Run an approved check, package script, or allowlisted command with bounded timeout and output.", {
-    projectAlias: z.string().min(1), type: z.enum(["check", "script", "command"]), name: z.string().min(1).optional(), command: z.string().min(1).optional(), args: z.array(z.string()).max(500).optional(), timeoutSecs: z.number().int().positive().max(3600).optional(), confirm: z.boolean().optional()
-  }, mutateAnnotations, async ({ projectAlias, type, name, command, args, timeoutSecs, confirm }) => {
-    assertChatGptPermission("projectRun", projectAlias);
-    const timeout = Math.min(timeoutSecs ?? 120, 3600); const commandArgs = args ?? [];
-    if (type === "check") { if (command !== undefined || confirm !== undefined || commandArgs.length > 0) throw new Error("Command fields are not valid for check type"); assertCanReadProjectPath(projectAlias, resolveProjectPath(projectAlias, "package.json"), "package.json"); stateStore.requireAuditWritable(); const result = await runProjectCheck(resolveProjectPath(projectAlias, "."), name ?? "check", timeout); stateStore.audit({ tool: "project_run", type, projectAlias, name: name ?? "check", exitCode: result.exitCode }); return { projectAlias, type, ...result }; }
-    if (type === "script") { if (!name || command !== undefined || confirm !== undefined) throw new Error("Script type requires name and forbids command fields"); assertCanReadProjectPath(projectAlias, resolveProjectPath(projectAlias, "package.json"), "package.json"); stateStore.requireAuditWritable(); const result = await runProjectScript(resolveProjectPath(projectAlias, "."), name, commandArgs, timeout); stateStore.audit({ tool: "project_run", type, projectAlias, name, args: commandArgs, exitCode: result.exitCode }); return { projectAlias, type, name, args: commandArgs, ...result }; }
-    if (!command || name !== undefined) throw new Error("Command type requires command and forbids name"); assertChatGptCommandAllowed(command, projectAlias); assertProjectCommandStaysInProject(command, commandArgs); const requiresConfirmation = getEffectivePermissions(projectAlias).chatgpt.requireConfirmation && commandRequiresConfirmation(command, commandArgs); if (requiresConfirmation && !confirm) throw new Error("Confirmation required: set confirm=true"); stateStore.requireAuditWritable(); const result = await runProjectCommand(resolveProjectPath(projectAlias, "."), command, commandArgs, timeout, projectAlias); stateStore.audit({ tool: "project_run", type, projectAlias, command, args: commandArgs, exitCode: result.exitCode, confirm: confirm ?? false }); return { projectAlias, type, requiresConfirmation, ...result };
+    projectAlias: z.string().min(1),
+    batchTimeoutSecs: z.number().int().positive().max(3600).optional(),
+    stopOnFailure: z.boolean().default(false),
+    requests: z.array(runRequestSchema).min(1).max(10)
+  }, mutateAnnotations, async ({ projectAlias, batchTimeoutSecs, stopOnFailure, requests }) => {
+    assertMainAgentPermission("projectRun", projectAlias);
+
+    const permissions = getEffectivePermissions(projectAlias).main_agent;
+    const projectRoot = resolveProjectPath(projectAlias, ".");
+
+    for (const req of requests) {
+      if (req.type === "check") {
+        assertCanReadProjectPath(projectAlias, resolveProjectPath(projectAlias, "package.json"), "package.json");
+      } else if (req.type === "script") {
+        assertCanReadProjectPath(projectAlias, resolveProjectPath(projectAlias, "package.json"), "package.json");
+      } else if (req.type === "command") {
+        assertMainAgentCommandAllowed(req.command, projectAlias);
+        assertProjectCommandStaysInProject(req.command, req.args ?? []);
+        const reqShell = req.shell ?? false;
+        if (reqShell && !permissions.allowShell) {
+          throw new Error(`Shell execution is disabled for project alias '${projectAlias}'`);
+        }
+        if (!reqShell && (req.command.endsWith(".cmd") || req.command.endsWith(".bat"))) {
+          throw new Error(`Direct execution of Windows batch scripts is not allowed without shell=true`);
+        }
+        const requiresConfirmation = permissions.requireConfirmation && commandRequiresConfirmation(req.command, req.args ?? []);
+        if (requiresConfirmation && !req.confirm) {
+          throw new Error("Confirmation required: set confirm=true");
+        }
+      }
+    }
+
+    stateStore.requireAuditWritable();
+
+    const maxBatchOutputChars = loadPolicyConfig().limits.process.maxBatchOutputChars;
+    const effectiveBatchTimeoutMs = Math.min(batchTimeoutSecs ?? 120, 3600) * 1000;
+    const deadlineAt = Date.now() + effectiveBatchTimeoutMs;
+    let accumulatedOutputChars = 0;
+    let batchOutputTruncated = false;
+    let batchTimedOut = false;
+    let executedCount = 0;
+    let skippedCount = 0;
+
+    const results: Array<Record<string, unknown>> = [];
+
+    for (const [index, req] of requests.entries()) {
+      const now = Date.now();
+      const remainingMs = deadlineAt - now;
+
+      if (remainingMs <= 0) {
+        batchTimedOut = true;
+        skippedCount++;
+        results.push({
+          ok: false,
+          index,
+          type: req.type,
+          ...(req.type === "check" ? { name: req.name ?? "check" } : {}),
+          ...(req.type === "script" ? { name: req.name, args: req.args ?? [] } : {}),
+          ...(req.type === "command" ? { command: req.command, args: req.args ?? [] } : {}),
+          status: "skipped",
+          reason: "batch_timeout",
+          error: "Batch timeout deadline expired before process start"
+        });
+        continue;
+      }
+
+      const itemTimeoutMs = Math.min(
+        (req.timeoutSecs ?? 120) * 1000,
+        remainingMs
+      );
+
+      let itemResult: Record<string, unknown>;
+      try {
+        if (req.type === "check") {
+          const checkRes = await runProjectCheck(projectRoot, req.name ?? "check", itemTimeoutMs);
+          stateStore.audit({ tool: "project_run", type: "check", projectAlias, name: req.name ?? "check", exitCode: checkRes.exitCode, batchIndex: index });
+          itemResult = { ok: checkRes.exitCode === 0, index, type: "check", name: req.name ?? "check", status: "executed", ...checkRes };
+        } else if (req.type === "script") {
+          const scriptRes = await runProjectScript(projectRoot, req.name, req.args ?? [], itemTimeoutMs);
+          stateStore.audit({ tool: "project_run", type: "script", projectAlias, name: req.name, args: req.args ?? [], exitCode: scriptRes.exitCode, batchIndex: index });
+          itemResult = { ok: scriptRes.exitCode === 0, index, type: "script", name: req.name, status: "executed", ...scriptRes };
+        } else {
+          const requiresConfirmation = permissions.requireConfirmation && commandRequiresConfirmation(req.command, req.args ?? []);
+          if (requiresConfirmation && !req.confirm) {
+            throw new Error("Confirmation required: set confirm=true");
+          }
+          const cmdRes = await runProjectCommand(projectRoot, req.command, req.args ?? [], itemTimeoutMs, projectAlias, req.shell ?? false);
+          stateStore.audit({ tool: "project_run", type: "command", projectAlias, command: req.command, args: req.args ?? [], exitCode: cmdRes.exitCode, confirm: req.confirm ?? false, batchIndex: index });
+          itemResult = { ok: cmdRes.exitCode === 0, index, type: "command", requiresConfirmation, status: "executed", ...cmdRes };
+        }
+        executedCount++;
+      } catch (error) {
+        executedCount++;
+        itemResult = {
+          ok: false,
+          index,
+          type: req.type,
+          ...(req.type === "check" ? { name: req.name ?? "check" } : {}),
+          ...(req.type === "script" ? { name: req.name, args: req.args ?? [] } : {}),
+          ...(req.type === "command" ? { command: req.command, args: req.args ?? [] } : {}),
+          status: "executed",
+          error: safeError(error)
+        };
+      }
+
+      const stdoutStr = typeof itemResult.stdout === "string" ? itemResult.stdout : "";
+      const stderrStr = typeof itemResult.stderr === "string" ? itemResult.stderr : "";
+      const itemChars = countChars(stdoutStr) + countChars(stderrStr);
+
+      if (accumulatedOutputChars + itemChars > maxBatchOutputChars) {
+        batchOutputTruncated = true;
+        itemResult.truncated = true;
+        const budgetLeft = Math.max(0, maxBatchOutputChars - accumulatedOutputChars);
+        if (typeof itemResult.stdout === "string") {
+          const limited = limitText(itemResult.stdout, budgetLeft);
+          itemResult.stdout = limited.text;
+        }
+        if (typeof itemResult.stderr === "string") {
+          const remainingBudget = Math.max(0, budgetLeft - countChars(typeof itemResult.stdout === "string" ? itemResult.stdout : ""));
+          const limited = limitText(itemResult.stderr, remainingBudget);
+          itemResult.stderr = limited.text;
+        }
+      }
+      accumulatedOutputChars += itemChars;
+
+      results.push(itemResult);
+
+      if (stopOnFailure && !itemResult.ok) {
+        for (let restIdx = index + 1; restIdx < requests.length; restIdx++) {
+          const restReq = requests[restIdx];
+          skippedCount++;
+          results.push({
+            ok: false,
+            index: restIdx,
+            type: restReq.type,
+            status: "skipped",
+            reason: "stop_on_failure"
+          });
+        }
+        break;
+      }
+    }
+
+    const successCount = results.filter((r) => r.ok).length;
+    const failedCount = results.filter((r) => !r.ok && r.status === "executed").length;
+    const errorCount = results.filter((r) => !r.ok).length;
+
+    return {
+      projectAlias,
+      requestedCount: requests.length,
+      executedCount,
+      skippedCount,
+      successCount,
+      failedCount,
+      errorCount,
+      ...(batchTimedOut ? { batchTimedOut: true } : {}),
+      ...(batchOutputTruncated ? { batchOutputTruncated: true } : {}),
+      results
+    };
   });
 
   registerStrictProjectTool(server, "project_edit", "Apply an ordered, non-atomic batch of policy-checked project file and directory edits.", {
     projectAlias: z.string().min(1), operations: z.array(editOperationSchema).min(1).max(50), dryRun: z.boolean().default(false)
   }, mutateAnnotations, async ({ projectAlias, operations, dryRun }) => {
-    assertChatGptPermission("projectEdit", projectAlias);
+    assertMainAgentPermission("projectEdit", projectAlias);
     const results: Array<Record<string, unknown>> = [];
     for (const [index, operation] of operations.entries()) { try { results.push({ ok: true, index, type: operation.type, ...performEdit(projectAlias, operation, dryRun) }); } catch (error) { const relativePath = "relativePath" in operation ? operation.relativePath : "sourceRelativePath" in operation ? operation.sourceRelativePath : undefined; results.push({ ok: false, index, type: operation.type, relativePath: relativePath ? safeRelativePath(relativePath) : undefined, error: safeError(error, relativePath) }); } }
     return { projectAlias, dryRun, atomic: false, requestedCount: operations.length, successCount: results.filter((result) => result.ok).length, errorCount: results.filter((result) => !result.ok).length, results };

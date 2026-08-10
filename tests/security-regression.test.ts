@@ -18,6 +18,7 @@ mkdirSync(projectRoot, { recursive: true });
 mkdirSync(path.join(projectRoot, "ignored-dir"), { recursive: true });
 mkdirSync(path.join(projectRoot, "ignored-delete-dir"), { recursive: true });
 mkdirSync(path.join(projectRoot, "skip-me"), { recursive: true });
+const { assertMainAgentPermission, assertSubagentPermission } = await import("../src/policy/permissionPolicy.js");
 writeFileSync(path.join(projectRoot, ".gitignore"), "ignored.txt\nignored-dir/\nignored-delete-dir/\nignored-package.json\n", "utf8");
 writeFileSync(path.join(projectRoot, "README.md"), "# Security Regression\n", "utf8");
 writeFileSync(path.join(projectRoot, "package.json"), JSON.stringify({ scripts: { check: "node -e \"console.log('ok')\"" } }, null, 2), "utf8");
@@ -57,7 +58,7 @@ writeFileSync(policyPath, JSON.stringify({
       allowedCommands: ["git"]
     }
   },
-  chatgpt: {
+  main_agent: {
     permissions: {
       subagentTask: true,
       projectContext: true,
@@ -144,7 +145,7 @@ process.env.PORTUS_MCP_CEREBRAS_MODEL = "llama3.1-8b";
 process.env.CEREBRAS_API_KEY = "test-key";
 
 const { createHttpServer } = await import("../src/server.js");
-const { assertSubagentPermission, assertChatGptPermission } = await import("../src/policy/permissionPolicy.js");
+
 const { getEffectivePermissions, updatePermissions } = await import("../src/state/PermissionRegistry.js");
 const { upsertProject } = await import("../src/state/ProjectRegistry.js");
 
@@ -167,12 +168,12 @@ async function withClient(t: any): Promise<Client> {
   return client;
 }
 
-test("permission gates cover every chatgpt and agents field", () => {
-  for (const permission of ["readGitIgnoredFiles", "useShell"] as const) {
-    assert.throws(() => assertChatGptPermission(permission, "missing-project"), /Permission denied/);
+test("permission gates cover every main_agent and agents field", () => {
+  for (const permission of ["readGitIgnoredFiles", "allowShell"] as const) {
+    assert.throws(() => assertMainAgentPermission(permission, "missing-project"), /Permission denied/);
   }
   for (const permission of ["subagentTask", "projectContext", "projectRead", "projectSearch", "projectEdit", "projectPatch", "projectRun", "projectPolicy", "requireConfirmation"] as const) {
-    assert.doesNotThrow(() => assertChatGptPermission(permission, "missing-project"));
+    assert.doesNotThrow(() => assertMainAgentPermission(permission, "missing-project"));
   }
 
   for (const permission of ["network"] as const) {
@@ -184,9 +185,9 @@ test("permission gates cover every chatgpt and agents field", () => {
 });
 
 test("runtime permissions override policy defaults", () => {
-  updatePermissions({ projectAlias: "runtime", permissions: { chatgpt: { }, subagents: { network: true } } });
+  updatePermissions({ projectAlias: "runtime", permissions: { main_agent: { }, subagents: { network: true } } });
   const effective = getEffectivePermissions("runtime");
-  assert.equal(effective.chatgpt.projectEdit, true);
+  assert.equal(effective.main_agent.projectEdit, true);
   assert.equal(effective.subagents.network, true);
 });
 
@@ -197,19 +198,19 @@ test("each broad project tool is gated only by its matching permission", async (
   const cases = [
     { permission: "projectContext", tool: "project_context", arguments: { projectAlias, include: { status: true } } },
     { permission: "projectRead", tool: "project_read", arguments: { projectAlias, requests: [{ relativePath: "README.md", mode: "exists" }] } },
-    { permission: "projectSearch", tool: "project_search", arguments: { projectAlias, mode: "files", query: "README" } },
+    { permission: "projectSearch", tool: "project_search", arguments: { projectAlias, requests: [{ mode: "files", query: "README" }] } },
     { permission: "projectEdit", tool: "project_edit", arguments: { projectAlias, operations: [{ type: "mkdir", relativePath: "dry-run" }], dryRun: true } },
     { permission: "projectPatch", tool: "project_patch", arguments: { projectAlias, mode: "prepare", patch: "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-project fixture\n+project fixture updated\n" } },
-    { permission: "projectRun", tool: "project_run", arguments: { projectAlias, type: "command", command: "git", args: ["status", "--short"] } },
+    { permission: "projectRun", tool: "project_run", arguments: { projectAlias, requests: [{ type: "command", command: "git", args: ["status", "--short"] }] } },
     { permission: "projectPolicy", tool: "project_policy", arguments: { checks: [{ type: "permissions", projectAlias, operation: "project_read" }] } }
   ] as const;
 
   for (const entry of cases) {
-    updatePermissions({ projectAlias, permissions: { chatgpt: { [entry.permission]: false } } });
+    updatePermissions({ projectAlias, permissions: { main_agent: { [entry.permission]: false } } });
     const denied = await client.callTool({ name: entry.tool, arguments: entry.arguments });
     assert.equal(denied.isError, true, `${entry.tool} should be denied`);
-    assert.match(JSON.stringify(denied.structuredContent), new RegExp(`chatgpt\\.${entry.permission}`));
-    updatePermissions({ projectAlias, permissions: { chatgpt: { [entry.permission]: true } } });
+    assert.match(JSON.stringify(denied.structuredContent), new RegExp(`main_agent\\.${entry.permission}`));
+    updatePermissions({ projectAlias, permissions: { main_agent: { [entry.permission]: true } } });
     const allowed = await client.callTool({ name: entry.tool, arguments: entry.arguments });
     assert.equal(allowed.isError, undefined, `${entry.tool} should be allowed: ${JSON.stringify(allowed.structuredContent)}`);
   }
@@ -240,7 +241,7 @@ test("canonical project boundary permits internal links and rejects external jun
   symlinkSync(projectRoot, rootLink, directoryLinkType);
 
   const linkedRegistration = upsertProject({ projectAlias, rootPath: rootLink });
-  updatePermissions({ projectAlias, permissions: { chatgpt: { } } });
+  updatePermissions({ projectAlias, permissions: { main_agent: { } } });
   assert.equal(linkedRegistration.rootPath, realpathSync.native(projectRoot));
 
   const reads = resultOf(await client.callTool({
@@ -264,15 +265,15 @@ test("canonical project boundary permits internal links and rejects external jun
 
   const search = resultOf(await client.callTool({
     name: "project_search",
-    arguments: { projectAlias, mode: "text", query: "outside secret", relativePath: "outside-link" }
-  }));
+    arguments: { projectAlias, requests: [{ mode: "text", query: "outside secret", relativePath: "outside-link" }] }
+  })).results[0];
   assert.equal(search.sections.text.ok, false);
   assert.match(search.sections.text.error, /Path escapes project root/);
 
   const escapedFileSearch = resultOf(await client.callTool({
     name: "project_search",
-    arguments: { projectAlias, mode: "text", query: "outside secret", relativePath: "outside-link/secret.txt" }
-  }));
+    arguments: { projectAlias, requests: [{ mode: "text", query: "outside secret", relativePath: "outside-link/secret.txt" }] }
+  })).results[0];
   assert.equal(escapedFileSearch.sections.text.ok, false);
   assert.match(escapedFileSearch.sections.text.error, /Path escapes project root/);
 
@@ -368,8 +369,8 @@ test("MCP denies gitignored-file reads and excludes traversal patterns", async (
   for (const [mode, query] of [["files", "ignored"], ["files", "projects"], ["text", "ignored content"], ["text", "sec"]] as const) {
     const search = resultOf(await client.callTool({
       name: "project_search",
-      arguments: { projectAlias: "sec", mode, query, maxResults: 20 }
-    }));
+      arguments: { projectAlias: "sec", requests: [{ mode, query, maxResults: 20 }] }
+    })).results[0];
     const matches = search.sections[mode].matches;
     assert.equal(matches.some((match: { relativePath: string }) =>
       match.relativePath.includes("ignored") || match.relativePath.includes(".portus-mcp") || match.relativePath.includes("skip-me")), false);
@@ -377,15 +378,15 @@ test("MCP denies gitignored-file reads and excludes traversal patterns", async (
 
   const ignoredFileSearch = resultOf(await client.callTool({
     name: "project_search",
-    arguments: { projectAlias: "sec", mode: "text", query: "hidden ignored content", relativePath: "ignored.txt" }
-  }));
+    arguments: { projectAlias: "sec", requests: [{ mode: "text", query: "hidden ignored content", relativePath: "ignored.txt" }] }
+  })).results[0];
   assert.equal(ignoredFileSearch.sections.text.ok, false);
   assert.match(ignoredFileSearch.sections.text.error, /readGitIgnoredFiles/);
 
   const excludedFileSearch = resultOf(await client.callTool({
     name: "project_search",
-    arguments: { projectAlias: "sec", mode: "text", query: "excluded traversal content", relativePath: "skip-me/visible.txt" }
-  }));
+    arguments: { projectAlias: "sec", requests: [{ mode: "text", query: "excluded traversal content", relativePath: "skip-me/visible.txt" }] }
+  })).results[0];
   assert.equal(excludedFileSearch.sections.text.ok, true);
   assert.deepEqual(excludedFileSearch.sections.text.matches, []);
 });
@@ -400,7 +401,7 @@ test("MCP package script tools cannot consume ignored package.json files when ig
 
   const projectAlias = "ignored-package";
   upsertProject({ projectAlias, rootPath: ignoredPackageProjectRoot });
-  updatePermissions({ projectAlias, permissions: { chatgpt: { projectRun: true } } });
+  updatePermissions({ projectAlias, permissions: { main_agent: { projectRun: true } } });
 
   const context = resultOf(await client.callTool({
     name: "project_context",
@@ -409,11 +410,11 @@ test("MCP package script tools cannot consume ignored package.json files when ig
   assert.equal(context.sections.scripts.ok, false);
   assert.match(context.sections.scripts.error, /readGitIgnoredFiles/);
 
-  for (const arguments_ of [
-    { projectAlias, type: "check" },
-    { projectAlias, type: "script", name: "check" }
+  for (const req of [
+    { type: "check" },
+    { type: "script", name: "check" }
   ]) {
-    const response = await client.callTool({ name: "project_run", arguments: arguments_ });
+    const response = await client.callTool({ name: "project_run", arguments: { projectAlias, requests: [req] } });
     assert.equal(response.isError, true);
     assert.match(JSON.stringify(response.structuredContent), /readGitIgnoredFiles/);
   }
@@ -425,15 +426,15 @@ test("direct file tools stay filtered while allowed git commands expose reposito
 
   const diff = resultOf(await client.callTool({
     name: "project_run",
-    arguments: { projectAlias: "blocked", type: "command", command: "git", args: ["diff"] }
-  }));
+    arguments: { projectAlias: "blocked", requests: [{ type: "command", command: "git", args: ["diff"] }] }
+  })).results[0];
   assert.match(diff.stdout, /SECRET_TOKEN/);
 
   for (const mode of ["symbols", "text"] as const) {
     const search = resultOf(await client.callTool({
       name: "project_search",
-      arguments: { projectAlias: "blocked", mode, query: "SECRET_TOKEN", maxResults: 20 }
-    }));
+      arguments: { projectAlias: "blocked", requests: [{ mode, query: "SECRET_TOKEN", maxResults: 20 }] }
+    })).results[0];
     assert.equal(search.sections[mode].matches.length, 0);
   }
 });
@@ -442,7 +443,7 @@ test("MCP mutation tools cannot operate on existing gitignored files when ignore
   const client = await withClient(t);
   const projectAlias = "ignored-mutation";
   upsertProject({ projectAlias, rootPath: projectRoot });
-  updatePermissions({ projectAlias, permissions: { chatgpt: { } } });
+  updatePermissions({ projectAlias, permissions: { main_agent: { } } });
 
   const operations = [
     { type: "write", relativePath: "ignored.txt", content: "overwrite\n" },

@@ -6,12 +6,12 @@ import { getEffectivePermissions, updatePermissions } from "../state/PermissionR
 import { upsertProject } from "../state/ProjectRegistry.js";
 import { resolveProjectPath } from "../policy/pathPolicy.js";
 import { stateStore } from "../state/StateStore.js";
-import { assertChatGptPermission } from "../policy/permissionPolicy.js";
+import { assertMainAgentPermission } from "../policy/permissionPolicy.js";
 import { loadPolicyConfig } from "../policy/policyConfig.js";
 import { registerStrictProjectTool } from "./projectToolUtils.js";
 
 const permissionUpdateSchema = z.object({
-  chatgpt: z.object({
+  main_agent: z.object({
     subagentTask: z.boolean().optional(),
     projectContext: z.boolean().optional(),
     projectRead: z.boolean().optional(),
@@ -21,6 +21,8 @@ const permissionUpdateSchema = z.object({
     projectRun: z.boolean().optional(),
     projectPolicy: z.boolean().optional(),
     readGitIgnoredFiles: z.boolean().optional(),
+    requireConfirmation: z.boolean().optional(),
+    allowShell: z.boolean().optional(),
     allowedCommands: z.array(z.string().regex(/^[A-Za-z0-9._-]+$/)).optional()
   }).strict().optional(),
   subagents: z.object({
@@ -91,7 +93,7 @@ const policyActionSchema = z.discriminatedUnion("type", [
 ]);
 
 
-type PublicAuditEvent = {
+export type PublicAuditEvent = {
   eventId?: string;
   timestamp: string;
   tool?: string;
@@ -104,6 +106,10 @@ type PublicAuditEvent = {
   destinationRelativePath?: string;
   scriptName?: string;
   command?: string;
+  executionType?: string;
+  name?: string;
+  batchIndex?: number;
+  outcome?: string | null;
   exitCode?: number | null;
   bytes?: number;
   count?: number;
@@ -112,7 +118,7 @@ type PublicAuditEvent = {
   failureType?: string | null;
 };
 
-function toPublicAuditEvent(event: Record<string, unknown>): PublicAuditEvent | null {
+export function toPublicAuditEvent(event: Record<string, unknown>): PublicAuditEvent | null {
   if (typeof event.timestamp !== "string") return null;
   const output: PublicAuditEvent = { timestamp: event.timestamp };
   if (typeof event.eventId === "string") output.eventId = event.eventId;
@@ -126,6 +132,10 @@ function toPublicAuditEvent(event: Record<string, unknown>): PublicAuditEvent | 
   if (typeof event.destinationRelativePath === "string") output.destinationRelativePath = event.destinationRelativePath;
   if (typeof event.scriptName === "string") output.scriptName = event.scriptName;
   if (typeof event.command === "string") output.command = event.command;
+  if (typeof event.type === "string") output.executionType = event.type;
+  if (typeof event.name === "string") output.name = event.name;
+  if (typeof event.batchIndex === "number") output.batchIndex = event.batchIndex;
+  if (typeof event.outcome === "string" || event.outcome === null) output.outcome = event.outcome;
   if (typeof event.exitCode === "number" || event.exitCode === null) output.exitCode = event.exitCode;
   if (typeof event.bytes === "number") output.bytes = event.bytes;
   if (typeof event.count === "number") output.count = event.count;
@@ -144,8 +154,8 @@ export function registerBroadPolicyTools(server: McpServer): void {
     if ((checks === undefined) === (action === undefined)) throw new Error("Provide exactly one of checks or action");
     if (checks) {
       const projectAliases = [...new Set(checks.map((check) => check.projectAlias).filter((alias): alias is string => alias !== undefined))];
-      if (projectAliases.length === 0) assertChatGptPermission("projectPolicy");
-      else for (const projectAlias of projectAliases) assertChatGptPermission("projectPolicy", projectAlias);
+      if (projectAliases.length === 0) assertMainAgentPermission("projectPolicy");
+      else for (const projectAlias of projectAliases) assertMainAgentPermission("projectPolicy", projectAlias);
       return {
         results: checks.map((check) => {
           if (check.type === "path") {
@@ -169,7 +179,7 @@ export function registerBroadPolicyTools(server: McpServer): void {
           }
           const permissions = getEffectivePermissions(check.projectAlias);
           const requiredPermissions = check.operation ? [broadPermissionMap[check.operation]] : [];
-          const missing = requiredPermissions.filter((permission) => !permissions.chatgpt[permission]);
+          const missing = requiredPermissions.filter((permission) => !permissions.main_agent[permission]);
           return {
             type: "permissions" as const,
             projectAlias: check.projectAlias ?? null,
@@ -184,18 +194,18 @@ export function registerBroadPolicyTools(server: McpServer): void {
     }
     if (!action) throw new Error("Missing project_policy action");
     if (action.type === "register_project") {
-      assertChatGptPermission("projectPolicy", action.projectAlias);
+      assertMainAgentPermission("projectPolicy", action.projectAlias);
       stateStore.requireAuditWritable();
       const record = upsertProject({ projectAlias: action.projectAlias, rootPath: action.rootPath });
       stateStore.audit({ tool: "project_policy", operation: "register_project", projectAlias: action.projectAlias });
       return { action: action.type, project: { projectAlias: record.projectAlias, createdAt: record.createdAt, updatedAt: record.updatedAt } };
     }
     if (action.type === "update_permissions") {
-      assertChatGptPermission("projectPolicy", action.projectAlias);
+      assertMainAgentPermission("projectPolicy", action.projectAlias);
       return { action: action.type, projectAlias: action.projectAlias ?? null, permissions: updatePermissions({ projectAlias: action.projectAlias, permissions: action.permissions }) };
     }
     if (action.type === "list_audit") {
-      assertChatGptPermission("projectPolicy", action.projectAlias);
+      assertMainAgentPermission("projectPolicy", action.projectAlias);
       const limit = loadPolicyConfig().limits.audit.maxEvents;
       const events = stateStore.readAudit(limit).filter((event) =>
         (!action.projectAlias || event.projectAlias === action.projectAlias)
@@ -204,7 +214,7 @@ export function registerBroadPolicyTools(server: McpServer): void {
       return { action: action.type, events: events.map(toPublicAuditEvent).filter((event): event is PublicAuditEvent => event !== null), limit };
     }
     if (!action.eventId && !action.sessionId) throw new Error("read_audit requires eventId or sessionId");
-    assertChatGptPermission("projectPolicy");
+    assertMainAgentPermission("projectPolicy");
     const events = stateStore.readAudit(loadPolicyConfig().limits.audit.maxEvents).filter((event) =>
       (!action.eventId || event.eventId === action.eventId)
       && (!action.sessionId || event.sessionId === action.sessionId)

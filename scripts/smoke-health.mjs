@@ -43,7 +43,7 @@ try {
   }
 
   const body = await response.json();
-  if (body.name !== "portus-mcp" || body.mcp !== "/mcp" || body.status !== "ok") {
+  if (body.name !== "portus-mcp" || typeof body.mcp !== "string" || !body.mcp.endsWith("/mcp") || body.status !== "ok") {
     throw new Error(`Unexpected health payload: ${JSON.stringify(body)}`);
   }
 

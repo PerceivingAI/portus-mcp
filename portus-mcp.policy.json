@@ -20,7 +20,7 @@
       "allowedCommands": ["git"]
     }
   },
-  "chatgpt": {
+  "main_agent": {
     "permissions": {
       "subagentTask": true,
       "projectContext": true,
@@ -32,7 +32,7 @@
       "projectPolicy": true,
       "readGitIgnoredFiles": false,
       "requireConfirmation": true,
-      "useShell": false,
+      "allowShell": false,
       "allowedCommands": ["git"]
     }
   },
@@ -65,7 +65,9 @@
     "search": {
       "maxScanEntries": 100000,
       "maxTextFileChars": 200000,
-      "maxRegexExecutionMs": 120000
+      "maxRegexExecutionMs": 120000,
+      "maxBatchMatches": 5000,
+      "maxBatchOutputChars": 500000
     },
     "skills": {
       "maxReadChars": 200000
@@ -82,7 +84,8 @@
       "maxEvents": 1000
     },
     "process": {
-      "maxOutputBufferMb": 10
+      "maxOutputBufferMb": 10,
+      "maxBatchOutputChars": 1000000
     }
   },
   "audit": {

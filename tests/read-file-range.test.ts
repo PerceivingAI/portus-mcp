@@ -43,7 +43,7 @@ const basePolicy = {
     },
     permissions: { networkAccess: true, allowedCommands: ["git"] }
   },
-  chatgpt: {
+  main_agent: {
     permissions: {
       subagentTask: false,
       projectContext: true,
@@ -361,15 +361,15 @@ test("project_read range operation exposes and enforces its complete MCP contrac
     assert.equal(audit.some((event) => event.tool === "project_read"), false);
     assert.equal(audit.some((event) => event.tool === "project_read_file_range"), false);
 
-    updatePermissions({ projectAlias: "range", permissions: { chatgpt: { projectRead: false } } });
+    updatePermissions({ projectAlias: "range", permissions: { main_agent: { projectRead: false } } });
     const denied = errorOf(await callRange(client, {
       projectAlias: "range",
       relativePath: "lines.txt",
       startLine: 1,
       endLine: 1
     }));
-    assert.equal(denied, "Permission denied: chatgpt.projectRead is false");
-    updatePermissions({ projectAlias: "range", permissions: { chatgpt: { projectRead: true } } });
+    assert.equal(denied, "Permission denied: main_agent.projectRead is false");
+    updatePermissions({ projectAlias: "range", permissions: { main_agent: { projectRead: true } } });
   });
 
   await t.test("rejects directories, binary files, and unsafe paths without absolute-path leakage", async () => {

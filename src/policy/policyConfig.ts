@@ -7,8 +7,7 @@ import type { PermissionConfig } from "../config.js";
 export type SubagentCommandConfig = {
   allowedCommands: string[];
 };
-
-export type ChatGptCommandConfig = {
+export type MainAgentCommandConfig = {
   allowedCommands: string[];
 };
 
@@ -36,7 +35,7 @@ const policySchema = z.object({
       allowedCommands: z.array(safeCommandNameSchema)
     }).strict()
   }).strict(),
-  chatgpt: z.object({
+  main_agent: z.object({
     permissions: z.object({
       subagentTask: z.boolean(),
       projectContext: z.boolean(),
@@ -48,7 +47,7 @@ const policySchema = z.object({
       projectPolicy: z.boolean(),
       readGitIgnoredFiles: z.boolean(),
       requireConfirmation: z.boolean().default(true),
-      useShell: z.boolean().default(false),
+      allowShell: z.boolean().default(false),
       allowedCommands: z.array(safeCommandNameSchema)
     }).strict()
   }).strict(),
@@ -72,7 +71,9 @@ const policySchema = z.object({
     search: z.object({
       maxScanEntries: z.number().int().positive(),
       maxTextFileChars: z.number().int().positive(),
-      maxRegexExecutionMs: z.number().int().positive().default(120000)
+      maxRegexExecutionMs: z.number().int().positive().default(120000),
+      maxBatchMatches: z.number().int().positive().default(5000),
+      maxBatchOutputChars: z.number().int().positive().default(500000)
     }).strict(),
     skills: z.object({
       maxReadChars: z.number().int().positive()
@@ -89,7 +90,8 @@ const policySchema = z.object({
       maxEvents: z.number().int().positive()
     }).strict(),
     process: z.object({
-      maxOutputBufferMb: z.number().positive()
+      maxOutputBufferMb: z.number().positive(),
+      maxBatchOutputChars: z.number().int().positive().default(1000000)
     }).strict()
   }).strict(),
   audit: z.object({
@@ -123,7 +125,7 @@ export function loadPolicyConfig(): PortusPolicyConfig {
 
 export function policyPermissions(policy = loadPolicyConfig()): PermissionConfig {
   return {
-    chatgpt: { ...policy.chatgpt.permissions },
+    main_agent: { ...policy.main_agent.permissions },
     subagents: {
       network: policy.subagents.permissions.networkAccess,
       maxRuntimeSecs: policy.subagents.lifecycle.maxRuntimeSecs
@@ -137,9 +139,9 @@ export function loadSubagentCommandConfig(policy = loadPolicyConfig()): Subagent
   };
 }
 
-export function loadChatGptCommandConfig(policy = loadPolicyConfig()): ChatGptCommandConfig {
+export function loadMainAgentCommandConfig(policy = loadPolicyConfig()): MainAgentCommandConfig {
   return {
-    allowedCommands: normalizeCommandList(policy.chatgpt.permissions.allowedCommands, "chatgpt.permissions.allowedCommands")
+    allowedCommands: normalizeCommandList(policy.main_agent.permissions.allowedCommands, "main_agent.permissions.allowedCommands")
   };
 }
 

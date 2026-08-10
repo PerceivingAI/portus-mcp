@@ -9,7 +9,7 @@ import { loadConfig } from "../config.js";
 import { registerTool } from "./toolUtils.js";
 import { limitText } from "../runtime/outputLimits.js";
 import { stateStore } from "../state/StateStore.js";
-import { assertChatGptPermission } from "../policy/permissionPolicy.js";
+import { assertMainAgentPermission } from "../policy/permissionPolicy.js";
 import { appendSessionEvent, readSessionEvents } from "../state/SessionEvents.js";
 import { loadPolicyConfig } from "../policy/policyConfig.js";
 import { asErrorMessage } from "../errors.js";
@@ -96,7 +96,7 @@ export function registerSubagentTools(server: McpServer, registry: SkillRegistry
       for (const [index, action] of actions.entries()) {
         try {
           if (action.type === "start") {
-            assertChatGptPermission("subagentTask", action.projectAlias);
+            assertMainAgentPermission("subagentTask", action.projectAlias);
             const config = loadConfig();
             const session = await runFlueTask({
               projectAlias: action.projectAlias,
@@ -114,7 +114,7 @@ export function registerSubagentTools(server: McpServer, registry: SkillRegistry
           } else if (action.type === "stop") {
             if (action.sessionId) {
               const session = getSession(action.sessionId);
-              assertChatGptPermission("subagentTask", session.projectAlias);
+              assertMainAgentPermission("subagentTask", session.projectAlias);
               const stopped = await stopFlueTask(action.sessionId);
               results.push({
                 ok: true,
@@ -126,7 +126,7 @@ export function registerSubagentTools(server: McpServer, registry: SkillRegistry
             } else {
               const active = listSessions().filter((s) => s.status === "running" && (!action.projectAlias || s.projectAlias === action.projectAlias));
               for (const session of active) {
-                assertChatGptPermission("subagentTask", session.projectAlias);
+                assertMainAgentPermission("subagentTask", session.projectAlias);
               }
               const stopped = await Promise.all(active.map((session) => stopFlueTask(session.sessionId)));
               stateStore.audit({ tool: "subagent_task", action: "stop", projectAlias: action.projectAlias ?? null, stopped: stopped.map((item) => item.sessionId) });
@@ -145,7 +145,7 @@ export function registerSubagentTools(server: McpServer, registry: SkillRegistry
               if (session.status === "running" || session.status === "queued") {
                 throw new Error("Cannot clean up a running or queued session.");
               }
-              assertChatGptPermission("subagentTask", session.projectAlias);
+              assertMainAgentPermission("subagentTask", session.projectAlias);
               const sessionDir = path.dirname(session.metadataPath);
               appendSessionEvent(session, "cleanup", "Session artifacts cleaned up.", {});
               rmSync(sessionDir, { recursive: true, force: true });
@@ -168,7 +168,7 @@ export function registerSubagentTools(server: McpServer, registry: SkillRegistry
                 Date.parse(session.completedAt ?? session.startedAt) < cutoffMs
               );
               for (const session of candidates) {
-                assertChatGptPermission("subagentTask", session.projectAlias);
+                assertMainAgentPermission("subagentTask", session.projectAlias);
               }
               if (!dryRun) {
                 for (const session of candidates) {

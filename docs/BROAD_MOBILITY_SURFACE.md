@@ -60,7 +60,7 @@ Read, search, context, policy inspection, and patch preparation are unaudited. M
 
 ## Cold-Start Discovery
 
-A client with no prior alias knowledge calls `project_context` with `include.projects=true` and omits `projectAlias`. The response contains registered aliases only, never absolute roots, registry metadata, or command policy. The client selects an alias and calls scoped `project_context`; the default response includes effective `enabled`, `allowedCommands`, `useShell`, and `requireConfirmation` execution values before the client uses `project_run`. Effective execution discovery requires `projectContext`, not administrative `projectPolicy`. Any request that includes another project-scoped context section still requires `projectAlias`.
+A client with no prior alias knowledge calls `project_context` with `include.projects=true` and omits `projectAlias`. The response contains registered aliases only, never absolute roots, registry metadata, or command policy. The client selects an alias and calls scoped `project_context`; the default response includes effective `enabled`, `allowedCommands`, `allowShell`, and `requireConfirmation` execution values before the client uses `project_run`. Effective execution discovery requires `projectContext`, not administrative `projectPolicy`. Any request that includes another project-scoped context section still requires `projectAlias`.
 
 
 ## Subagent and Skill Boundaries

@@ -81,9 +81,9 @@ Or check subagent capabilities via `subagent_context`:
 Common causes:
 
 ```text
-chatgpt.permissions.subagentTask=false
-chatgpt.permissions.projectRun=false
-chatgpt.permissions.projectEdit=false
+main_agent.permissions.subagentTask=false
+main_agent.permissions.projectRun=false
+main_agent.permissions.projectEdit=false
 subagents.concurrency.maxConcurrent=0
 subagents.concurrency.maxConcurrentPerProject=0
 ```

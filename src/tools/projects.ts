@@ -1,4 +1,4 @@
-import { closeSync, createReadStream, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
+import { closeSync, createReadStream, Dirent, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import crypto from "node:crypto";
@@ -189,7 +189,7 @@ function isGitIgnored(projectRoot: string, target: string): boolean {
 
 export function assertCanReadProjectPath(projectAlias: string, target: string, relativePath: string, registry?: SkillRegistrySnapshot): void {
   if (registry?.connected.byAlias.has(projectAlias)) return;
-  const permissions = getEffectivePermissions(projectAlias).chatgpt;
+  const permissions = getEffectivePermissions(projectAlias).main_agent;
   if (permissions.readGitIgnoredFiles) return;
   if (isGitIgnored(getProject(projectAlias).rootPath, target)) {
     throw new Error(`Permission denied: readGitIgnoredFiles is false for ignored path: ${relativePath}`);
@@ -217,36 +217,81 @@ function shouldSkipTraversal(rootAlias: string, readableRoot: string, fullPath: 
   return !allowGitIgnored && isGitIgnored(readableRoot, fullPath);
 }
 
-export function collectPaths(projectAlias: string, root: string, maxEntries: number, includeFiles: boolean, includeDirs: boolean, registry?: SkillRegistrySnapshot): Array<{ relativePath: string; kind: "file" | "directory"; bytes?: number; modifiedAt?: string }> {
-  const out: Array<{ relativePath: string; kind: "file" | "directory"; bytes?: number; modifiedAt?: string }> = [];
+export type TraversalEntry = { relativePath: string; kind: "file" | "directory"; bytes?: number; modifiedAt?: string };
+
+export type TraversalResult = {
+  entries: TraversalEntry[];
+  filesVisited: number;
+  stoppedAtCap: boolean;
+  reasons: string[];
+};
+
+export function collectPaths(
+  projectAlias: string,
+  root: string,
+  maxEntries: number,
+  includeFiles: boolean,
+  includeDirs: boolean,
+  registry?: SkillRegistrySnapshot
+): TraversalResult {
+  const entries: TraversalEntry[] = [];
   const queue = [root];
   const excludedPatterns = getExcludedTraversalPatterns();
   const skill = registry?.connected.byAlias.get(projectAlias);
   const readableRoot = skill?.rootPath ?? getProject(projectAlias).rootPath;
-  const allowGitIgnored = skill ? true : getEffectivePermissions(projectAlias).chatgpt.readGitIgnoredFiles;
-  while (queue.length > 0 && out.length < maxEntries) {
+  const allowGitIgnored = skill ? true : getEffectivePermissions(projectAlias).main_agent.readGitIgnoredFiles;
+  let filesVisited = 0;
+  let stoppedAtCap = false;
+  const reasonsSet = new Set<string>();
+  while (queue.length > 0) {
     const dir = queue.shift()!;
-    const entries = readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
+    let dirEntries: Dirent[];
+    try {
+      dirEntries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      reasonsSet.add("read_error");
+      continue;
+    }
+    for (let i = 0; i < dirEntries.length; i++) {
+      const entry = dirEntries[i];
       const full = path.join(dir, entry.name);
       const rel = path.relative(readableRoot, full).replace(/\\/g, "/") || ".";
+      filesVisited++;
+
       if (!canReadProjectRelativePath(projectAlias, rel, registry)) continue;
+
       if (entry.isDirectory()) {
         if (shouldSkipTraversal(projectAlias, readableRoot, full, entry.name, excludedPatterns, allowGitIgnored, registry)) continue;
-        if (includeDirs) out.push({ relativePath: rel, kind: "directory" });
-        queue.push(full);
+        if (entries.length < maxEntries) {
+          if (includeDirs) entries.push({ relativePath: rel, kind: "directory" });
+          queue.push(full);
+        } else {
+          stoppedAtCap = true;
+          break;
+        }
       } else if (entry.isFile() && includeFiles) {
         if (shouldSkipTraversal(projectAlias, readableRoot, full, entry.name, excludedPatterns, allowGitIgnored, registry)) continue;
-        const st = statSync(full);
-        out.push({ relativePath: rel, kind: "file", bytes: st.size, modifiedAt: st.mtime.toISOString() });
+        if (entries.length < maxEntries) {
+          const st = statSync(full);
+          entries.push({ relativePath: rel, kind: "file", bytes: st.size, modifiedAt: st.mtime.toISOString() });
+        } else {
+          stoppedAtCap = true;
+          break;
+        }
       }
-      if (out.length >= maxEntries) break;
     }
+
+    if (stoppedAtCap) break;
   }
-  return out;
+
+  if (queue.length > 0) {
+    stoppedAtCap = true;
+  }
+  if (stoppedAtCap) reasonsSet.add("max_scan_entries");
+  return { entries, filesVisited, stoppedAtCap, reasons: Array.from(reasonsSet) };
 }
 
-export function collectSearchableFiles(projectAlias: string, relativePath: string, maxEntries: number): Array<{ relativePath: string; kind: "file" | "directory"; bytes?: number; modifiedAt?: string }> {
+export function collectSearchableFiles(projectAlias: string, relativePath: string, maxEntries: number): TraversalResult {
   const root = resolveProjectPath(projectAlias, relativePath);
   assertCanReadProjectPath(projectAlias, root, relativePath);
   const info = statSync(root);
@@ -256,14 +301,18 @@ export function collectSearchableFiles(projectAlias: string, relativePath: strin
   const projectRoot = getProject(projectAlias).rootPath;
   const normalizedRelativePath = path.relative(projectRoot, root).replace(/\\/g, "/") || ".";
   const excludedPatterns = getExcludedTraversalPatterns();
-  const allowGitIgnored = getEffectivePermissions(projectAlias).chatgpt.readGitIgnoredFiles;
+  const allowGitIgnored = getEffectivePermissions(projectAlias).main_agent.readGitIgnoredFiles;
   if (!canReadProjectRelativePath(projectAlias, normalizedRelativePath)
     || shouldSkipTraversal(projectAlias, projectRoot, root, path.basename(root), excludedPatterns, allowGitIgnored)) {
-    return [];
+    return { entries: [], filesVisited: 1, stoppedAtCap: false, reasons: [] };
   }
-  return [{ relativePath: normalizedRelativePath, kind: "file", bytes: info.size, modifiedAt: info.mtime.toISOString() }];
+  return {
+    entries: [{ relativePath: normalizedRelativePath, kind: "file", bytes: info.size, modifiedAt: info.mtime.toISOString() }],
+    filesVisited: 1,
+    stoppedAtCap: false,
+    reasons: []
+  };
 }
-
 export function tokenizeFileSearchQuery(query: string, caseSensitive: boolean): string[] {
   const normalized = caseSensitive ? query.trim() : query.trim().toLowerCase();
   return normalized.split(/\s+/).map((token) => token.trim()).filter(Boolean);
@@ -391,7 +440,8 @@ const READ_ONLY_GIT_SUBCOMMANDS = new Set(["status", "diff", "log", "show", "rev
 const FORBIDDEN_GIT_REPO_TARGET_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--bare", "--config-env"]);
 
 export function assertProjectCommandStaysInProject(command: string, args: string[]): void {
-  if (command !== "git") return;
+  const baseCommand = command.replace(/\.(bat|cmd|exe)$/i, "").toLowerCase();
+  if (baseCommand !== "git") return;
   for (const arg of args) {
     if (FORBIDDEN_GIT_REPO_TARGET_OPTIONS.has(arg) || arg.startsWith("--git-dir=") || arg.startsWith("--work-tree=")) {
       throw new Error(`Git option not allowed for project-scoped command: ${arg}`);
@@ -400,7 +450,8 @@ export function assertProjectCommandStaysInProject(command: string, args: string
 }
 
 export function commandRequiresConfirmation(command: string, args: string[]): boolean {
-  if (command !== "git") return true;
+  const baseCommand = command.replace(/\.(bat|cmd|exe)$/i, "").toLowerCase();
+  if (baseCommand !== "git") return true;
   const subcommand = args.find((arg) => !arg.startsWith("-")) ?? "";
   return !READ_ONLY_GIT_SUBCOMMANDS.has(subcommand);
 }

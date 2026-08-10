@@ -43,7 +43,7 @@ writeFileSync(policyPath, JSON.stringify({
     },
     permissions: { networkAccess: true, allowedCommands: ["git", "node"] }
   },
-  chatgpt: {
+  main_agent: {
     permissions: {
       subagentTask: false,
       projectContext: true,
@@ -201,7 +201,7 @@ test("project_patch is discoverable and uses only its broad permission", async (
 
   updatePermissions({
     projectAlias: "prepare-read-only",
-    permissions: { chatgpt: { projectEdit: false, } }
+    permissions: { main_agent: { projectEdit: false, } }
   });
   const preparedWithoutWriteGrants = resultOf(await client.callTool({
     name: "project_patch",
@@ -218,13 +218,13 @@ test("project_patch is discoverable and uses only its broad permission", async (
 
   updatePermissions({
     projectAlias: "prepare-read-only",
-    permissions: { chatgpt: { projectPatch: false } }
+    permissions: { main_agent: { projectPatch: false } }
   });
   const denied = await client.callTool({
     name: "project_patch",
     arguments: { projectAlias: "prepare-read-only", mode: "prepare", patch: combinedPatch }
   });
-  assert.match(errorOf(denied), /chatgpt\.projectPatch/);
+  assert.match(errorOf(denied), /main_agent\.projectPatch/);
 });
 
 test("prepare returns existing, new, deleted, and zero-byte metadata usable by apply", async (t) => {

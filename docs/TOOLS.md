@@ -24,10 +24,10 @@ subagent_context
 |---|---|
 | `project_context` | With `include.projects=true` and no `projectAlias`, discover registered aliases only. With a `projectAlias`, retrieve effective execution capabilities, bounded project status, tree, file-list, path metadata/existence, and package-script sections. The default scoped response includes execution capability; any project-scoped section requires `projectAlias`. The tool never returns file contents. |
 | `project_read` | Submit 1–20 ordered content, binary, line-range, metadata, or existence requests. Per-item runtime failures are isolated. Resolves configured connected-agent skills through reserved `skill/<name>` aliases. |
-| `project_search` | Search files, text, symbols, or all supported modes with server-bounded results and scanning. `relativePath` accepts a project-relative regular file or directory; a file scopes the search to that file. JavaScript regex matching runs in an isolated worker with a generous policy-owned execution budget. |
+| `project_search` | Submit 1–20 ordered search requests (`mode`: `files`, `text`, `symbols`, or `all`). Supports per-request `expect` (`matches` or `absent`) returning tri-state expectation (`met`: true, false, or null when inconclusive). Text and symbol regex queries execute in an isolated worker thread. Enforces aggregate batch match (`maxBatchMatches`) and output character (`maxBatchOutputChars`) limits with deterministic truncation and scan reasons (`max_batch_matches`, `max_batch_output_chars`, `max_results`, `regex_timeout`, `read_error`). |
 | `project_edit` | Run ordered write, replace, insert, copy, move, delete, mkdir, or rmdir operations, optionally as a dry run. The batch is ordered but not atomic. |
 | `project_patch` | Prepare or apply a unified patch with policy checks, preconditions, dry-run behavior, and destructive confirmation where required. |
-| `project_run` | Run approved checks, package scripts, or allowlisted device-installed commands without shell command-string parsing. |
+| `project_run` | Submit 1–10 ordered execution requests (`type`: `check`, `script`, or `command`). Direct command execution uses native argv process spawn by default, with `shell=true` explicitly required and policy-gated (`allowShell`) for shell syntax or Windows `.cmd`/`.bat` launchers. Preflights all items before starting execution. Enforces an exact aggregate batch deadline (`batchTimeoutSecs`) with `batchTimedOut`, an aggregate output budget (`maxBatchOutputChars`) with `batchOutputTruncated`, and ordered process outcomes (`exited`, `spawn_failed`, `timed_out`, `signaled`, `output_limit`). Public audit events project execution type (`check`, `script`, `command`) and name. |
 | `project_policy` | Perform ordered permission, path-decision, and safe effective-configuration checks, or exactly one native administrative action: `register_project`, `update_permissions`, `list_audit`, or `read_audit`. |
 | `subagent_task` | Subagent lifecycle management using discriminated action union (`start`, `stop`, `cleanup`). Accepts ordered batch actions and returns ordered results. |
 | `subagent_context` | Batch read subagent execution status, events, stdout/stderr logs, and collected result artifacts. |
@@ -36,7 +36,7 @@ Connected-agent skill metadata is delivered through MCP server instructions; sel
 
 ## Project Discovery and Policy Actions
 
-For cold start, call `project_context` with `include.projects=true` and omit `projectAlias`. The response is a safe inventory of registered aliases only: it contains no absolute roots, timestamps, environment values, registry-storage details, or command policy. After choosing an alias, call scoped `project_context`; its default response includes `execution` with effective `enabled`, `allowedCommands`, `useShell`, and `requireConfirmation` values before the client uses `project_run`. Combining alias discovery with project-scoped context requires `projectAlias`.
+For cold start, call `project_context` with `include.projects=true` and omit `projectAlias`. The response is a safe inventory of registered aliases only: it contains no absolute roots, timestamps, environment values, registry-storage details, or command policy. After choosing an alias, call scoped `project_context`; its default response includes `execution` with effective `enabled`, `allowedCommands`, `allowShell`, and `requireConfirmation` values before the client uses `project_run`. Combining alias discovery with project-scoped context requires `projectAlias`.
 
 `project_policy` accepts exactly one of `checks` or `action` per call. `action` is an object whose strict inner discriminator is `type`, for example `{ "action": { "type": "list_audit" } }`; it is never a flat action string. Its native action types are:
 
@@ -67,7 +67,7 @@ Every adapter remains bounded by:
 
 Callers cannot increase server maxima or override path, Git-ignore, permission, binary-file, confirmation, or audit policy. Text limits use Unicode code-point accounting. Ordinary reads, project-scoped context, search, policy checks, audit reads, and patch preparation remain unaudited; mutation, execution, registration, and permission updates retain audit guarantees. Results and errors do not disclose absolute project roots, secrets, command environments, or file contents as metadata.
 
-The shipped direct-agent allowlist contains only `git`. Operators explicitly grant other device executables in `chatgpt.permissions.allowedCommands`; spawned subagents use a separate allowlist. Shells and interpreters carry the authority of the Portus OS account and are not hard filesystem sandboxes.
+The shipped direct-agent allowlist contains only `git`. Operators explicitly grant other device executables in `main_agent.permissions.allowedCommands`; spawned subagents use a separate allowlist. Shells and interpreters carry the authority of the Portus OS account and are not hard filesystem sandboxes.
 
 
 ## Subagent Tool Consolidation

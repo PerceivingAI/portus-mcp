@@ -34,13 +34,13 @@ Portus MCP blocks path escapes, absolute paths where relative paths are required
 
 ## Gitignored Files
 
-When `chatgpt.permissions.readGitIgnoredFiles=false`, ignored files are opaque.
+When `main_agent.permissions.readGitIgnoredFiles=false`, ignored files are opaque.
 
 Portus MCP blocks reads, metadata checks, copy sources, overwrites, deletes, directory deletes, replace/insert/patch edits, and ignored `package.json` script discovery or execution.
 
 ## Permission Gates
 
-ChatGPT permissions are:
+Main agent permissions are:
 
 ```text
 subagentTask
@@ -53,7 +53,7 @@ projectRun
 projectPolicy
 ```
 
-Each tool checks its corresponding permission once at entry (`subagent_task` requires `subagentTask`, `project_read` requires `projectRead`, etc.). `project_policy` requires `projectPolicy` for all checks and native actions (`register_project`, `update_permissions`, `list_audit`, `read_audit`). `readGitIgnoredFiles` remains an internal constraint. Scoped `project_context` safely projects the effective direct-agent command boundary so clients with `projectContext` can discover `projectRun`, `allowedCommands`, `useShell`, and confirmation behavior without administrative policy access.
+Each tool checks its corresponding permission once at entry (`subagent_task` requires `subagentTask`, `project_read` requires `projectRead`, etc.). `project_policy` requires `projectPolicy` for all checks and native actions (`register_project`, `update_permissions`, `list_audit`, `read_audit`). `readGitIgnoredFiles` remains an internal constraint. Scoped `project_context` safely projects the effective direct-agent command boundary so clients with `projectContext` can discover `projectRun`, `allowedCommands`, `allowShell`, and confirmation behavior without administrative policy access.
 
 Spawned-agent permissions include:
 
@@ -65,7 +65,7 @@ maxRuntimeSecs
 
 Direct tool permissions and spawned-agent permissions are separate and can be found on `portus-mcp.policy.json`.
 
-Portus ships with only `git` in `chatgpt.permissions.allowedCommands`. Operators explicitly grant other device-installed executables; direct tool permissions and spawned-agent permissions remain separate. Git, shells, interpreters, and other granted commands can expose or change state beyond the narrower file-tool path policy. A project-root working directory is not a hard filesystem sandbox: allowlisting Bash, PowerShell, Python, Node.js, or another general-purpose interpreter grants the authority available to that executable under the Portus OS account. Add only commands the connected agent is intended to control.
+Portus ships with only `git` in `main_agent.permissions.allowedCommands`. Operators explicitly grant other device-installed executables; direct tool permissions and spawned-agent permissions remain separate. Git, shells, interpreters, and other granted commands can expose or change state beyond the narrower file-tool path policy. A project-root working directory is not a hard filesystem sandbox: allowlisting Bash, PowerShell, Python, Node.js, or another general-purpose interpreter grants the authority available to that executable under the Portus OS account. Add only commands the connected agent is intended to control.
 
 ## Spawned Agents
 
@@ -73,7 +73,7 @@ Spawned agents use Flue and run as local processes with cwd set to the registere
 
 They are useful for delegated work, but they are not a hard filesystem sandbox. If a spawned agent receives command access, it may be able to read files allowed by OS permissions and granted commands.
 
-You can disable spawned agents by setting `chatgpt.permissions.spawnAgents=false`, `agents.concurrency.maxConcurrent=0`, or `agents.concurrency.maxConcurrentPerProject=0`.
+You can disable spawned agents by setting `main_agent.permissions.subagentTask=false`, `subagents.concurrency.maxConcurrent=0`, or `subagents.concurrency.maxConcurrentPerProject=0`.
 
 ## Provider Credentials
 

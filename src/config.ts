@@ -8,7 +8,7 @@ import type { AgentProvider, AgentProviderConfig, AgentProviderDefinition } from
 export type { AgentProvider, AgentProviderConfig, AgentProviderDefinition } from "./providers.js";
 
 
-export type ChatGptPermissionConfig = {
+export type MainAgentPermissionConfig = {
   subagentTask: boolean;
   projectContext: boolean;
   projectRead: boolean;
@@ -19,7 +19,7 @@ export type ChatGptPermissionConfig = {
   projectPolicy: boolean;
   readGitIgnoredFiles: boolean;
   requireConfirmation: boolean;
-  useShell: boolean;
+  allowShell: boolean;
   allowedCommands: string[];
 };
 
@@ -29,7 +29,7 @@ export type SubagentPermissionConfig = {
 };
 
 export type PermissionConfig = {
-  chatgpt: ChatGptPermissionConfig;
+  main_agent: MainAgentPermissionConfig;
   subagents: SubagentPermissionConfig;
 };
 

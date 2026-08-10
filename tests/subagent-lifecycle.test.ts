@@ -58,10 +58,10 @@ function writePolicy(overrides: DeepPartial<typeof defaultPolicy> = {}): void {
       lifecycle: { ...defaultPolicy.subagents.lifecycle, ...(overrides.subagents?.lifecycle ?? {}) },
       permissions: { ...defaultPolicy.subagents.permissions, ...(overrides.subagents?.permissions ?? {}) }
     },
-    chatgpt: {
-      ...defaultPolicy.chatgpt,
-      ...(overrides.chatgpt ?? {}),
-      permissions: { ...defaultPolicy.chatgpt.permissions, ...(overrides.chatgpt?.permissions ?? {}) }
+    main_agent: {
+      ...defaultPolicy.main_agent,
+      ...(overrides.main_agent ?? {}),
+      permissions: { ...defaultPolicy.main_agent.permissions, ...(overrides.main_agent?.permissions ?? {}) }
     },
     pathPolicy: {
       ...defaultPolicy.pathPolicy,
@@ -107,7 +107,7 @@ const defaultPolicy = {
       allowedCommands: ["git"]
     }
   },
-  chatgpt: {
+  main_agent: {
     permissions: {
       subagentTask: true,
       projectContext: true,
