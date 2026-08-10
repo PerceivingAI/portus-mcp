@@ -60,6 +60,7 @@ function normalizePartialPermissions(input: PartialPermissionConfig | Record<str
     raw.subagents = raw.agents;
     delete raw.agents;
   }
+
   const allowedTopLevel: Record<string, true> = { main_agent: true, subagents: true };
   const allowedMainAgent: Record<string, true> = {
     subagentTask: true,

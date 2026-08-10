@@ -1,4 +1,20 @@
 {
+  "main_agent": {
+    "permissions": {
+      "subagentTask": true,
+      "projectContext": true,
+      "projectRead": true,
+      "projectSearch": true,
+      "projectEdit": true,
+      "projectPatch": true,
+      "projectRun": true,
+      "projectPolicy": true,
+      "readGitIgnoredFiles": false,
+      "requireConfirmation": true,
+      "allowShell": false,
+      "allowedCommands": ["git"]
+    }
+  },
   "subagents": {
     "concurrency": {
       "maxConcurrent": 4,
@@ -17,22 +33,6 @@
     },
     "permissions": {
       "networkAccess": true,
-      "allowedCommands": ["git"]
-    }
-  },
-  "main_agent": {
-    "permissions": {
-      "subagentTask": true,
-      "projectContext": true,
-      "projectRead": true,
-      "projectSearch": true,
-      "projectEdit": true,
-      "projectPatch": true,
-      "projectRun": true,
-      "projectPolicy": true,
-      "readGitIgnoredFiles": false,
-      "requireConfirmation": true,
-      "allowShell": false,
       "allowedCommands": ["git"]
     }
   },

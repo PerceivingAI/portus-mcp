@@ -180,10 +180,10 @@ test("stale useShell configuration or runtime permission is explicitly rejected"
   );
 });
 
-test("legacy chatgpt permission key is strictly rejected", () => {
+test("unknown top-level permission key is strictly rejected", () => {
   assert.throws(
-    () => updatePermissions({ projectAlias: "test", permissions: { chatgpt: { allowShell: true } as Record<string, unknown> } }),
-    /Unknown top-level permission: chatgpt/
+    () => updatePermissions({ projectAlias: "test", permissions: { invalid_key: { allowShell: true } as Record<string, unknown> } }),
+    /Unknown top-level permission: invalid_key/
   );
 });
 

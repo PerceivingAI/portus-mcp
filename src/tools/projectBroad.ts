@@ -21,7 +21,6 @@ import type { SkillRegistrySnapshot } from "../skills/SkillRegistry.js";
 import {
   assertCanReadProjectPath,
   assertProjectCommandStaysInProject,
-  canReadProjectRelativePath,
   collectPaths,
   collectSearchableFiles,
   commandRequiresConfirmation,
@@ -149,7 +148,7 @@ function filesSearch(projectAlias: string, query: string, relativePath: string, 
     : matches.length > 0
       ? false
       : scanComplete ? true : null;
-  return { matches, matchesTruncated, scan: { complete: scanComplete, reasons: traversal.reasons, filesVisited: traversal.filesVisited }, expectation: { kind: expectKind, met: expectationMet } };
+  return { matches, matchesTruncated, scan: { complete: scanComplete, reasons: traversal.reasons, filesVisited: traversal.filesVisited, directoriesVisited: traversal.directoriesVisited, gitProcessesSpawned: traversal.gitProcessesSpawned, elapsedMs: traversal.elapsedMs }, expectation: { kind: expectKind, met: expectationMet } };
 }
 
 const REGEX_WORKER_SOURCE = `
@@ -263,7 +262,6 @@ async function textSearch(
         if (!scanReasons.includes("max_batch_output_chars") && budget.currentChars >= budget.maxChars) scanReasons.push("max_batch_output_chars");
         break;
       }
-      if (!canReadProjectRelativePath(projectAlias, entry.relativePath)) continue;
       const target = resolveProjectPath(projectAlias, entry.relativePath);
       if (!isTextLikely(target)) continue;
       let lines: string[];
@@ -334,7 +332,7 @@ async function textSearch(
   return {
     matches,
     matchesTruncated: matches.length >= maxResults,
-    scan: { complete: scanComplete, reasons: scanReasons, filesVisited: traversal.filesVisited },
+    scan: { complete: scanComplete, reasons: scanReasons, filesVisited: traversal.filesVisited, directoriesVisited: traversal.directoriesVisited, gitProcessesSpawned: traversal.gitProcessesSpawned, elapsedMs: traversal.elapsedMs },
     expectation: { kind: expectKind, met: expectationMet }
   };
 }

@@ -176,45 +176,138 @@ function pathMatchesPattern(relativePath: string, entryName: string, pattern: st
   return normalizedPath.includes(normalizedPattern);
 }
 
-function isGitIgnored(projectRoot: string, target: string): boolean {
-  const relativePath = path.relative(projectRoot, target).replace(/\\/g, "/");
-  if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath)) return false;
-  try {
-    execFileSync("git", ["check-ignore", "--quiet", "--", relativePath], { cwd: projectRoot, stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
+export class GitIgnoreClassifier {
+  private cache = new Map<string, boolean>();
+  public gitProcessesSpawned = 0;
+
+  constructor(private projectRoot: string) {}
+
+  isIgnored(target: string): boolean {
+    const relativePath = path.relative(this.projectRoot, target).replace(/\\/g, "/");
+    if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath)) return false;
+
+    const parts = relativePath.split("/");
+    let current = "";
+    for (let i = 0; i < parts.length - 1; i++) {
+      current = current ? `${current}/${parts[i]}` : parts[i];
+      if (this.cache.get(current) === true) return true;
+    }
+
+    if (this.cache.has(relativePath)) {
+      return this.cache.get(relativePath)!;
+    }
+
+    try {
+      this.gitProcessesSpawned += 1;
+      execFileSync("git", ["check-ignore", "--quiet", "--", relativePath], { cwd: this.projectRoot, stdio: "ignore" });
+      this.cache.set(relativePath, true);
+      return true;
+    } catch {
+      this.cache.set(relativePath, false);
+      return false;
+    }
+  }
+
+  checkBatch(relativePaths: string[]): Set<string> {
+    const ignoredSet = new Set<string>();
+    const unCached: string[] = [];
+
+    for (const rel of relativePaths) {
+      if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) continue;
+
+      const parts = rel.split("/");
+      let current = "";
+      let parentIgnored = false;
+      for (let i = 0; i < parts.length - 1; i++) {
+        current = current ? `${current}/${parts[i]}` : parts[i];
+        if (this.cache.get(current) === true) {
+          ignoredSet.add(rel);
+          this.cache.set(rel, true);
+          parentIgnored = true;
+          break;
+        }
+      }
+      if (parentIgnored) continue;
+
+      if (this.cache.has(rel)) {
+        if (this.cache.get(rel) === true) ignoredSet.add(rel);
+      } else {
+        unCached.push(rel);
+      }
+    }
+
+    if (unCached.length === 0) return ignoredSet;
+
+    try {
+      this.gitProcessesSpawned += 1;
+      const output = execFileSync("git", ["check-ignore", "--stdin"], {
+        cwd: this.projectRoot,
+        input: unCached.join("\n") + "\n",
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "ignore"]
+      });
+      const lines = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      for (const line of lines) {
+        ignoredSet.add(line);
+        this.cache.set(line, true);
+      }
+      for (const rel of unCached) {
+        if (!ignoredSet.has(rel)) {
+          this.cache.set(rel, false);
+        }
+      }
+    } catch (err: unknown) {
+      if (err && typeof err === "object" && "stdout" in err && err.stdout) {
+        const lines = String(err.stdout).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+        for (const line of lines) {
+          ignoredSet.add(line);
+          this.cache.set(line, true);
+        }
+      }
+      for (const rel of unCached) {
+        if (!ignoredSet.has(rel)) {
+          this.cache.set(rel, false);
+        }
+      }
+    }
+
+    return ignoredSet;
   }
 }
 
-export function assertCanReadProjectPath(projectAlias: string, target: string, relativePath: string, registry?: SkillRegistrySnapshot): void {
+function isGitIgnored(projectRoot: string, target: string, classifier?: GitIgnoreClassifier): boolean {
+  if (classifier) return classifier.isIgnored(target);
+  return new GitIgnoreClassifier(projectRoot).isIgnored(target);
+}
+
+export function assertCanReadProjectPath(projectAlias: string, target: string, relativePath: string, registry?: SkillRegistrySnapshot, classifier?: GitIgnoreClassifier): void {
   if (registry?.connected.byAlias.has(projectAlias)) return;
   const permissions = getEffectivePermissions(projectAlias).main_agent;
   if (permissions.readGitIgnoredFiles) return;
-  if (isGitIgnored(getProject(projectAlias).rootPath, target)) {
+  if (isGitIgnored(getProject(projectAlias).rootPath, target, classifier)) {
     throw new Error(`Permission denied: readGitIgnoredFiles is false for ignored path: ${relativePath}`);
   }
 }
 
-export function canReadProjectRelativePath(projectAlias: string, relativePath: string, registry?: SkillRegistrySnapshot): boolean {
+export function canReadProjectRelativePath(projectAlias: string, relativePath: string, registry?: SkillRegistrySnapshot, classifier?: GitIgnoreClassifier): boolean {
   try {
     const target = registry
       ? resolveReadablePath(projectAlias, relativePath, registry)
       : resolveProjectPath(projectAlias, relativePath);
-    assertCanReadProjectPath(projectAlias, target, relativePath, registry);
+    assertCanReadProjectPath(projectAlias, target, relativePath, registry, classifier);
     return true;
   } catch {
     return false;
   }
 }
 
-function shouldSkipTraversal(rootAlias: string, readableRoot: string, fullPath: string, entryName: string, excludedPatterns: string[], allowGitIgnored: boolean, registry?: SkillRegistrySnapshot): boolean {
+function shouldSkipTraversal(rootAlias: string, readableRoot: string, fullPath: string, entryName: string, excludedPatterns: string[], allowGitIgnored: boolean, registry?: SkillRegistrySnapshot, classifier?: GitIgnoreClassifier): boolean {
   const relativePath = path.relative(readableRoot, fullPath).replace(/\\/g, "/");
   const relativeToStateRoot = path.relative(stateStore.root, fullPath);
   if (!relativeToStateRoot || (!relativeToStateRoot.startsWith("..") && !path.isAbsolute(relativeToStateRoot))) return true;
   if (excludedPatterns.some((pattern) => pathMatchesPattern(relativePath, entryName, pattern))) return true;
   if (registry?.connected.byAlias.has(rootAlias)) return false;
-  return !allowGitIgnored && isGitIgnored(readableRoot, fullPath);
+  return !allowGitIgnored && isGitIgnored(readableRoot, fullPath, classifier);
 }
 
 export type TraversalEntry = { relativePath: string; kind: "file" | "directory"; bytes?: number; modifiedAt?: string };
@@ -222,6 +315,9 @@ export type TraversalEntry = { relativePath: string; kind: "file" | "directory";
 export type TraversalResult = {
   entries: TraversalEntry[];
   filesVisited: number;
+  directoriesVisited: number;
+  gitProcessesSpawned: number;
+  elapsedMs: number;
   stoppedAtCap: boolean;
   reasons: string[];
 };
@@ -234,17 +330,23 @@ export function collectPaths(
   includeDirs: boolean,
   registry?: SkillRegistrySnapshot
 ): TraversalResult {
+  const startTime = Date.now();
   const entries: TraversalEntry[] = [];
   const queue = [root];
   const excludedPatterns = getExcludedTraversalPatterns();
   const skill = registry?.connected.byAlias.get(projectAlias);
   const readableRoot = skill?.rootPath ?? getProject(projectAlias).rootPath;
   const allowGitIgnored = skill ? true : getEffectivePermissions(projectAlias).main_agent.readGitIgnoredFiles;
+  const classifier = allowGitIgnored ? null : new GitIgnoreClassifier(readableRoot);
+
   let filesVisited = 0;
+  let directoriesVisited = 0;
   let stoppedAtCap = false;
   const reasonsSet = new Set<string>();
+
   while (queue.length > 0) {
     const dir = queue.shift()!;
+    directoriesVisited += 1;
     let dirEntries: Dirent[];
     try {
       dirEntries = readdirSync(dir, { withFileTypes: true });
@@ -252,16 +354,35 @@ export function collectPaths(
       reasonsSet.add("read_error");
       continue;
     }
-    for (let i = 0; i < dirEntries.length; i++) {
+
+    const candidateEntries: { entry: Dirent; full: string; rel: string }[] = [];
+    const relPathsToClassify: string[] = [];
+
+    for (let i = 0; i < dirEntries.length; i += 1) {
       const entry = dirEntries[i];
+      if (entry.isSymbolicLink()) continue;
+
       const full = path.join(dir, entry.name);
       const rel = path.relative(readableRoot, full).replace(/\\/g, "/") || ".";
-      filesVisited++;
 
-      if (!canReadProjectRelativePath(projectAlias, rel, registry)) continue;
+      if (excludedPatterns.some((pattern) => pathMatchesPattern(rel, entry.name, pattern))) continue;
+
+      const relativeToStateRoot = path.relative(stateStore.root, full);
+      if (!relativeToStateRoot || (!relativeToStateRoot.startsWith("..") && !path.isAbsolute(relativeToStateRoot))) continue;
+
+      candidateEntries.push({ entry, full, rel });
+      if (classifier) relPathsToClassify.push(rel);
+    }
+
+    const ignoredSet = classifier && relPathsToClassify.length > 0
+      ? classifier.checkBatch(relPathsToClassify)
+      : new Set<string>();
+
+    for (const { entry, full, rel } of candidateEntries) {
+      if (ignoredSet.has(rel)) continue;
+      if (!canReadProjectRelativePath(projectAlias, rel, registry, classifier ?? undefined)) continue;
 
       if (entry.isDirectory()) {
-        if (shouldSkipTraversal(projectAlias, readableRoot, full, entry.name, excludedPatterns, allowGitIgnored, registry)) continue;
         if (entries.length < maxEntries) {
           if (includeDirs) entries.push({ relativePath: rel, kind: "directory" });
           queue.push(full);
@@ -270,7 +391,7 @@ export function collectPaths(
           break;
         }
       } else if (entry.isFile() && includeFiles) {
-        if (shouldSkipTraversal(projectAlias, readableRoot, full, entry.name, excludedPatterns, allowGitIgnored, registry)) continue;
+        filesVisited += 1;
         if (entries.length < maxEntries) {
           const st = statSync(full);
           entries.push({ relativePath: rel, kind: "file", bytes: st.size, modifiedAt: st.mtime.toISOString() });
@@ -288,7 +409,16 @@ export function collectPaths(
     stoppedAtCap = true;
   }
   if (stoppedAtCap) reasonsSet.add("max_scan_entries");
-  return { entries, filesVisited, stoppedAtCap, reasons: Array.from(reasonsSet) };
+
+  return {
+    entries,
+    filesVisited,
+    directoriesVisited,
+    gitProcessesSpawned: classifier?.gitProcessesSpawned ?? 0,
+    elapsedMs: Date.now() - startTime,
+    stoppedAtCap,
+    reasons: Array.from(reasonsSet)
+  };
 }
 
 export function collectSearchableFiles(projectAlias: string, relativePath: string, maxEntries: number): TraversalResult {
@@ -304,11 +434,14 @@ export function collectSearchableFiles(projectAlias: string, relativePath: strin
   const allowGitIgnored = getEffectivePermissions(projectAlias).main_agent.readGitIgnoredFiles;
   if (!canReadProjectRelativePath(projectAlias, normalizedRelativePath)
     || shouldSkipTraversal(projectAlias, projectRoot, root, path.basename(root), excludedPatterns, allowGitIgnored)) {
-    return { entries: [], filesVisited: 1, stoppedAtCap: false, reasons: [] };
+    return { entries: [], filesVisited: 1, directoriesVisited: 0, gitProcessesSpawned: 0, elapsedMs: 0, stoppedAtCap: false, reasons: [] };
   }
   return {
     entries: [{ relativePath: normalizedRelativePath, kind: "file", bytes: info.size, modifiedAt: info.mtime.toISOString() }],
     filesVisited: 1,
+    directoriesVisited: 0,
+    gitProcessesSpawned: 0,
+    elapsedMs: 0,
     stoppedAtCap: false,
     reasons: []
   };

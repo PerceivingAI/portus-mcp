@@ -828,6 +828,29 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.equal(search08Result.matchesTruncated, true);
   assert.equal(search08Result.scan.complete, true);
 
+  // Root-search regression: relativePath "." with present token completes cleanly
+  const rootSearchPresent = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: {
+      projectAlias: "mcp",
+      requests: [{ mode: "text", query: "MCP", relativePath: "." }]
+    }
+  })).results[0].sections.text;
+  assert.equal(rootSearchPresent.scan.complete, true);
+  assert.equal(rootSearchPresent.matches.length > 0, true);
+  assert.equal(rootSearchPresent.scan.gitProcessesSpawned <= 2, true);
+
+  // Root-search regression: relativePath "." with absent token completes cleanly with 0 matches
+  const rootSearchAbsent = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: {
+      projectAlias: "mcp",
+      requests: [{ mode: "text", query: "definitely-absent-token-xyz-9999", relativePath: "." }]
+    }
+  })).results[0].sections.text;
+  assert.equal(rootSearchAbsent.scan.complete, true);
+  assert.equal(rootSearchAbsent.matches.length, 0);
+  assert.equal(rootSearchAbsent.scan.gitProcessesSpawned <= 2, true);
   // Windows argv execution with real Git executable
   const gitGrepSmoke = resultOf(await client.callTool({
     name: "project_run",
