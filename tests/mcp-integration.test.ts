@@ -273,15 +273,83 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   })).results[0].sections.text;
   assert.equal(searchText.matches.length > 0, true);
 
-  const directFileAllSearch = resultOf(await client.callTool({
+  const directFileAllSearchResult = resultOf(await client.callTool({
     name: "project_search",
     arguments: { projectAlias: "mcp", requests: [{ mode: "all", query: "written through MCP", relativePath: "generated.txt", maxResults: 10 }] }
-  })).results[0].sections;
+  }));
+  const directFileAllSearch = directFileAllSearchResult.results[0].sections;
   assert.equal(directFileAllSearch.files.ok, true);
   assert.deepEqual(directFileAllSearch.files.matches, []);
   for (const mode of ["text", "symbols"] as const) {
     assert.equal(directFileAllSearch[mode].ok, true);
     assert.deepEqual(directFileAllSearch[mode].matches.map((match: { relativePath: string }) => match.relativePath), ["generated.txt"]);
+  }
+  assert.equal(directFileAllSearchResult.traversalsStarted, 1);
+  assert.equal(directFileAllSearchResult.traversalsReused, 2);
+  assert.equal(directFileAllSearchResult.gitProcessesSpawned, 1);
+  assert.equal(directFileAllSearch.files.scan.traversalReused, false);
+  assert.equal(directFileAllSearch.text.scan.traversalReused, true);
+  assert.equal(directFileAllSearch.symbols.scan.traversalReused, true);
+
+  const compatibleBatchSearch = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: {
+      projectAlias: "mcp",
+      requests: [
+        { mode: "files", query: "generated", relativePath: "." },
+        { mode: "text", query: "written through MCP", relativePath: "." },
+        { mode: "symbols", query: "written through MCP", relativePath: "." }
+      ]
+    }
+  }));
+  assert.equal(compatibleBatchSearch.traversalsStarted, 1);
+  assert.equal(compatibleBatchSearch.traversalsReused, 2);
+  assert.equal(compatibleBatchSearch.gitProcessesSpawned, 1);
+  assert.equal(compatibleBatchSearch.results[0].sections.files.scan.traversalReused, false);
+  assert.equal(compatibleBatchSearch.results[1].sections.text.scan.traversalReused, true);
+  assert.equal(compatibleBatchSearch.results[2].sections.symbols.scan.traversalReused, true);
+
+  const distinctScopeSearch = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: {
+      projectAlias: "mcp",
+      requests: [
+        { mode: "files", query: "generated", relativePath: "." },
+        { mode: "files", query: "generated", relativePath: "generated.txt" }
+      ]
+    }
+  }));
+  assert.equal(distinctScopeSearch.traversalsStarted, 2);
+  assert.equal(distinctScopeSearch.traversalsReused, 0);
+  assert.equal(distinctScopeSearch.gitProcessesSpawned, 2);
+
+  const distinctIgnoredPolicySearch = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: {
+      projectAlias: "mcp",
+      requests: [
+        { mode: "files", query: "generated", relativePath: ".", includeGitIgnored: false },
+        { mode: "files", query: "generated", relativePath: ".", includeGitIgnored: true }
+      ]
+    }
+  }));
+  assert.equal(distinctIgnoredPolicySearch.traversalsStarted, 2);
+  assert.equal(distinctIgnoredPolicySearch.traversalsReused, 0);
+  assert.equal(distinctIgnoredPolicySearch.results[0].sections.files.ok, true);
+  assert.equal(distinctIgnoredPolicySearch.results[1].sections.files.outcome, "failed");
+
+  const sharedTraversalFailure = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: {
+      projectAlias: "mcp",
+      requests: [{ mode: "all", query: "anything", relativePath: "missing-search-root" }]
+    }
+  }));
+  assert.equal(sharedTraversalFailure.traversalsStarted, 1);
+  assert.equal(sharedTraversalFailure.traversalsReused, 2);
+  assert.equal(sharedTraversalFailure.gitProcessesSpawned, 1);
+  for (const mode of ["files", "text", "symbols"] as const) {
+    assert.equal(sharedTraversalFailure.results[0].sections[mode].outcome, "failed");
   }
 
   const regexSearch = resultOf(await client.callTool({
@@ -731,7 +799,8 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   })).results[0].sections.text;
   assert.equal(rootSearchPresent.scan.complete, true);
   assert.equal(rootSearchPresent.matches.length > 0, true);
-  assert.equal(rootSearchPresent.scan.gitProcessesSpawned <= 2, true);
+  assert.equal(rootSearchPresent.scan.gitProcessesSpawned, 1);
+  assert.equal(rootSearchPresent.scan.traversalReused, false);
 
   // Root-search regression: relativePath "." with absent token completes cleanly with 0 matches
   const rootSearchAbsent = resultOf(await client.callTool({
@@ -743,7 +812,8 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   })).results[0].sections.text;
   assert.equal(rootSearchAbsent.scan.complete, true);
   assert.equal(rootSearchAbsent.matches.length, 0);
-  assert.equal(rootSearchAbsent.scan.gitProcessesSpawned <= 2, true);
+  assert.equal(rootSearchAbsent.scan.gitProcessesSpawned, 1);
+  assert.equal(rootSearchAbsent.scan.traversalReused, false);
   // Windows argv execution with real Git executable
   const gitGrepSmoke = resultOf(await client.callTool({
     name: "project_run",

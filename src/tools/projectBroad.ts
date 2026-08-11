@@ -7,6 +7,7 @@ import { once } from "node:events";
 import { Worker } from "node:worker_threads";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { loadConfig } from "../config.js";
 import { getProject, listProjects } from "../state/ProjectRegistry.js";
 import { stateStore } from "../state/StateStore.js";
 import { resolveProjectPath, resolveReadablePath } from "../policy/pathPolicy.js";
@@ -31,6 +32,8 @@ import {
   readProjectTextFile,
   readProjectTextFileRange,
   scoreFileSearchPath,
+  TraversalError,
+  type TraversalResult,
   tokenizeFileSearchQuery
 } from "./projects.js";
 
@@ -97,7 +100,7 @@ function packageScripts(projectAlias: string): string[] {
   return Object.keys(parsed.scripts).slice(0, 200);
 }
 
-function treeSection(rootAlias: string, options: { relativePath?: string; maxDepth?: number; includeFiles?: boolean; includeDirs?: boolean; maxEntries?: number; format?: "tree" | "json" | "flat" }, registry: SkillRegistrySnapshot): Record<string, unknown> {
+async function treeSection(rootAlias: string, options: { relativePath?: string; maxDepth?: number; includeFiles?: boolean; includeDirs?: boolean; maxEntries?: number; format?: "tree" | "json" | "flat" }, registry: SkillRegistrySnapshot): Promise<Record<string, unknown>> {
   const relativePath = options.relativePath ?? ".";
   const maxDepth = Math.min(options.maxDepth ?? 4, 20);
   const maxEntries = Math.min(options.maxEntries ?? 500, 20000);
@@ -105,13 +108,12 @@ function treeSection(rootAlias: string, options: { relativePath?: string; maxDep
   const includeDirs = options.includeDirs ?? true;
   const format = options.format ?? "tree";
   const base = resolveReadablePath(rootAlias, relativePath, registry);
-  assertCanReadProjectPath(rootAlias, base, relativePath, registry);
   const depthFromBase = (entryRelativePath: string): number => {
     const target = resolveReadablePath(rootAlias, entryRelativePath, registry);
     const fromBase = path.relative(base, target).replace(/\\/g, "/");
     return fromBase === "." ? 0 : fromBase.split("/").length;
   };
-  const traversal = collectPaths(rootAlias, base, maxEntries, includeFiles, includeDirs, registry);
+  const traversal = await collectPaths(rootAlias, base, maxEntries, includeFiles, includeDirs, registry);
   const entries = traversal.entries.filter((entry) => depthFromBase(entry.relativePath) <= maxDepth);
   const truncated = traversal.stoppedAtCap || traversal.entries.length >= maxEntries;
   if (format === "flat" || format === "json") return { relativePath, format, entries, truncated, maxEntries, filesVisited: traversal.filesVisited, reasons: traversal.reasons };
@@ -119,21 +121,52 @@ function treeSection(rootAlias: string, options: { relativePath?: string; maxDep
   return { relativePath, format, output, truncated, maxEntries, filesVisited: traversal.filesVisited, reasons: traversal.reasons };
 }
 
-function filesSection(rootAlias: string, options: { relativePath?: string; maxEntries?: number }, registry: SkillRegistrySnapshot): Record<string, unknown> {
+async function filesSection(rootAlias: string, options: { relativePath?: string; maxEntries?: number }, registry: SkillRegistrySnapshot): Promise<Record<string, unknown>> {
   const relativePath = options.relativePath ?? ".";
   const maxEntries = options.maxEntries ?? 200;
   const root = resolveReadablePath(rootAlias, relativePath, registry);
-  assertCanReadProjectPath(rootAlias, root, relativePath, registry);
-  const traversal = collectPaths(rootAlias, root, maxEntries, true, false, registry);
+  const traversal = await collectPaths(rootAlias, root, maxEntries, true, false, registry);
   const files = traversal.entries.filter((entry) => entry.kind === "file");
   const truncated = traversal.stoppedAtCap || traversal.entries.length >= maxEntries;
   return { relativePath, files, truncated, maxEntries, filesVisited: traversal.filesVisited, reasons: traversal.reasons };
 }
 
-function filesSearch(projectAlias: string, query: string, relativePath: string, maxResults: number, caseSensitive: boolean, includeGitIgnored: boolean, policy: PortusPolicyConfig, expect?: "present" | "absent") {
+type SearchTraversalLookup = {
+  traversal: Readonly<TraversalResult>;
+  traversalReused: boolean;
+};
+
+type SearchTraversalProvider = (
+  relativePath: string,
+  includeGitIgnored: boolean
+) => Promise<SearchTraversalLookup>;
+
+
+function canonicalTraversalPath(value: string): string {
+  const normalized = path.normalize(value);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function searchTraversalKey(
+  projectRoot: string,
+  relativePath: string,
+  includeGitIgnored: boolean,
+  maxScanEntries: number,
+  readGitIgnoredFiles: boolean,
+  traversalPolicyKey: string
+): string {
+  return JSON.stringify([
+    canonicalTraversalPath(projectRoot),
+    canonicalTraversalPath(path.resolve(projectRoot, relativePath)),
+    includeGitIgnored,
+    maxScanEntries,
+    readGitIgnoredFiles,
+    traversalPolicyKey
+  ]);
+}
+async function filesSearch(query: string, relativePath: string, maxResults: number, caseSensitive: boolean, includeGitIgnored: boolean, traversalProvider: SearchTraversalProvider, expect?: "present" | "absent"): Promise<Record<string, unknown>> {
   const tokens = tokenizeFileSearchQuery(query, caseSensitive);
-  const scanLimit = policy.limits.search.maxScanEntries;
-  const traversal = collectSearchableFiles(projectAlias, relativePath, scanLimit, includeGitIgnored, policy);
+  const { traversal, traversalReused } = await traversalProvider(relativePath, includeGitIgnored);
   const ranked = traversal.entries
     .map((item) => ({ item, ...scoreFileSearchPath(item.relativePath, query, tokens, caseSensitive) }))
     .filter((item) => item.score > 0)
@@ -147,7 +180,7 @@ function filesSearch(projectAlias: string, query: string, relativePath: string, 
     : matches.length > 0
       ? false
       : scanComplete ? true : null;
-  return { matches, matchesTruncated, scan: { complete: scanComplete, reasons: traversal.reasons, filesVisited: traversal.filesVisited, directoriesVisited: traversal.directoriesVisited, gitProcessesSpawned: traversal.gitProcessesSpawned, elapsedMs: traversal.elapsedMs }, expectation: { kind: expectKind, met: expectationMet } };
+  return { matches, matchesTruncated, scan: { complete: scanComplete, reasons: traversal.reasons, filesVisited: traversal.filesVisited, directoriesVisited: traversal.directoriesVisited, gitProcessesSpawned: traversal.gitProcessesSpawned, traversalReused, elapsedMs: traversal.elapsedMs }, expectation: { kind: expectKind, met: expectationMet } };
 }
 
 const REGEX_WORKER_SOURCE = `
@@ -241,13 +274,14 @@ async function textSearch(
   symbols: boolean,
   includeGitIgnored: boolean,
   policy: PortusPolicyConfig,
+  traversalProvider: SearchTraversalProvider,
   expect?: "present" | "absent",
   budget?: SearchBatchBudget
 ) {
   const limits = policy.limits.search;
   const matches: Array<Record<string, unknown>> = [];
   const needle = caseSensitive ? query : query.toLowerCase();
-  const traversal = collectSearchableFiles(projectAlias, relativePath, limits.maxScanEntries, includeGitIgnored, policy);
+  const { traversal, traversalReused } = await traversalProvider(relativePath, includeGitIgnored);
   const scanReasons = [...traversal.reasons];
   let stoppedEarly = traversal.stoppedAtCap;
   let regexTimedOut = false;
@@ -333,7 +367,7 @@ async function textSearch(
   return {
     matches,
     matchesTruncated: matches.length >= maxResults,
-    scan: { complete: scanComplete, reasons: scanReasons, filesVisited: traversal.filesVisited, directoriesVisited: traversal.directoriesVisited, gitProcessesSpawned: traversal.gitProcessesSpawned, elapsedMs: traversal.elapsedMs },
+    scan: { complete: scanComplete, reasons: scanReasons, filesVisited: traversal.filesVisited, directoriesVisited: traversal.directoriesVisited, gitProcessesSpawned: traversal.gitProcessesSpawned, traversalReused, elapsedMs: traversal.elapsedMs },
     expectation: { kind: expectKind, met: expectationMet }
   };
 }
@@ -473,12 +507,18 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     if (hasDiscoveryRequest) assertMainAgentPermission("projectContext", policy);
     if (hasScopedRequest) assertMainAgentPermission("projectContext", policy);
     const sections: Record<string, unknown> = {};
-    const isolate = (name: string, action: () => unknown) => { try { sections[name] = { ok: true, value: action() }; } catch (error) { sections[name] = { ok: false, error: safeError(error) }; } };
-    if (requested.projects) isolate("projects", () => ({ projectAliases: listProjects().map((project) => project.projectAlias) }));
-    if (requested.skills) isolate("skills", () => ({
+    const isolate = async (name: string, action: () => unknown | Promise<unknown>) => {
+      try {
+        sections[name] = { ok: true, value: await action() };
+      } catch (error) {
+        sections[name] = { ok: false, error: safeError(error) };
+      }
+    };
+    if (requested.projects) await isolate("projects", () => ({ projectAliases: listProjects().map((project) => project.projectAlias) }));
+    if (requested.skills) await isolate("skills", () => ({
       skills: registry.connected.catalog.map(({ name, description, rootAlias, entrypoint }) => ({ name, description, rootAlias, entrypoint }))
     }));
-    if (requested.status) isolate("status", () => {
+    if (requested.status) await isolate("status", () => {
       const project = getProject(projectAlias!);
       return {
         project: {
@@ -488,7 +528,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
         }
       };
     });
-    if (requested.execution) isolate("execution", () => {
+    if (requested.execution) await isolate("execution", () => {
       const permissions = policyPermissions(policy).main_agent;
       return {
         enabled: permissions.projectRun,
@@ -497,10 +537,10 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
         requireConfirmation: permissions.requireConfirmation
       };
     });
-    if (requested.tree) isolate("tree", () => treeSection(projectAlias!, requested.tree ?? {}, registry));
-    if (requested.files) isolate("files", () => filesSection(projectAlias!, requested.files ?? {}, registry));
-    if (requested.paths) isolate("paths", () => requested.paths?.map((item) => { try { return { ok: true, ...pathMetadata(projectAlias!, item.relativePath, item.includeHash ?? false, registry) }; } catch (error) { return { ok: false, relativePath: safeRelativePath(item.relativePath), error: safeError(error, item.relativePath) }; } }) ?? []);
-    if (requested.scripts) isolate("scripts", () => ({ scripts: packageScripts(projectAlias!) }));
+    if (requested.tree) await isolate("tree", () => treeSection(projectAlias!, requested.tree ?? {}, registry));
+    if (requested.files) await isolate("files", () => filesSection(projectAlias!, requested.files ?? {}, registry));
+    if (requested.paths) await isolate("paths", () => requested.paths?.map((item) => { try { return { ok: true, ...pathMetadata(projectAlias!, item.relativePath, item.includeHash ?? false, registry) }; } catch (error) { return { ok: false, relativePath: safeRelativePath(item.relativePath), error: safeError(error, item.relativePath) }; } }) ?? []);
+    if (requested.scripts) await isolate("scripts", () => ({ scripts: packageScripts(projectAlias!) }));
     return { projectAlias: projectAlias ?? null, sections };
   });
 
@@ -523,6 +563,52 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     assertMainAgentPermission("projectSearch", policy);
 
     const searchLimits = policy.limits.search;
+    const traversalExcludedPatterns = Object.freeze([...loadConfig().traversal.excludedPatterns]);
+    const traversalPolicyKey = JSON.stringify(traversalExcludedPatterns);
+    const projectRoot = getProject(projectAlias).rootPath;
+    const readGitIgnoredFiles = policyPermissions(policy).main_agent.readGitIgnoredFiles;
+    const traversalCache = new Map<string, Promise<Readonly<TraversalResult>>>();
+    let traversalsStarted = 0;
+    let traversalsReused = 0;
+    let gitProcessesSpawned = 0;
+
+    const traversalProvider: SearchTraversalProvider = async (relativePath, includeGitIgnored) => {
+      const key = searchTraversalKey(
+        projectRoot,
+        relativePath,
+        includeGitIgnored,
+        searchLimits.maxScanEntries,
+        readGitIgnoredFiles,
+        traversalPolicyKey
+      );
+      const existing = traversalCache.get(key);
+      if (existing) {
+        traversalsReused += 1;
+        return { traversal: await existing, traversalReused: true };
+      }
+
+      traversalsStarted += 1;
+      const traversalPromise = collectSearchableFiles(
+        projectAlias,
+        relativePath,
+        searchLimits.maxScanEntries,
+        includeGitIgnored,
+        policy,
+        traversalExcludedPatterns
+      ).then(
+        (traversal) => {
+          gitProcessesSpawned += traversal.gitProcessesSpawned;
+          return traversal;
+        },
+        (error: unknown) => {
+          if (error instanceof TraversalError) gitProcessesSpawned += error.gitProcessesSpawned;
+          throw error;
+        }
+      );
+      traversalCache.set(key, traversalPromise);
+      return { traversal: await traversalPromise, traversalReused: false };
+    };
+
     const budget: SearchBatchBudget = {
       maxMatches: searchLimits.maxBatchMatches,
       maxChars: searchLimits.maxBatchOutputChars,
@@ -550,13 +636,13 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
       };
 
       if (req.mode === "files" || req.mode === "all") {
-        await runSection("files", () => filesSearch(projectAlias, req.query, req.relativePath, boundedMax, req.caseSensitive, req.includeGitIgnored, policy, req.expect));
+        await runSection("files", () => filesSearch(req.query, req.relativePath, boundedMax, req.caseSensitive, req.includeGitIgnored, traversalProvider, req.expect));
       }
       if (req.mode === "text" || req.mode === "all") {
-        await runSection("text", () => textSearch(projectAlias, req.query, req.relativePath, boundedMax, req.contextLines, req.caseSensitive, req.regex, false, req.includeGitIgnored, policy, req.expect, budget));
+        await runSection("text", () => textSearch(projectAlias, req.query, req.relativePath, boundedMax, req.contextLines, req.caseSensitive, req.regex, false, req.includeGitIgnored, policy, traversalProvider, req.expect, budget));
       }
       if (req.mode === "symbols" || req.mode === "all") {
-        await runSection("symbols", () => textSearch(projectAlias, req.query, req.relativePath, boundedMax, 0, req.caseSensitive, req.regex, true, req.includeGitIgnored, policy, req.expect, budget));
+        await runSection("symbols", () => textSearch(projectAlias, req.query, req.relativePath, boundedMax, 0, req.caseSensitive, req.regex, true, req.includeGitIgnored, policy, traversalProvider, req.expect, budget));
       }
 
       const sectionEntries = Object.entries(sections) as Array<[string, Record<string, unknown>]>;
@@ -577,9 +663,9 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
       });
     }
 
-    const successCount = results.filter((r) => r.ok).length;
-    const failedCount = results.filter((r) => !r.ok && r.outcome === "completed").length;
-    const errorCount = results.filter((r) => !r.ok && r.outcome === "failed").length;
+    const successCount = results.filter((result) => result.ok).length;
+    const failedCount = results.filter((result) => !result.ok && result.outcome === "completed").length;
+    const errorCount = results.filter((result) => !result.ok && result.outcome === "failed").length;
 
     return {
       projectAlias,
@@ -588,6 +674,9 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
       failedCount,
       errorCount,
       matchesTruncated,
+      gitProcessesSpawned,
+      traversalsStarted,
+      traversalsReused,
       results
     };
   });
