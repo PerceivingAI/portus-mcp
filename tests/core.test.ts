@@ -196,12 +196,14 @@ test("shell=true is rejected when selected policy disables shell execution", asy
   );
 });
 
-test("shell=true executes when selected policy enables shell execution", async () => {
+test("shell=true executes cross-platform shell operators when selected policy enables shell execution", async () => {
   const allowedPolicy = withMainAgentPermissions({ allowShell: true });
-  const result = await runProjectCommand(projectRoot, "node", ["-e", "console.log('shell_ok')"], 10, true, allowedPolicy);
+  const result = await runProjectCommand(projectRoot, "node", ["--version", "&&", "node", "--version"], 10, true, allowedPolicy);
   assert.equal(result.outcome, "exited");
   assert.equal(result.exitCode, 0);
-  assert.match(result.stdout, /shell_ok/);
+  const versionLines = result.stdout.trim().split(/\r?\n/);
+  assert.equal(versionLines.length, 2);
+  assert.equal(versionLines.every((line) => /^v\d+\./.test(line)), true);
 });
 
 test("assertMainAgentCommandAllowed normalizes executable suffixes against supplied policy", () => {

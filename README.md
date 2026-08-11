@@ -338,11 +338,7 @@ npm run check
 npm test
 npm run build
 npm run flue:check
-npm run smoke:health
-npm run smoke:flue-lifecycle
 ```
-
-`npm run smoke:flue-write` requires real credentials for the selected provider.
 
 The broad-surface acceptance suite must also prove exact seven-tool default discovery, profile isolation, absence of retired names, strict schemas, normal workflows, permission and confirmation boundaries, Git-ignore and root policy, server limits, audit behavior, and safe errors without absolute-path or secret leakage.
 

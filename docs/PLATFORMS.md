@@ -14,8 +14,6 @@ npm run check
 npm test
 npm run build
 npm run flue:check
-npm run smoke:health
-npm run smoke:flue-lifecycle
 ```
 
 Start the server with:
@@ -40,8 +38,6 @@ npm run check
 npm test
 npm run build
 npm run flue:check
-npm run smoke:health
-npm run smoke:flue-lifecycle
 ```
 
 Verified environment:

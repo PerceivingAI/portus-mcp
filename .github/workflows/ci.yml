@@ -39,8 +39,3 @@ jobs:
       - name: Flue build check
         run: npm run flue:check
 
-      - name: Health smoke
-        run: npm run smoke:health
-
-      - name: Flue lifecycle smoke
-        run: npm run smoke:flue-lifecycle

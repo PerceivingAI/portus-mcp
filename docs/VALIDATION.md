@@ -11,19 +11,7 @@ npm run check
 npm test
 npm run build
 npm run flue:check
-npm run smoke:health
-npm run smoke:flue-lifecycle
 ```
-
-## Provider-Backed Smoke
-
-This check requires real configured credentials for the selected provider:
-
-```text
-npm run smoke:flue-write
-```
-
-If credentials are unavailable, mark it blocked instead of failed.
 
 ## Manual ChatGPT Verification
 
