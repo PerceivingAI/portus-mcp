@@ -1,7 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { getEffectivePermissions } from "../state/PermissionRegistry.js";
-import { loadPolicyConfig } from "../policy/policyConfig.js";
+import { loadPolicyConfig, policyPermissions, type PortusPolicyConfig } from "../policy/policyConfig.js";
 import { limitText } from "./outputLimits.js";
 
 const execFileAsync = promisify(execFile);
@@ -144,11 +143,11 @@ export async function runProjectCommand(
   command: string,
   args: string[],
   timeoutSecsOrMs = 120000,
-  projectAlias?: string,
-  shell = false
+  shell = false,
+  policy: PortusPolicyConfig = loadPolicyConfig()
 ): Promise<ProjectCommandResult> {
-  const maxBuffer = Math.floor(loadPolicyConfig().limits.process.maxOutputBufferMb * 1024 * 1024);
-  const allowShell = projectAlias ? getEffectivePermissions(projectAlias).main_agent.allowShell : false;
+  const maxBuffer = Math.floor(policy.limits.process.maxOutputBufferMb * 1024 * 1024);
+  const allowShell = policyPermissions(policy).main_agent.allowShell;
 
   if (shell && !allowShell) {
     throw new Error("Permission denied: main_agent.allowShell is false");

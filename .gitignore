@@ -1,5 +1,7 @@
 node_modules/
 dist/
+coverage/
+.portus-security-test-*/
 portus-agents/
 portus-mcp/
 .portus-mcp/

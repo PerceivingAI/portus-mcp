@@ -26,15 +26,15 @@ The adapters divide work by intent:
 |---|---|
 | `project_context` | Alias-only discovery with `include.projects=true` and no `projectAlias`; with an alias, effective execution capabilities plus bounded status, tree, file-list, path metadata/existence, and package-script context. The default scoped response includes execution; project-scoped sections require `projectAlias`. |
 | `project_read` | Ordered, bounded content, range, metadata, and existence requests. |
-| `project_search` | File, text, symbol, or combined search. |
+| `project_search` | File, text, symbol, or combined search; ignored paths are excluded unless one request explicitly opts in and the selected policy authorizes that scope. |
 | `project_edit` | Ordered write, replace, insert, copy, move, delete, mkdir, and rmdir operations; batches are not atomic. |
 | `project_patch` | Patch preparation or application, including preconditions and dry runs. |
 | `project_run` | Approved checks, package scripts, or allowlisted device-installed commands. |
-| `project_policy` | Ordered permission, path-decision, and safe effective-configuration checks, or one native registration, permission-update, or audit action. |
+| `project_policy` | Ordered permission, path-decision, and safe read-only effective-configuration checks, or one native registration or audit action. |
 | `subagent_task` | Subagent lifecycle management using discriminated action union (`start`, `stop`, `cleanup`). |
 | `subagent_context` | Batch read subagent status, events, stdout/stderr logs, and collected results. |
 
-Broad schemas group related behavior without moving authority into the tool layer. `project_policy` requires exactly one of `checks` or `action`; `action` is a nested object selected by its inner `type` discriminator, as in `{ "action": { "type": "list_audit" } }`, not a flat string. Its native actions (`register_project`, `update_permissions`, `list_audit`, `read_audit`) require `projectPolicy`. `subagent_task` and `subagent_context` require `subagentTask`. Canonical paths, confirmation, safe projections, strict schemas, and redacted audit behavior remain authoritative; new administrative audit records use `tool=project_policy` and identify the action type in `operation`.
+Broad schemas group related behavior without moving authority into the tool layer. `project_policy` requires exactly one of `checks` or `action`; `action` is a nested object selected by its inner `type` discriminator, as in `{ "action": { "type": "list_audit" } }`, not a flat string. Its native actions (`register_project`, `list_audit`, `read_audit`) require `projectPolicy`; no MCP action accepts permission changes. The read-only `config` check safely reports operator-policy provenance, shipped-versus-configured selection, effective permissions, and redacted path/traversal patterns. `subagent_task` and `subagent_context` require `subagentTask`. Canonical paths, confirmation, safe projections, strict schemas, and redacted audit behavior remain authoritative; registration audit records use `tool=project_policy` and `operation=register_project`.
 
 ## Subagent & Policy Unification
 
@@ -45,8 +45,8 @@ Broad tools do not create caller-controlled bypasses. Safety remains layered:
 
 1. connector, tunnel, MCP server, and process availability;
 2. registered project roots and root confinement;
-3. blocked-path, traversal, and Git-ignore policy;
-4. least-existing permission gates for every absorbed action;
+3. blocked-path, traversal, and Git-ignore policy, with ignored paths excluded from search unless the request opts in and the selected policy authorizes it;
+4. immutable selected-policy permission gates for every absorbed action;
 5. allowlisted commands and explicit executable/argument boundaries—never shell command parsing;
 6. server-owned request, input, output, scan, line-range, patch, text-edit, timeout, and process limits;
 7. confirmation for destructive or protected actions;
@@ -54,9 +54,9 @@ Broad tools do not create caller-controlled bypasses. Safety remains layered:
 9. operating-system permissions; and
 10. strict schemas, deterministic ordering, and safe errors.
 
-Caller-supplied bounds may narrow a server maximum but cannot raise it. Broad schemas do not expose ignore-policy, path-policy, permission, binary-read, or equivalent escape hatches. Results, errors, and audit metadata use project-relative paths or generic safe messages; they do not expose absolute roots, secrets, environment details, command environments, or file contents.
+Caller-supplied bounds may narrow a server maximum but cannot raise it. Broad schemas expose no path-policy, permission, binary-read, or equivalent escape hatch. `includeGitIgnored` controls only one search request's ignored-path scope, requires operator authorization, and cannot bypass explicit traversal exclusions. Results, errors, and audit metadata use project-relative paths or generic safe messages; they do not expose absolute roots, selected policy paths, secrets, environment details, command environments, or file contents.
 
-Read, search, context, policy inspection, and patch preparation are unaudited. Mutations and execution retain durable audit behavior. Mixed-capability tools advertise conservative annotations based on their maximum capability.
+Read, search, context, policy inspection, and patch preparation are unaudited. Mutations, execution, and registration retain durable audit behavior. Mixed-capability tools advertise conservative annotations based on their maximum capability. Permissions come exclusively from the one complete policy selected by the operator and cannot be changed through MCP or runtime state.
 
 ## Cold-Start Discovery
 

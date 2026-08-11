@@ -11,7 +11,7 @@ import { limitText } from "../runtime/outputLimits.js";
 import { stateStore } from "../state/StateStore.js";
 import { assertMainAgentPermission } from "../policy/permissionPolicy.js";
 import { appendSessionEvent, readSessionEvents } from "../state/SessionEvents.js";
-import { loadPolicyConfig } from "../policy/policyConfig.js";
+import { loadPolicyConfig, type PortusPolicyConfig } from "../policy/policyConfig.js";
 import { asErrorMessage } from "../errors.js";
 import type { SkillRegistrySnapshot } from "../skills/SkillRegistry.js";
 
@@ -82,7 +82,7 @@ const subagentContextRequestSchema = z.discriminatedUnion("type", [
   capabilitiesRequestSchema
 ]);
 
-export function registerSubagentTools(server: McpServer, registry: SkillRegistrySnapshot): void {
+export function registerSubagentTools(server: McpServer, registry: SkillRegistrySnapshot, policy: PortusPolicyConfig = loadPolicyConfig()): void {
   registerTool(
     server,
     "subagent_task",
@@ -96,7 +96,7 @@ export function registerSubagentTools(server: McpServer, registry: SkillRegistry
       for (const [index, action] of actions.entries()) {
         try {
           if (action.type === "start") {
-            assertMainAgentPermission("subagentTask", action.projectAlias);
+            assertMainAgentPermission("subagentTask", policy);
             const config = loadConfig();
             const session = await runFlueTask({
               projectAlias: action.projectAlias,
@@ -113,8 +113,8 @@ export function registerSubagentTools(server: McpServer, registry: SkillRegistry
             });
           } else if (action.type === "stop") {
             if (action.sessionId) {
-              const session = getSession(action.sessionId);
-              assertMainAgentPermission("subagentTask", session.projectAlias);
+              getSession(action.sessionId);
+              assertMainAgentPermission("subagentTask", policy);
               const stopped = await stopFlueTask(action.sessionId);
               results.push({
                 ok: true,
@@ -125,9 +125,7 @@ export function registerSubagentTools(server: McpServer, registry: SkillRegistry
               });
             } else {
               const active = listSessions().filter((s) => s.status === "running" && (!action.projectAlias || s.projectAlias === action.projectAlias));
-              for (const session of active) {
-                assertMainAgentPermission("subagentTask", session.projectAlias);
-              }
+              if (active.length > 0) assertMainAgentPermission("subagentTask", policy);
               const stopped = await Promise.all(active.map((session) => stopFlueTask(session.sessionId)));
               stateStore.audit({ tool: "subagent_task", action: "stop", projectAlias: action.projectAlias ?? null, stopped: stopped.map((item) => item.sessionId) });
               results.push({
@@ -145,7 +143,7 @@ export function registerSubagentTools(server: McpServer, registry: SkillRegistry
               if (session.status === "running" || session.status === "queued") {
                 throw new Error("Cannot clean up a running or queued session.");
               }
-              assertMainAgentPermission("subagentTask", session.projectAlias);
+              assertMainAgentPermission("subagentTask", policy);
               const sessionDir = path.dirname(session.metadataPath);
               appendSessionEvent(session, "cleanup", "Session artifacts cleaned up.", {});
               rmSync(sessionDir, { recursive: true, force: true });
@@ -167,9 +165,7 @@ export function registerSubagentTools(server: McpServer, registry: SkillRegistry
                 (!action.projectAlias || session.projectAlias === action.projectAlias) &&
                 Date.parse(session.completedAt ?? session.startedAt) < cutoffMs
               );
-              for (const session of candidates) {
-                assertMainAgentPermission("subagentTask", session.projectAlias);
-              }
+              if (candidates.length > 0) assertMainAgentPermission("subagentTask", policy);
               if (!dryRun) {
                 for (const session of candidates) {
                   appendSessionEvent(session, "cleanup", "Session artifacts cleaned up.", { olderThanDays });

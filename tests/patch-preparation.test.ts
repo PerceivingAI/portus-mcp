@@ -49,11 +49,13 @@ writeFileSync(policyPath, JSON.stringify({
       projectContext: true,
       projectRead: true,
       projectSearch: true,
-      projectEdit: true,
+      projectEdit: false,
       readGitIgnoredFiles: false,
       projectPatch: true,
       projectRun: false,
       projectPolicy: true,
+      requireConfirmation: false,
+      allowShell: false,
       allowedCommands: ["git"]
     }
   },
@@ -63,12 +65,12 @@ writeFileSync(policyPath, JSON.stringify({
     fileWrite: { maxChars: 1000000 },
     patch: { maxChars: 1000000 },
     textEdit: { maxOperationChars: 200000, maxSearchOrMarkerChars: 20000 },
-    search: { maxScanEntries: 100000, maxTextFileChars: 200000 },
+    search: { maxScanEntries: 100000, maxTextFileChars: 200000, maxRegexExecutionMs: 120000, maxBatchMatches: 5000, maxBatchOutputChars: 500000 },
     skills: { maxReadChars: 200000 },
     subagentOutput: { maxStdoutChars: 200000, maxStderrChars: 200000 },
     sessionEvents: { maxEvents: 500, maxChunkChars: 4000 },
     audit: { maxEvents: 1000 },
-    process: { maxOutputBufferMb: 10 }
+    process: { maxOutputBufferMb: 10, maxBatchOutputChars: 1000000 }
   },
   audit: { strictMode: false }
 }, null, 2), "utf8");
@@ -100,7 +102,6 @@ process.env.SUBAGENTS_SKILL_PATHS = "";
 const { createHttpServer } = await import("../src/server.js");
 // State modules read environment variables during initialization, so fixture registration follows environment setup.
 const { upsertProject } = await import("../src/state/ProjectRegistry.js");
-const { updatePermissions } = await import("../src/state/PermissionRegistry.js");
 upsertProject({ projectAlias: "patch", rootPath: projectRoot });
 upsertProject({ projectAlias: "prepare-read-only", rootPath: projectRoot });
 
@@ -199,10 +200,6 @@ test("project_patch is discoverable and uses only its broad permission", async (
   }), z.object({ results: z.array(permissionSchema) }));
   assert.deepEqual(policy.results[0]?.requiredPermissions, ["projectPatch"]);
 
-  updatePermissions({
-    projectAlias: "prepare-read-only",
-    permissions: { main_agent: { projectEdit: false, } }
-  });
   const preparedWithoutWriteGrants = resultOf(await client.callTool({
     name: "project_patch",
     arguments: {
@@ -216,15 +213,6 @@ test("project_patch is discoverable and uses only its broad permission", async (
   assert.equal(preparedWithoutWriteGrants.expectedFiles.some((entry) => entry.sha256 !== undefined), false);
 
 
-  updatePermissions({
-    projectAlias: "prepare-read-only",
-    permissions: { main_agent: { projectPatch: false } }
-  });
-  const denied = await client.callTool({
-    name: "project_patch",
-    arguments: { projectAlias: "prepare-read-only", mode: "prepare", patch: combinedPatch }
-  });
-  assert.match(errorOf(denied), /main_agent\.projectPatch/);
 });
 
 test("prepare returns existing, new, deleted, and zero-byte metadata usable by apply", async (t) => {

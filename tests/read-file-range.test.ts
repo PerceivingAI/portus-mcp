@@ -54,6 +54,8 @@ const basePolicy = {
       projectPatch: true,
       projectRun: false,
       projectPolicy: true,
+      requireConfirmation: false,
+      allowShell: false,
       allowedCommands: ["git"]
     }
   },
@@ -63,12 +65,12 @@ const basePolicy = {
     fileWrite: { maxChars: 1000000 },
     patch: { maxChars: 1000000 },
     textEdit: { maxOperationChars: 200000, maxSearchOrMarkerChars: 20000 },
-    search: { maxScanEntries: 100000, maxTextFileChars: 200000 },
+    search: { maxScanEntries: 100000, maxTextFileChars: 200000, maxRegexExecutionMs: 120000, maxBatchMatches: 5000, maxBatchOutputChars: 500000 },
     skills: { maxReadChars: 200000 },
     subagentOutput: { maxStdoutChars: 200000, maxStderrChars: 200000 },
     sessionEvents: { maxEvents: 500, maxChunkChars: 4000 },
     audit: { maxEvents: 1000 },
-    process: { maxOutputBufferMb: 10 }
+    process: { maxOutputBufferMb: 10, maxBatchOutputChars: 1000000 }
   },
   audit: { strictMode: false }
 };
@@ -107,7 +109,6 @@ process.env.SUBAGENTS_SKILL_PATHS = "";
 
 // Configuration modules read environment variables during module initialization, so these imports must follow fixture setup.
 const { createHttpServer } = await import("../src/server.js");
-const { updatePermissions } = await import("../src/state/PermissionRegistry.js");
 const { upsertProject } = await import("../src/state/ProjectRegistry.js");
 const { stateStore } = await import("../src/state/StateStore.js");
 
@@ -350,7 +351,7 @@ test("project_read range operation exposes and enforces its complete MCP contrac
     writePolicy();
   });
 
-  await t.test("requires projectRead with an actionable permission explanation", async () => {
+  await t.test("reports the projectRead requirement without auditing reads", async () => {
     const policy = resultOf(await client.callTool({
       name: "project_policy",
       arguments: { checks: [{ type: "permissions", projectAlias: "range", operation: "project_read" }] }
@@ -361,15 +362,6 @@ test("project_read range operation exposes and enforces its complete MCP contrac
     assert.equal(audit.some((event) => event.tool === "project_read"), false);
     assert.equal(audit.some((event) => event.tool === "project_read_file_range"), false);
 
-    updatePermissions({ projectAlias: "range", permissions: { main_agent: { projectRead: false } } });
-    const denied = errorOf(await callRange(client, {
-      projectAlias: "range",
-      relativePath: "lines.txt",
-      startLine: 1,
-      endLine: 1
-    }));
-    assert.equal(denied, "Permission denied: main_agent.projectRead is false");
-    updatePermissions({ projectAlias: "range", permissions: { main_agent: { projectRead: true } } });
   });
 
   await t.test("rejects directories, binary files, and unsafe paths without absolute-path leakage", async () => {

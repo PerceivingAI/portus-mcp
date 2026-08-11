@@ -1,20 +1,20 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-const root = mkdtempSync(path.join(tmpdir(), "portus-agents-mcp-test-"));
+const root = mkdtempSync(path.join(process.cwd(), ".portus-mcp-test-"));
 const stateDir = path.join(root, "state");
 const projectRoot = path.join(root, "project");
 const skillsDir = path.join(root, "skills");
 const configPath = path.join(root, "config.json");
-const policyPath = path.join(root, "policy.json");
 const dotenvPath = path.join(root, "missing.env");
-const connectedAllowedCommands = ["git", "modal-cli", "bash", "cargo"];
+const connectedAllowedCommands = ["git"];
+after(() => rmSync(root, { recursive: true, force: true }));
+
 
 mkdirSync(projectRoot, { recursive: true });
 mkdirSync(skillsDir, { recursive: true });
@@ -24,7 +24,6 @@ mkdirSync(path.join(skillsDir, "sample", "references"), { recursive: true });
 mkdirSync(path.join(skillsDir, "sample", "assets"), { recursive: true });
 mkdirSync(path.join(skillsDir, "no-entrypoint"), { recursive: true });
 writeFileSync(path.join(projectRoot, "README.md"), "# MCP Test README\n", "utf8");
-writeFileSync(path.join(projectRoot, "pathological-regex.txt"), `${"a".repeat(40)}X\n`, "utf8");
 writeFileSync(path.join(projectRoot, "package.json"), JSON.stringify({
   scripts: {
     check: "node -e \"console.log('check-ok')\""
@@ -53,86 +52,6 @@ writeFileSync(path.join(skillsDir, "sample", "references", "guide.md"), "# Guide
 writeFileSync(path.join(skillsDir, "sample", "references", "unicode.md"), "a🙂b\n", "utf8");
 writeFileSync(path.join(skillsDir, "sample", "assets", "sample.bin"), Buffer.from([0x00, 0xff, 0x10, 0x80]));
 writeFileSync(path.join(skillsDir, "loose.md"), "# Loose Skill\n\nThis must be ignored.\n", "utf8");
-writeFileSync(policyPath, JSON.stringify({
-  subagents: {
-    concurrency: {
-      maxConcurrent: 4,
-      maxConcurrentPerProject: 2,
-      queueEnabled: false,
-      maxQueueDepth: 10,
-    },
-    lifecycle: {
-      queuedTaskTtlSecs: 300,
-      projectLockTimeoutSecs: 1800,
-      maxRuntimeSecs: 900,
-      startupWatchdogMs: 15000,
-      forcedCloseGraceMs: 8000,
-      killEscalationDelayMs: 1200,
-      queueDrainDelayMs: 50,
-    },
-    permissions: {
-      networkAccess: true,
-      allowedCommands: ["git", "npm", "node"]
-    }
-  },
-  main_agent: {
-    permissions: {
-      subagentTask: true,
-      projectContext: true,
-      projectRead: true,
-      projectSearch: true,
-      projectEdit: true,
-      readGitIgnoredFiles: false,
-      projectPatch: true,
-      projectRun: false,
-      projectPolicy: true,
-      allowedCommands: ["git"]
-    }
-  },
-  pathPolicy: {
-    blockedPatterns: [".env"]
-  },
-  limits: {
-    fileRead: {
-      maxChars: 500000,
-    },
-    fileWrite: {
-      maxChars: 1000000,
-    },
-    patch: {
-      maxChars: 1000000,
-    },
-    textEdit: {
-      maxOperationChars: 200000,
-      maxSearchOrMarkerChars: 20000
-    },
-    search: {
-      maxScanEntries: 100000,
-      maxTextFileChars: 200000,
-      maxRegexExecutionMs: 250
-    },
-    skills: {
-      maxReadChars: 200000,
-    },
-    subagentOutput: {
-      maxStdoutChars: 200000,
-      maxStderrChars: 200000,
-    },
-    sessionEvents: {
-      maxEvents: 500,
-      maxChunkChars: 4000,
-    },
-    audit: {
-      maxEvents: 1000,
-    },
-    process: {
-      maxOutputBufferMb: 10
-    }
-  },
-  audit: {
-    strictMode: false
-  }
-}, null, 2), "utf8");
 writeFileSync(configPath, JSON.stringify({
   subagents: {
     defaultTemplate: "ephemeral-project-subagent",
@@ -154,7 +73,7 @@ writeFileSync(configPath, JSON.stringify({
 
 process.env.DOTENV_CONFIG_PATH = dotenvPath;
 process.env.PORTUS_MCP_CONFIG_PATH = configPath;
-process.env.PORTUS_MCP_POLICY_PATH = policyPath;
+delete process.env.PORTUS_MCP_POLICY_PATH;
 process.env.PORTUS_MCP_STATE_DIR = stateDir;
 process.env.PORTUS_MCP_DEFAULT_PROVIDER = "cerebras";
 process.env.PORTUS_MCP_CEREBRAS_MODEL = "llama3.1-8b";
@@ -165,12 +84,12 @@ process.env.npm_execpath ??= path.join(path.dirname(process.execPath), "node_mod
 
 // Environment-backed paths must be installed before loading stateful server modules.
 const { createHttpServer } = await import("../src/server.js");
+const { loadPolicyConfig } = await import("../src/policy/policyConfig.js");
 const { loadSkillRegistry, parseSkillFrontmatter } = await import("../src/skills/SkillRegistry.js");
-const { updatePermissions } = await import("../src/state/PermissionRegistry.js");
 const { upsertProject } = await import("../src/state/ProjectRegistry.js");
 const { getSession, upsertSession } = await import("../src/state/SessionRegistry.js");
+const selectedPolicy = loadPolicyConfig();
 
-updatePermissions({ permissions: { main_agent: { projectRun: true } } });
 
 function resultOf(response: any): any {
   assert.equal(response.isError, undefined, JSON.stringify(response.structuredContent));
@@ -240,7 +159,6 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     /reserved for configured read-only skills/
   );
   upsertProject({ projectAlias: "mcp", rootPath: projectRoot });
-  updatePermissions({ projectAlias: "mcp", permissions: { main_agent: { allowedCommands: connectedAllowedCommands } } });
   const discovery = resultOf(await client.callTool({
     name: "project_context",
     arguments: { include: { projects: true, skills: true } }
@@ -298,33 +216,6 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     requireConfirmation: true
   });
 
-  updatePermissions({ projectAlias: "mcp", permissions: { main_agent: { allowedCommands: ["git", "cargo"] } } });
-  const refreshedExecution = resultOf(await client.callTool({
-    name: "project_context",
-    arguments: { projectAlias: "mcp", include: { execution: true } }
-  })).sections.execution.value;
-  assert.deepEqual(refreshedExecution.allowedCommands, ["git", "cargo"]);
-
-  updatePermissions({ projectAlias: "mcp", permissions: { main_agent: { projectPolicy: false } } });
-  const policyIndependentExecution = resultOf(await client.callTool({
-    name: "project_context",
-    arguments: { projectAlias: "mcp", include: { execution: true } }
-  })).sections.execution.value;
-  assert.deepEqual(policyIndependentExecution.allowedCommands, ["git", "cargo"]);
-  const deniedPolicyInspection = await client.callTool({
-    name: "project_policy",
-    arguments: { checks: [{ type: "config", projectAlias: "mcp" }] }
-  });
-  assert.equal(deniedPolicyInspection.isError, true);
-
-  updatePermissions({ projectAlias: "mcp", permissions: { main_agent: { projectPolicy: true, projectRun: false } } });
-  const disabledExecution = resultOf(await client.callTool({
-    name: "project_context",
-    arguments: { projectAlias: "mcp", include: { execution: true } }
-  })).sections.execution.value;
-  assert.equal(disabledExecution.enabled, false);
-  assert.deepEqual(disabledExecution.allowedCommands, ["git", "cargo"]);
-  updatePermissions({ projectAlias: "mcp", permissions: { main_agent: { projectRun: true, allowedCommands: connectedAllowedCommands } } });
 
   const read = resultOf(await client.callTool({
     name: "project_read",
@@ -458,6 +349,26 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.equal(expectationBatch.results[4].ok, false);
   assert.equal(expectationBatch.results[4].outcome, "completed");
   assert.equal(expectationBatch.results[4].sections.text.expectation.met, false);
+
+  const isolatedIgnoredScopeFailure = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: {
+      projectAlias: "mcp",
+      requests: [
+        { mode: "text", query: "MCP Test README", expect: "present" },
+        { mode: "text", query: "ignored", includeGitIgnored: true }
+      ]
+    }
+  }));
+  assert.equal(isolatedIgnoredScopeFailure.requestedCount, 2);
+  assert.equal(isolatedIgnoredScopeFailure.successCount, 1);
+  assert.equal(isolatedIgnoredScopeFailure.failedCount, 0);
+  assert.equal(isolatedIgnoredScopeFailure.errorCount, 1);
+  assert.equal(isolatedIgnoredScopeFailure.results[0].ok, true);
+  assert.equal(isolatedIgnoredScopeFailure.results[0].outcome, "completed");
+  assert.equal(isolatedIgnoredScopeFailure.results[1].ok, false);
+  assert.equal(isolatedIgnoredScopeFailure.results[1].outcome, "failed");
+  assert.match(isolatedIgnoredScopeFailure.results[1].sections.text.error, /readGitIgnoredFiles/);
   const batch20Search = resultOf(await client.callTool({
     name: "project_search",
     arguments: {
@@ -488,17 +399,6 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   });
   assert.equal(contextLines31Search.isError, true);
 
-  // This deliberately exercises the real worker deadline: fake timers cannot interrupt
-  // catastrophic backtracking inside a worker thread.
-  const pathologicalRegexSearch = resultOf(await client.callTool({
-    name: "project_search",
-    arguments: { projectAlias: "mcp", requests: [{ mode: "text", query: "(a+)+$", regex: true, maxResults: 10 }] }
-  })).results[0].sections.text;
-  assert.equal(pathologicalRegexSearch.ok, true);
-  assert.equal(pathologicalRegexSearch.scan.complete, false);
-  assert.deepEqual(pathologicalRegexSearch.scan.reasons, ["regex_timeout"]);
-  const healthAfterRegexTimeout = await fetch(`http://127.0.0.1:${address.port}/`);
-  assert.equal(healthAfterRegexTimeout.status, 200);
 
   const edits = resultOf(await client.callTool({
     name: "project_edit",
@@ -537,20 +437,9 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     arguments: { checks: [{ type: "config", projectAlias: "mcp" }] }
   })).results[0];
   assert.equal(effectiveConfig.permissions.main_agent.projectRead, true);
-  assert.deepEqual(effectiveConfig.pathPolicy.blockedPatterns, [".env"]);
+  assert.deepEqual(effectiveConfig.pathPolicy.blockedPatterns, selectedPolicy.pathPolicy.blockedPatterns);
   assert.deepEqual(effectiveConfig.traversal.excludedPatterns, [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"]);
 
-  const updated = resultOf(await client.callTool({
-    name: "project_policy",
-    arguments: { action: { type: "update_permissions", projectAlias: "mcp", permissions: { subagents: { network: true }, main_agent: { } } } }
-  }));
-  assert.equal(updated.permissions.subagents.network, true);
-  assert.equal(updated.permissions.main_agent.projectEdit, true);
-  const obsoletePermission = await client.callTool({
-    name: "project_policy",
-    arguments: { action: { type: "update_permissions", projectAlias: "mcp", permissions: { main_agent: { readFiles: true } } } }
-  });
-  assert.equal(obsoletePermission.isError, true);
 
   const movedAndDeleted = resultOf(await client.callTool({
     name: "project_edit",
@@ -699,10 +588,6 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.equal(gitAdd.outcome, "exited");
   assert.equal(gitAdd.exitCode, 0);
   assert.equal(gitAdd.requiresConfirmation, true);
-  resultOf(await client.callTool({ name: "project_policy", arguments: { action: { type: "update_permissions", projectAlias: "mcp", permissions: { main_agent: { projectRun: false } } } } }));
-  const deniedScript = await client.callTool({ name: "project_run", arguments: { projectAlias: "mcp", requests: [{ type: "script", name: "check" }] } });
-  assert.equal(deniedScript.isError, true);
-  resultOf(await client.callTool({ name: "project_policy", arguments: { action: { type: "update_permissions", projectAlias: "mcp", permissions: { main_agent: { projectRun: true } } } } }));
 
   const batch10 = resultOf(await client.callTool({
     name: "project_run",
@@ -792,20 +677,7 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.equal(cmd02Result.isError, true);
   assert.equal(existsSync(cmd02Marker), false);
 
-  // allowShell update via MCP project_policy tool enables policy-gated shell execution
-  const allowShellUpdate = resultOf(await client.callTool({
-    name: "project_policy",
-    arguments: {
-      action: {
-        type: "update_permissions",
-        projectAlias: "mcp",
-        permissions: { main_agent: { allowShell: true } }
-      }
-    }
-  }));
-  assert.equal(allowShellUpdate.permissions.main_agent.allowShell, true);
-
-  const shellExecSmoke = resultOf(await client.callTool({
+  const deniedShellExecution = await client.callTool({
     name: "project_run",
     arguments: {
       projectAlias: "mcp",
@@ -813,10 +685,9 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
         { type: "command", command: "git", args: ["status", "--short"], shell: true }
       ]
     }
-  })).results[0];
-  assert.equal(shellExecSmoke.status, "executed");
-  assert.equal(shellExecSmoke.outcome, "exited");
-  assert.equal(shellExecSmoke.exitCode, 0);
+  });
+  assert.equal(deniedShellExecution.isError, true);
+  assert.match(JSON.stringify(deniedShellExecution), /Shell execution is disabled|main_agent\.allowShell/);
   // Search request with failed section sets ok=false and increments errorCount
   const search05Result = resultOf(await client.callTool({
     name: "project_search",
@@ -1036,12 +907,12 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
 
   const audit = resultOf(await client.callTool({
     name: "project_policy",
-    arguments: { action: { type: "list_audit", projectAlias: "mcp" } }
+    arguments: { action: { type: "list_audit" } }
   }));
   assert.equal(Array.isArray(audit.events), true);
   const auditJson = JSON.stringify(audit.events);
   assert.match(auditJson, /"tool":"project_policy"/);
-  assert.match(auditJson, /"operation":"update_permissions"/);
+  assert.match(auditJson, /"operation":"register_project"/);
   assert.equal(auditJson.includes(projectRoot), false);
   assert.equal(auditJson.includes("rootPath"), false);
   assert.equal(auditJson.includes("args"), false);

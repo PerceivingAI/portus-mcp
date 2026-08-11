@@ -46,8 +46,8 @@ const policySchema = z.object({
       projectRun: z.boolean(),
       projectPolicy: z.boolean(),
       readGitIgnoredFiles: z.boolean(),
-      requireConfirmation: z.boolean().default(true),
-      allowShell: z.boolean().default(false),
+      requireConfirmation: z.boolean(),
+      allowShell: z.boolean(),
       allowedCommands: z.array(safeCommandNameSchema)
     }).strict()
   }).strict(),
@@ -71,9 +71,9 @@ const policySchema = z.object({
     search: z.object({
       maxScanEntries: z.number().int().positive(),
       maxTextFileChars: z.number().int().positive(),
-      maxRegexExecutionMs: z.number().int().positive().default(120000),
-      maxBatchMatches: z.number().int().positive().default(5000),
-      maxBatchOutputChars: z.number().int().positive().default(500000)
+      maxRegexExecutionMs: z.number().int().positive(),
+      maxBatchMatches: z.number().int().positive(),
+      maxBatchOutputChars: z.number().int().positive()
     }).strict(),
     skills: z.object({
       maxReadChars: z.number().int().positive()
@@ -91,7 +91,7 @@ const policySchema = z.object({
     }).strict(),
     process: z.object({
       maxOutputBufferMb: z.number().positive(),
-      maxBatchOutputChars: z.number().int().positive().default(1000000)
+      maxBatchOutputChars: z.number().int().positive()
     }).strict()
   }).strict(),
   audit: z.object({
@@ -100,6 +100,23 @@ const policySchema = z.object({
 }).strict();
 
 export type PortusPolicyConfig = z.infer<typeof policySchema>;
+export function policySelection(): "configured" | "shipped" {
+  return optionalEnv("PORTUS_MCP_POLICY_PATH") === "" ? "shipped" : "configured";
+}
+
+export function parsePolicyConfig(raw: unknown): PortusPolicyConfig {
+  const parsed = policySchema.safeParse(raw);
+  if (!parsed.success) {
+    const details = parsed.error.issues.map((issue) => {
+      const location = issue.path.length > 0 ? issue.path.join(".") : "(root)";
+      return `${location}: ${issue.message}`;
+    }).join("; ");
+    throw new Error(details);
+  }
+  return parsed.data;
+}
+
+
 
 export function loadPolicyConfig(): PortusPolicyConfig {
   const policyPath = path.resolve(optionalEnv("PORTUS_MCP_POLICY_PATH", "./portus-mcp.policy.json"));
@@ -112,15 +129,11 @@ export function loadPolicyConfig(): PortusPolicyConfig {
   } catch (error) {
     throw new Error(`Invalid policy JSON in ${policyPath}: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const parsed = policySchema.safeParse(raw);
-  if (!parsed.success) {
-    const details = parsed.error.issues.map((issue) => {
-      const location = issue.path.length > 0 ? issue.path.join(".") : "(root)";
-      return `${location}: ${issue.message}`;
-    }).join("; ");
-    throw new Error(`Invalid policy file ${policyPath}: ${details}`);
+  try {
+    return parsePolicyConfig(raw);
+  } catch (error) {
+    throw new Error(`Invalid policy file ${policyPath}: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return parsed.data;
 }
 
 export function policyPermissions(policy = loadPolicyConfig()): PermissionConfig {

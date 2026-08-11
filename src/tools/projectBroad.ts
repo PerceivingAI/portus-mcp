@@ -8,11 +8,10 @@ import { Worker } from "node:worker_threads";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getProject, listProjects } from "../state/ProjectRegistry.js";
-import { getEffectivePermissions } from "../state/PermissionRegistry.js";
 import { stateStore } from "../state/StateStore.js";
 import { resolveProjectPath, resolveReadablePath } from "../policy/pathPolicy.js";
 import { assertMainAgentCommandAllowed, assertMainAgentPermission } from "../policy/permissionPolicy.js";
-import { loadPolicyConfig } from "../policy/policyConfig.js";
+import { loadPolicyConfig, policyPermissions, type PortusPolicyConfig } from "../policy/policyConfig.js";
 import { countChars, limitText } from "../runtime/outputLimits.js";
 import { runProjectCheck, runProjectScript } from "../runtime/checks.js";
 import { runProjectCommand } from "../runtime/commands.js";
@@ -131,10 +130,10 @@ function filesSection(rootAlias: string, options: { relativePath?: string; maxEn
   return { relativePath, files, truncated, maxEntries, filesVisited: traversal.filesVisited, reasons: traversal.reasons };
 }
 
-function filesSearch(projectAlias: string, query: string, relativePath: string, maxResults: number, caseSensitive: boolean, expect?: "present" | "absent") {
+function filesSearch(projectAlias: string, query: string, relativePath: string, maxResults: number, caseSensitive: boolean, includeGitIgnored: boolean, policy: PortusPolicyConfig, expect?: "present" | "absent") {
   const tokens = tokenizeFileSearchQuery(query, caseSensitive);
-  const scanLimit = loadPolicyConfig().limits.search.maxScanEntries;
-  const traversal = collectSearchableFiles(projectAlias, relativePath, scanLimit);
+  const scanLimit = policy.limits.search.maxScanEntries;
+  const traversal = collectSearchableFiles(projectAlias, relativePath, scanLimit, includeGitIgnored, policy);
   const ranked = traversal.entries
     .map((item) => ({ item, ...scoreFileSearchPath(item.relativePath, query, tokens, caseSensitive) }))
     .filter((item) => item.score > 0)
@@ -240,13 +239,15 @@ async function textSearch(
   caseSensitive: boolean,
   regex: boolean,
   symbols: boolean,
+  includeGitIgnored: boolean,
+  policy: PortusPolicyConfig,
   expect?: "present" | "absent",
   budget?: SearchBatchBudget
 ) {
-  const limits = loadPolicyConfig().limits.search;
+  const limits = policy.limits.search;
   const matches: Array<Record<string, unknown>> = [];
   const needle = caseSensitive ? query : query.toLowerCase();
-  const traversal = collectSearchableFiles(projectAlias, relativePath, limits.maxScanEntries);
+  const traversal = collectSearchableFiles(projectAlias, relativePath, limits.maxScanEntries, includeGitIgnored, policy);
   const scanReasons = [...traversal.reasons];
   let stoppedEarly = traversal.stoppedAtCap;
   let regexTimedOut = false;
@@ -351,9 +352,9 @@ const editOperationSchema = z.discriminatedUnion("type", [
 
 type EditOperation = z.infer<typeof editOperationSchema>;
 
-function performEdit(projectAlias: string, operation: EditOperation, dryRun: boolean): Record<string, unknown> {
+function performEdit(projectAlias: string, operation: EditOperation, dryRun: boolean, policy: PortusPolicyConfig): Record<string, unknown> {
   if (operation.type === "write") {
-    assertInputChars("limits.fileWrite.maxChars", operation.content, loadPolicyConfig().limits.fileWrite.maxChars);
+    assertInputChars("limits.fileWrite.maxChars", operation.content, policy.limits.fileWrite.maxChars);
     const target = resolveProjectPath(projectAlias, operation.relativePath);
     if (existsSync(target)) {
       assertCanReadProjectPath(projectAlias, target, operation.relativePath);
@@ -364,7 +365,7 @@ function performEdit(projectAlias: string, operation: EditOperation, dryRun: boo
     return { relativePath: operation.relativePath, bytes: Buffer.byteLength(operation.content), dryRun };
   }
   if (operation.type === "replace" || operation.type === "insert") {
-    const limits = loadPolicyConfig().limits.textEdit;
+    const limits = policy.limits.textEdit;
     const marker = operation.type === "replace" ? operation.search : operation.marker;
     const content = operation.type === "replace" ? operation.replace : operation.content;
     assertInputChars("limits.textEdit.maxSearchOrMarkerChars", marker, limits.maxSearchOrMarkerChars);
@@ -403,7 +404,7 @@ function performEdit(projectAlias: string, operation: EditOperation, dryRun: boo
     stateStore.audit({ tool: "project_edit", operation: "move", projectAlias, sourceRelativePath: operation.sourceRelativePath, destinationRelativePath: operation.destinationRelativePath, overwrite: operation.overwrite, dryRun });
     return { sourceRelativePath: operation.sourceRelativePath, destinationRelativePath: operation.destinationRelativePath, overwrote: existed, dryRun };
   }
-  const requireConfirm = getEffectivePermissions(projectAlias).main_agent.requireConfirmation;
+  const requireConfirm = policyPermissions(policy).main_agent.requireConfirmation;
   if (operation.type === "delete") {
     if (requireConfirm && !operation.confirm) throw new Error("Confirmation required: set confirm=true");
     const target = resolveProjectPath(projectAlias, operation.relativePath); assertCanReadProjectPath(projectAlias, target, operation.relativePath); const info = statSync(target);
@@ -424,12 +425,12 @@ function performEdit(projectAlias: string, operation: EditOperation, dryRun: boo
   return { relativePath: operation.relativePath, deleted: !dryRun, dryRun };
 }
 
-export function registerProjectReadTool(server: McpServer, registry: SkillRegistrySnapshot): void {
+export function registerProjectReadTool(server: McpServer, registry: SkillRegistrySnapshot, policy: PortusPolicyConfig = loadPolicyConfig()): void {
   registerStrictProjectTool(server, "project_read", "Read content or metadata from registered project paths and configured read-only skill paths. Use a project alias or a skill rootAlias returned by project_context; skill entrypoints and supporting files use their catalog-provided relative paths. Supports 1–50 batched content, binary, metadata, or existence requests with ordered per-item results.", {
     projectAlias: z.string().min(1),
     requests: z.array(z.object({ relativePath: z.string().min(1), mode: z.enum(["content", "binary", "metadata", "exists"]).default("content"), startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional() }).strict().superRefine((request, context) => { if (request.mode !== "content" && (request.startLine !== undefined || request.endLine !== undefined)) context.addIssue({ code: z.ZodIssueCode.custom, message: "Line ranges are only valid for content mode" }); })).min(1).max(50)
   }, readAnnotations, async ({ projectAlias, requests }) => {
-    assertMainAgentPermission("projectRead", registry.connected.byAlias.has(projectAlias) ? undefined : projectAlias);
+    assertMainAgentPermission("projectRead", policy);
     const results: Array<Record<string, unknown>> = [];
     for (const [index, request] of requests.entries()) {
       try {
@@ -453,8 +454,8 @@ export function registerProjectReadTool(server: McpServer, registry: SkillRegist
   });
 }
 
-export function registerBroadProjectTools(server: McpServer, registry: SkillRegistrySnapshot): void {
-  registerProjectReadTool(server, registry);
+export function registerBroadProjectTools(server: McpServer, registry: SkillRegistrySnapshot, policy: PortusPolicyConfig = loadPolicyConfig()): void {
+  registerProjectReadTool(server, registry, policy);
 
   const treeSchema = z.object({ relativePath: z.string().min(1).optional(), maxDepth: z.number().int().positive().max(20).optional(), includeFiles: z.boolean().optional(), includeDirs: z.boolean().optional(), maxEntries: z.number().int().positive().max(20000).optional(), format: z.enum(["tree", "json", "flat"]).optional() }).strict();
   registerStrictProjectTool(server, "project_context", "Discover registered projects and available read-only skills, or inspect effective execution capabilities, bounded trees, file listings, and path metadata using either a registered project alias or a catalog-provided skill rootAlias. Project status, execution capabilities, and package scripts are available only for registered projects.", {
@@ -469,8 +470,8 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     if (isSkillRoot && (requested.status === true || requested.execution === true || requested.scripts === true)) {
       throw new Error("Skill rootAlias supports only tree, files, and paths context sections.");
     }
-    if (hasDiscoveryRequest) assertMainAgentPermission("projectContext");
-    if (hasScopedRequest) assertMainAgentPermission("projectContext", isSkillRoot ? undefined : projectAlias);
+    if (hasDiscoveryRequest) assertMainAgentPermission("projectContext", policy);
+    if (hasScopedRequest) assertMainAgentPermission("projectContext", policy);
     const sections: Record<string, unknown> = {};
     const isolate = (name: string, action: () => unknown) => { try { sections[name] = { ok: true, value: action() }; } catch (error) { sections[name] = { ok: false, error: safeError(error) }; } };
     if (requested.projects) isolate("projects", () => ({ projectAliases: listProjects().map((project) => project.projectAlias) }));
@@ -488,7 +489,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
       };
     });
     if (requested.execution) isolate("execution", () => {
-      const permissions = getEffectivePermissions(projectAlias!).main_agent;
+      const permissions = policyPermissions(policy).main_agent;
       return {
         enabled: permissions.projectRun,
         allowedCommands: permissions.allowedCommands,
@@ -507,6 +508,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     mode: z.enum(["files", "text", "symbols", "all"]),
     query: z.string().min(1),
     relativePath: z.string().min(1).default(".").describe("Project-relative regular file or directory to search"),
+    includeGitIgnored: z.boolean().default(false),
     regex: z.boolean().default(false),
     caseSensitive: z.boolean().default(false),
     contextLines: z.number().int().min(0).max(30).default(0),
@@ -518,12 +520,12 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     projectAlias: z.string().min(1),
     requests: z.array(searchRequestSchema).min(1).max(20)
   }, readAnnotations, async ({ projectAlias, requests }) => {
-    assertMainAgentPermission("projectSearch", projectAlias);
+    assertMainAgentPermission("projectSearch", policy);
 
-    const policy = loadPolicyConfig().limits.search;
+    const searchLimits = policy.limits.search;
     const budget: SearchBatchBudget = {
-      maxMatches: policy.maxBatchMatches,
-      maxChars: policy.maxBatchOutputChars,
+      maxMatches: searchLimits.maxBatchMatches,
+      maxChars: searchLimits.maxBatchOutputChars,
       currentMatches: 0,
       currentChars: 0
     };
@@ -532,7 +534,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     let matchesTruncated = false;
 
     for (const [index, req] of requests.entries()) {
-      const boundedMax = Math.min(req.maxResults, policy.maxScanEntries);
+      const boundedMax = Math.min(req.maxResults, searchLimits.maxScanEntries);
       const sections: Record<string, unknown> = {};
 
       const runSection = async (name: "files" | "text" | "symbols", action: () => Record<string, unknown> | Promise<Record<string, unknown>>) => {
@@ -548,13 +550,13 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
       };
 
       if (req.mode === "files" || req.mode === "all") {
-        await runSection("files", () => filesSearch(projectAlias, req.query, req.relativePath, boundedMax, req.caseSensitive, req.expect));
+        await runSection("files", () => filesSearch(projectAlias, req.query, req.relativePath, boundedMax, req.caseSensitive, req.includeGitIgnored, policy, req.expect));
       }
       if (req.mode === "text" || req.mode === "all") {
-        await runSection("text", () => textSearch(projectAlias, req.query, req.relativePath, boundedMax, req.contextLines, req.caseSensitive, req.regex, false, req.expect, budget));
+        await runSection("text", () => textSearch(projectAlias, req.query, req.relativePath, boundedMax, req.contextLines, req.caseSensitive, req.regex, false, req.includeGitIgnored, policy, req.expect, budget));
       }
       if (req.mode === "symbols" || req.mode === "all") {
-        await runSection("symbols", () => textSearch(projectAlias, req.query, req.relativePath, boundedMax, 0, req.caseSensitive, req.regex, true, req.expect, budget));
+        await runSection("symbols", () => textSearch(projectAlias, req.query, req.relativePath, boundedMax, 0, req.caseSensitive, req.regex, true, req.includeGitIgnored, policy, req.expect, budget));
       }
 
       const sectionEntries = Object.entries(sections) as Array<[string, Record<string, unknown>]>;
@@ -593,8 +595,8 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
   registerStrictProjectTool(server, "project_patch", "Prepare patch metadata or safely apply a unified diff inside a registered project.", {
     projectAlias: z.string().min(1), mode: z.enum(["prepare", "apply"]), patch: z.string().min(1), includeHash: z.boolean().optional(), expectedFiles: z.array(expectedFileSchema).optional(), dryRun: z.boolean().optional(), confirm: z.boolean().optional()
   }, mutateAnnotations, async ({ projectAlias, mode, patch, includeHash, expectedFiles, dryRun, confirm }) => {
-    assertMainAgentPermission("projectPatch", projectAlias);
-    assertInputChars("limits.patch.maxChars", patch, loadPolicyConfig().limits.patch.maxChars);
+    assertMainAgentPermission("projectPatch", policy);
+    assertInputChars("limits.patch.maxChars", patch, policy.limits.patch.maxChars);
     const parsed = parsePatchPaths(patch);
     getProject(projectAlias);
     if (mode === "prepare") {
@@ -611,7 +613,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
         if (!byPath.has(file)) throw new Error(`stale_file:${file}:missing_expected_metadata`);
       }
     }
-    if (parsed.deleted.size > 0 && getEffectivePermissions(projectAlias).main_agent.requireConfirmation) {
+    if (parsed.deleted.size > 0 && policyPermissions(policy).main_agent.requireConfirmation) {
       if (!confirm) throw new Error("Confirmation required: set confirm=true for file deletions");
     }
     for (const expected of metadata) {
@@ -689,9 +691,9 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     stopOnFailure: z.boolean().default(false),
     requests: z.array(runRequestSchema).min(1).max(10)
   }, mutateAnnotations, async ({ projectAlias, batchTimeoutSecs, stopOnFailure, requests }) => {
-    assertMainAgentPermission("projectRun", projectAlias);
+    assertMainAgentPermission("projectRun", policy);
 
-    const permissions = getEffectivePermissions(projectAlias).main_agent;
+    const permissions = policyPermissions(policy).main_agent;
     const projectRoot = resolveProjectPath(projectAlias, ".");
 
     for (const req of requests) {
@@ -700,7 +702,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
       } else if (req.type === "script") {
         assertCanReadProjectPath(projectAlias, resolveProjectPath(projectAlias, "package.json"), "package.json");
       } else if (req.type === "command") {
-        assertMainAgentCommandAllowed(req.command, projectAlias);
+        assertMainAgentCommandAllowed(req.command, policy);
         assertProjectCommandStaysInProject(req.command, req.args ?? []);
         const reqShell = req.shell ?? false;
         if (reqShell && !permissions.allowShell) {
@@ -718,7 +720,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
 
     stateStore.requireAuditWritable();
 
-    const maxBatchOutputChars = loadPolicyConfig().limits.process.maxBatchOutputChars;
+    const maxBatchOutputChars = policy.limits.process.maxBatchOutputChars;
     const effectiveBatchTimeoutMs = Math.min(batchTimeoutSecs ?? 120, 3600) * 1000;
     const deadlineAt = Date.now() + effectiveBatchTimeoutMs;
     let accumulatedOutputChars = 0;
@@ -773,7 +775,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
           if (requiresConfirmation && !req.confirm) {
             throw new Error("Confirmation required: set confirm=true");
           }
-          const cmdRes = await runProjectCommand(projectRoot, req.command, req.args ?? [], itemTimeoutMs, projectAlias, req.shell ?? false);
+          const cmdRes = await runProjectCommand(projectRoot, req.command, req.args ?? [], itemTimeoutMs, req.shell ?? false, policy);
           stateStore.audit({ tool: "project_run", type: "command", projectAlias, command: req.command, args: req.args ?? [], exitCode: cmdRes.exitCode, confirm: req.confirm ?? false, batchIndex: index });
           const ok = cmdRes.outcome === "exited" && cmdRes.exitCode !== null && allowedExitCodes.includes(cmdRes.exitCode);
           itemResult = { ok, index, type: "command", requiresConfirmation, status: "executed", ...cmdRes };
@@ -852,9 +854,9 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
   registerStrictProjectTool(server, "project_edit", "Apply an ordered, non-atomic batch of policy-checked project file and directory edits.", {
     projectAlias: z.string().min(1), operations: z.array(editOperationSchema).min(1).max(50), dryRun: z.boolean().default(false)
   }, mutateAnnotations, async ({ projectAlias, operations, dryRun }) => {
-    assertMainAgentPermission("projectEdit", projectAlias);
+    assertMainAgentPermission("projectEdit", policy);
     const results: Array<Record<string, unknown>> = [];
-    for (const [index, operation] of operations.entries()) { try { results.push({ ok: true, index, type: operation.type, ...performEdit(projectAlias, operation, dryRun) }); } catch (error) { const relativePath = "relativePath" in operation ? operation.relativePath : "sourceRelativePath" in operation ? operation.sourceRelativePath : undefined; results.push({ ok: false, index, type: operation.type, relativePath: relativePath ? safeRelativePath(relativePath) : undefined, error: safeError(error, relativePath) }); } }
+    for (const [index, operation] of operations.entries()) { try { results.push({ ok: true, index, type: operation.type, ...performEdit(projectAlias, operation, dryRun, policy) }); } catch (error) { const relativePath = "relativePath" in operation ? operation.relativePath : "sourceRelativePath" in operation ? operation.sourceRelativePath : undefined; results.push({ ok: false, index, type: operation.type, relativePath: relativePath ? safeRelativePath(relativePath) : undefined, error: safeError(error, relativePath) }); } }
     return { projectAlias, dryRun, atomic: false, requestedCount: operations.length, successCount: results.filter((result) => result.ok).length, errorCount: results.filter((result) => !result.ok).length, results };
   });
 }

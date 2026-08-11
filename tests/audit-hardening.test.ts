@@ -48,6 +48,8 @@ function writePolicy(strictMode: boolean): void {
         projectPatch: true,
         projectRun: false,
         projectPolicy: true,
+        requireConfirmation: false,
+        allowShell: false,
         allowedCommands: ["git"]
       }
     },
@@ -70,7 +72,10 @@ function writePolicy(strictMode: boolean): void {
       },
       search: {
         maxScanEntries: 100000,
-        maxTextFileChars: 200000
+        maxTextFileChars: 200000,
+        maxRegexExecutionMs: 120000,
+        maxBatchMatches: 5000,
+        maxBatchOutputChars: 500000
       },
       skills: {
         maxReadChars: 200000
@@ -87,7 +92,8 @@ function writePolicy(strictMode: boolean): void {
         maxEvents: 1000
       },
       process: {
-        maxOutputBufferMb: 10
+        maxOutputBufferMb: 10,
+        maxBatchOutputChars: 1000000
       }
     },
     audit: {
@@ -170,12 +176,12 @@ test("strict audit mode blocks selected mutations when audit log is not writable
     assert.equal(writeDenied.results[0].error, "Audit log is not writable: [redacted path]");
     assert.equal(existsSync(path.join(projectRoot, "created.txt")), false);
 
-    const permissionDenied = await client.callTool({
+    const registrationDenied = await client.callTool({
       name: "project_policy",
-      arguments: { action: { type: "update_permissions", projectAlias: "audit", permissions: { main_agent: { } } } }
+      arguments: { action: { type: "register_project", projectAlias: "audit-denied", rootPath: projectRoot } }
     });
-    assert.equal(permissionDenied.isError, true);
-    assert.match(JSON.stringify(permissionDenied), /audit/i);
+    assert.equal(registrationDenied.isError, true);
+    assert.match(JSON.stringify(registrationDenied), /audit/i);
   } finally {
     writePolicy(false);
   }

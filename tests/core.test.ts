@@ -1,103 +1,23 @@
 import { optionalEnv } from "../src/env.js";
-import { assertMainAgentCommandAllowed } from "../src/policy/permissionPolicy.js";
 import { runProjectCommand } from "../src/runtime/commands.js";
 import { assertProjectCommandStaysInProject, commandRequiresConfirmation } from "../src/tools/projects.js";
 import { toPublicAuditEvent, type PublicAuditEvent } from "../src/tools/config.js";
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-const root = mkdtempSync(path.join(tmpdir(), "portus-agents-test-"));
+const root = mkdtempSync(path.join(process.cwd(), ".portus-core-test-"));
 const stateDir = path.join(root, "state");
 const projectRoot = path.join(root, "project");
 const configPath = path.join(root, "config.json");
-const policyPath = path.join(root, "policy.json");
 const dotenvPath = path.join(root, "missing.env");
+after(() => rmSync(root, { recursive: true, force: true }));
+
 
 mkdirSync(projectRoot, { recursive: true });
 writeFileSync(path.join(projectRoot, "README.md"), "# Test\n", "utf8");
 writeFileSync(path.join(projectRoot, ".env"), "SECRET=hidden\n", "utf8");
-writeFileSync(policyPath, JSON.stringify({
-  subagents: {
-    concurrency: {
-      maxConcurrent: 4,
-      maxConcurrentPerProject: 2,
-      queueEnabled: false,
-      maxQueueDepth: 10,
-    },
-    lifecycle: {
-      queuedTaskTtlSecs: 300,
-      projectLockTimeoutSecs: 1800,
-      maxRuntimeSecs: 900,
-      startupWatchdogMs: 15000,
-      forcedCloseGraceMs: 8000,
-      killEscalationDelayMs: 1200,
-      queueDrainDelayMs: 50,
-    },
-    permissions: {
-      networkAccess: true,
-      allowedCommands: ["git"]
-    }
-  },
-  main_agent: {
-    permissions: {
-      subagentTask: true,
-      projectContext: true,
-      projectRead: true,
-      projectSearch: true,
-      projectEdit: true,
-      readGitIgnoredFiles: false,
-      projectPatch: true,
-      projectRun: false,
-      projectPolicy: true,
-      allowedCommands: ["git"]
-    }
-  },
-  pathPolicy: {
-    blockedPatterns: [".env"]
-  },
-  limits: {
-    fileRead: {
-      maxChars: 500000,
-    },
-    fileWrite: {
-      maxChars: 1000000,
-    },
-    patch: {
-      maxChars: 1000000,
-    },
-    textEdit: {
-      maxOperationChars: 200000,
-      maxSearchOrMarkerChars: 20000
-    },
-    search: {
-      maxScanEntries: 100000,
-      maxTextFileChars: 200000,
-    },
-    skills: {
-      maxReadChars: 200000,
-    },
-    subagentOutput: {
-      maxStdoutChars: 200000,
-      maxStderrChars: 200000,
-    },
-    sessionEvents: {
-      maxEvents: 500,
-      maxChunkChars: 4000,
-    },
-    audit: {
-      maxEvents: 1000,
-    },
-    process: {
-      maxOutputBufferMb: 10
-    }
-  },
-  audit: {
-    strictMode: false
-  }
-}, null, 2), "utf8");
 writeFileSync(configPath, JSON.stringify({
   subagents: {
     defaultTemplate: "ephemeral-project-subagent",
@@ -119,20 +39,36 @@ writeFileSync(configPath, JSON.stringify({
 
 process.env.DOTENV_CONFIG_PATH = dotenvPath;
 process.env.PORTUS_MCP_CONFIG_PATH = configPath;
-process.env.PORTUS_MCP_POLICY_PATH = policyPath;
+delete process.env.PORTUS_MCP_POLICY_PATH;
 process.env.PORTUS_MCP_STATE_DIR = stateDir;
 process.env.PORTUS_MCP_DEFAULT_PROVIDER = "cerebras";
 process.env.PORTUS_MCP_CEREBRAS_MODEL = "llama3.1-8b";
 process.env.CEREBRAS_API_KEY = "test-key";
 
+// Stateful modules are loaded only after this test installs its isolated environment paths.
 const { loadAgentProviderConfig } = await import("../src/config.js");
 const { upsertProject } = await import("../src/state/ProjectRegistry.js");
 const { resolveProjectPath } = await import("../src/policy/pathPolicy.js");
 const { assertMainAgentPermission, assertMainAgentCommandAllowed } = await import("../src/policy/permissionPolicy.js");
-const { getEffectivePermissions, updatePermissions } = await import("../src/state/PermissionRegistry.js");
+const { loadPolicyConfig, parsePolicyConfig, policyPermissions } = await import("../src/policy/policyConfig.js");
 
 upsertProject({ projectAlias: "test", rootPath: projectRoot });
-updatePermissions({ projectAlias: "test", permissions: { main_agent: { projectEdit: false } } });
+const selectedPolicy = loadPolicyConfig();
+const withMainAgentPermissions = (
+  permissions: Partial<typeof selectedPolicy.main_agent.permissions>
+): typeof selectedPolicy => ({
+  ...selectedPolicy,
+  main_agent: {
+    permissions: { ...selectedPolicy.main_agent.permissions, ...permissions }
+  }
+});
+
+function withoutKey<T extends object, K extends keyof T>(value: T, key: K): Omit<T, K> {
+  const copy = { ...value };
+  Reflect.deleteProperty(copy, key);
+  return copy;
+}
+
 
 test("provider config resolves default Cerebras model", () => {
   const provider = loadAgentProviderConfig();
@@ -152,73 +88,130 @@ test("path policy blocks configured sensitive paths case-insensitively", () => {
   assert.throws(() => resolveProjectPath("test", ".ENV"), /Blocked path pattern/);
 });
 
-test("permission policy denies disabled permissions and accepts runtime updates", () => {
-  assert.throws(() => assertMainAgentPermission("projectEdit", "test"), /Permission denied/);
-  updatePermissions({ projectAlias: "test", permissions: { main_agent: { projectEdit: true } } });
-  assert.doesNotThrow(() => assertMainAgentPermission("projectEdit", "test"));
-  assert.equal(getEffectivePermissions("test").main_agent.projectEdit, true);
+test("permission policy evaluates complete immutable policy objects", () => {
+  const deniedPolicy = withMainAgentPermissions({ projectEdit: false });
+  assert.throws(() => assertMainAgentPermission("projectEdit", deniedPolicy), /Permission denied/);
+  assert.doesNotThrow(() => assertMainAgentPermission("projectEdit", selectedPolicy));
+  assert.equal(policyPermissions(deniedPolicy).main_agent.projectEdit, false);
+  assert.equal(policyPermissions(selectedPolicy).main_agent.projectEdit, true);
 });
 
-test("requireConfirmation accepts runtime updates", () => {
-  updatePermissions({ projectAlias: "test", permissions: { main_agent: { requireConfirmation: true } } });
-  assert.equal(getEffectivePermissions("test").main_agent.requireConfirmation, true);
-  updatePermissions({ projectAlias: "test", permissions: { main_agent: { requireConfirmation: false } } });
-  assert.equal(getEffectivePermissions("test").main_agent.requireConfirmation, false);
+test("complete policy validation rejects every formerly defaulted field when omitted", () => {
+  const incompletePolicies: Array<{ path: string; value: unknown }> = [
+    {
+      path: "main_agent.permissions.requireConfirmation",
+      value: {
+        ...selectedPolicy,
+        main_agent: {
+          permissions: withoutKey(selectedPolicy.main_agent.permissions, "requireConfirmation")
+        }
+      }
+    },
+    {
+      path: "main_agent.permissions.allowShell",
+      value: {
+        ...selectedPolicy,
+        main_agent: {
+          permissions: withoutKey(selectedPolicy.main_agent.permissions, "allowShell")
+        }
+      }
+    },
+    {
+      path: "limits.search.maxRegexExecutionMs",
+      value: {
+        ...selectedPolicy,
+        limits: {
+          ...selectedPolicy.limits,
+          search: withoutKey(selectedPolicy.limits.search, "maxRegexExecutionMs")
+        }
+      }
+    },
+    {
+      path: "limits.search.maxBatchMatches",
+      value: {
+        ...selectedPolicy,
+        limits: {
+          ...selectedPolicy.limits,
+          search: withoutKey(selectedPolicy.limits.search, "maxBatchMatches")
+        }
+      }
+    },
+    {
+      path: "limits.search.maxBatchOutputChars",
+      value: {
+        ...selectedPolicy,
+        limits: {
+          ...selectedPolicy.limits,
+          search: withoutKey(selectedPolicy.limits.search, "maxBatchOutputChars")
+        }
+      }
+    },
+    {
+      path: "limits.process.maxBatchOutputChars",
+      value: {
+        ...selectedPolicy,
+        limits: {
+          ...selectedPolicy.limits,
+          process: withoutKey(selectedPolicy.limits.process, "maxBatchOutputChars")
+        }
+      }
+    }
+  ];
+
+  for (const incomplete of incompletePolicies) {
+    assert.throws(
+      () => parsePolicyConfig(incomplete.value),
+      new RegExp(incomplete.path.replaceAll(".", "\\."))
+    );
+  }
 });
 
-test("allowShell accepts runtime updates", () => {
-  updatePermissions({ projectAlias: "test", permissions: { main_agent: { allowShell: false } } });
-  assert.equal(getEffectivePermissions("test").main_agent.allowShell, false);
-  updatePermissions({ projectAlias: "test", permissions: { main_agent: { allowShell: true } } });
-  assert.equal(getEffectivePermissions("test").main_agent.allowShell, true);
+test("requireConfirmation comes exclusively from the supplied policy", () => {
+  const requiredPolicy = withMainAgentPermissions({ requireConfirmation: true });
+  const optionalPolicy = withMainAgentPermissions({ requireConfirmation: false });
+  assert.equal(policyPermissions(requiredPolicy).main_agent.requireConfirmation, true);
+  assert.equal(policyPermissions(optionalPolicy).main_agent.requireConfirmation, false);
 });
 
-test("stale useShell configuration or runtime permission is explicitly rejected", () => {
-  assert.throws(
-    () => updatePermissions({ projectAlias: "test", permissions: { main_agent: { useShell: true } as Record<string, unknown> } }),
-    /Unknown main_agent permission: useShell/
-  );
-});
-
-test("unknown top-level permission key is strictly rejected", () => {
-  assert.throws(
-    () => updatePermissions({ projectAlias: "test", permissions: { invalid_key: { allowShell: true } as Record<string, unknown> } }),
-    /Unknown top-level permission: invalid_key/
-  );
+test("allowShell comes exclusively from the supplied policy", () => {
+  const deniedPolicy = withMainAgentPermissions({ allowShell: false });
+  const allowedPolicy = withMainAgentPermissions({ allowShell: true });
+  assert.equal(policyPermissions(deniedPolicy).main_agent.allowShell, false);
+  assert.equal(policyPermissions(allowedPolicy).main_agent.allowShell, true);
 });
 
 test("Native argv execution: direct command receives literal metacharacters without shell parsing", async () => {
   const metaArg = "patternA\\|patternB\\|patternC";
-  const result = await runProjectCommand(projectRoot, "node", ["-e", "console.log(process.argv[1])", metaArg], 10, undefined, false);
+  const result = await runProjectCommand(projectRoot, "node", ["-e", "console.log(process.argv[1])", metaArg], 10, false);
   assert.equal(result.outcome, "exited");
   assert.equal(result.exitCode, 0);
   assert.equal(result.stdout.trim(), metaArg);
 });
 
-test("shell=true is rejected when allowShell is false", async () => {
-  updatePermissions({ projectAlias: "test", permissions: { main_agent: { allowShell: false } } });
+test("shell=true is rejected when selected policy disables shell execution", async () => {
+  const deniedPolicy = withMainAgentPermissions({ allowShell: false });
   await assert.rejects(
-    async () => runProjectCommand(projectRoot, "node", ["-e", "console.log(1)"], 10, "test", true),
+    async () => runProjectCommand(projectRoot, "node", ["-e", "console.log(1)"], 10, true, deniedPolicy),
     /Permission denied: main_agent.allowShell is false/
   );
 });
 
-test("shell=true executes shell syntax when allowShell is true", async () => {
-  updatePermissions({ projectAlias: "test", permissions: { main_agent: { allowShell: true } } });
-  const result = await runProjectCommand(projectRoot, "node", ["-e", "console.log('shell_ok')"], 10, "test", true);
+test("shell=true executes when selected policy enables shell execution", async () => {
+  const allowedPolicy = withMainAgentPermissions({ allowShell: true });
+  const result = await runProjectCommand(projectRoot, "node", ["-e", "console.log('shell_ok')"], 10, true, allowedPolicy);
   assert.equal(result.outcome, "exited");
   assert.equal(result.exitCode, 0);
   assert.match(result.stdout, /shell_ok/);
 });
 
-test("assertMainAgentCommandAllowed resolves base command name on Windows for .bat, .cmd, and .exe", () => {
-  updatePermissions({ projectAlias: "test", permissions: { main_agent: { allowedCommands: ["git", "modal-cli"] } } });
-  assert.doesNotThrow(() => assertMainAgentCommandAllowed("git", "test"));
-  assert.doesNotThrow(() => assertMainAgentCommandAllowed("modal-cli", "test"));
+test("assertMainAgentCommandAllowed normalizes executable suffixes against supplied policy", () => {
+  const commandPolicy = withMainAgentPermissions({ allowedCommands: ["git", "modal-cli"] });
+  assert.doesNotThrow(() => assertMainAgentCommandAllowed("git", commandPolicy));
+  assert.doesNotThrow(() => assertMainAgentCommandAllowed("modal-cli", commandPolicy));
   if (process.platform === "win32") {
-    assert.doesNotThrow(() => assertMainAgentCommandAllowed("modal-cli.bat", "test"));
-    assert.doesNotThrow(() => assertMainAgentCommandAllowed("modal-cli.cmd", "test"));
-    assert.doesNotThrow(() => assertMainAgentCommandAllowed("modal-cli.exe", "test"));
+    assert.doesNotThrow(() => assertMainAgentCommandAllowed("modal-cli.bat", commandPolicy));
+    assert.doesNotThrow(() => assertMainAgentCommandAllowed("modal-cli.cmd", commandPolicy));
+    assert.doesNotThrow(() => assertMainAgentCommandAllowed("modal-cli.exe", commandPolicy));
   }
 });
 
@@ -298,18 +291,6 @@ test("git.exe -C .. status is rejected by project confinement on all platforms",
   assert.equal(commandRequiresConfirmation("GIT.CMD", ["add", "README.md"]), true);
 });
 
-test("project_policy update_permissions accepts allowShell and rejects useShell", () => {
-  const updated = updatePermissions({
-    projectAlias: "test",
-    permissions: { main_agent: { allowShell: true } }
-  });
-  assert.equal(updated.main_agent.allowShell, true);
-
-  assert.throws(
-    () => updatePermissions({ projectAlias: "test", permissions: { main_agent: { useShell: true } as Record<string, unknown> } }),
-    /Unknown main_agent permission: useShell/
-  );
-});
 
 test("Process exceeding maxBuffer returns output_limit outcome", async () => {
   const result = await runProjectCommand(projectRoot, "node", ["-e", "console.log('x'.repeat(20 * 1024 * 1024))"], 10);

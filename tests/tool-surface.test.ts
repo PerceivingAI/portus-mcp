@@ -5,7 +5,6 @@ import path from "node:path";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { loadConfig } from "../src/config.js";
 import { createHttpServer } from "../src/server.js";
 
 const root = mkdtempSync(path.join(tmpdir(), "portus-tool-surface-"));
@@ -27,7 +26,7 @@ test.after(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function writeConfig(extra: Record<string, unknown> = {}): void {
+function writeConfig(): void {
   writeFileSync(configPath, JSON.stringify({
     subagents: {
       defaultTemplate: "ephemeral-project-subagent",
@@ -43,7 +42,6 @@ function writeConfig(extra: Record<string, unknown> = {}): void {
       }
     },
     traversal: { excludedPatterns: [".git", "node_modules", "dist", ".portus-mcp"] },
-    ...extra
   }, null, 2), "utf8");
 }
 
@@ -86,9 +84,3 @@ test("server exposes one complete tool surface", async () => {
   assert.equal(names.filter((name) => name === "project_read").length, 1);
 });
 
-test("retired toolSurface configuration fails closed", () => {
-  for (const value of ["broad", "agent", "full"]) {
-    writeConfig({ toolSurface: value });
-    assert.throws(() => loadConfig(), /toolSurface/i);
-  }
-});

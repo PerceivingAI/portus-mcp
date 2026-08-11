@@ -51,21 +51,15 @@ PORTUS_MCP_PROJECTS=app=C:/path/to/app;api=C:/path/to/api
 
 ### Allow device commands
 
-Portus ships with only `git` in `main_agent.permissions.allowedCommands`. This prevents a new installation from running general-purpose shells or interpreters without the operator explicitly granting them. Most projects will need additional device tools, so command configuration is the recommended next setup step after registering projects.
+Portus ships with `portus-mcp.policy.json` as its default complete operator policy. If `PORTUS_MCP_POLICY_PATH` is unset, that shipped file is selected. To maintain a private policy, copy the complete shipped file to the Git-ignored `portus-mcp.policy.local.json`, edit it, and select it in `.env`:
 
-Copy `portus-mcp.policy.json` to the Git-ignored `portus-mcp.policy.local.json`, set `PORTUS_MCP_POLICY_PATH=./portus-mcp.policy.local.json` in `.env`, and edit the local policy while retaining its complete structure:
-
-```json
-{
-  "main_agent": {
-    "permissions": {
-      "allowedCommands": ["git", "python", "cargo"]
-    }
-  }
-}
+```env
+PORTUS_MCP_POLICY_PATH=./portus-mcp.policy.local.json
 ```
 
-Add executable basenames, not arguments or shell command strings; omit Windows `.exe`, `.cmd`, and `.bat` suffixes. Grant only commands you intend the connected main agent to control: allowlisting Bash, PowerShell, Python, Node.js, or another interpreter gives it the broad authority that executable has under the Portus OS account. Direct main-agent commands use `main_agent.permissions.allowedCommands`; spawned subagents use the separate `subagents.permissions.allowedCommands`. Restart Portus after the initial `.env` and policy setup.
+The selected file is a strict replacement, not an overlay: shipped and private policies are never merged. A missing file, invalid JSON, unknown key, or invalid value fails startup. Runtime files under `.portus-mcp/` cannot override permissions, and no MCP tool can mutate them.
+
+Portus ships with only `git` in `main_agent.permissions.allowedCommands`. Add executable basenames to that field in the selected complete policy, not arguments or shell command strings; omit Windows `.exe`, `.cmd`, and `.bat` suffixes. Grant only commands you intend the connected main agent to control: allowlisting Bash, PowerShell, Python, Node.js, or another interpreter gives it the broad authority that executable has under the Portus OS account. Direct main-agent commands use `main_agent.permissions.allowedCommands`; spawned subagents use the separate `subagents.permissions.allowedCommands`. Restart Portus after changing `.env` or the selected policy.
 
 The shipped `portus-mcp.config.json` configures default subagent retry behavior and traversal exclusions:
 
@@ -317,7 +311,7 @@ Broad tools remain bounded by layered enforcement:
 - operating-system permissions; and
 - strict schemas and safe, project-relative errors.
 
-Callers cannot raise server maxima or override path, Git-ignore, permission, confirmation, or audit policy. Read, context, search, policy inspection, and patch preparation remain unaudited; mutation and execution retain audit behavior. Errors and safe policy projections do not expose absolute roots, secrets, command environments, or file contents.
+Callers cannot raise server maxima or override path, permission, confirmation, or audit policy. Search excludes ignored paths by default; explicit ignored-path inclusion is confined to one request and requires selected-policy authorization. Read, context, search, policy inspection, and patch preparation remain unaudited; mutation, execution, and registration retain audit behavior. Errors and safe policy projections do not expose absolute roots, selected policy paths, secrets, command environments, or file contents.
 
 Spawned subagents are command-capable processes bounded by Flue workspace isolation in `.portus-mcp/flue-workspaces/<sessionId>` and `subagentTask` permission policy.
 
@@ -325,7 +319,7 @@ Spawned subagents are command-capable processes bounded by Flue workspace isolat
 
 A client that does not yet know a project alias calls `project_context` with `include.projects=true` and no `projectAlias`. The result contains registered aliases only. It then selects an alias and calls scoped `project_context`; the default response includes effective execution capabilities such as `allowedCommands` before the client uses `project_run`. Any project-scoped context section still requires `projectAlias`.
 
-Registration, permission updates, and audit inspection are native `project_policy` actions rather than separate management tools. See `docs/TOOLS.md` for their permission boundaries.
+Registration and audit inspection are native `project_policy` actions rather than separate management tools. Its safe policy checks are read-only; no MCP action can change permissions. See `docs/TOOLS.md` for the exact boundaries.
 
 ## Tool Operations
 

@@ -24,11 +24,11 @@ subagent_context
 |---|---|
 | `project_context` | With `include.projects=true` and no `projectAlias`, discover registered aliases only. With a `projectAlias`, retrieve effective execution capabilities, bounded project status, tree, file-list, path metadata/existence, and package-script sections. The default scoped response includes execution capability; any project-scoped section requires `projectAlias`. The tool never returns file contents. |
 | `project_read` | Submit 1–20 ordered content, binary, line-range, metadata, or existence requests. Per-item runtime failures are isolated. Resolves configured connected-agent skills through reserved `skill/<name>` aliases. |
-| `project_search` | Submit 1–20 ordered search requests (`mode`: `files`, `text`, `symbols`, or `all`). Supports per-request `expect` (`matches` or `absent`) returning tri-state expectation (`met`: true, false, or null when inconclusive). Text and symbol regex queries execute in an isolated worker thread. Enforces aggregate batch match (`maxBatchMatches`) and output character (`maxBatchOutputChars`) limits with deterministic truncation and scan reasons (`max_batch_matches`, `max_batch_output_chars`, `max_results`, `regex_timeout`, `read_error`). |
+| `project_search` | Submit 1–20 ordered search requests (`mode`: `files`, `text`, `symbols`, or `all`). Git-ignored paths are excluded by default. Per-request `includeGitIgnored: true` requires selected-policy `readGitIgnoredFiles` authorization; explicit traversal exclusions still apply. Supports per-request `expect` (`present` or `absent`) returning tri-state expectation (`met`: true, false, or null when inconclusive). Text and symbol regex queries execute in an isolated worker thread. Enforces aggregate batch match (`maxBatchMatches`) and output character (`maxBatchOutputChars`) limits with deterministic truncation and scan reasons (`max_batch_matches`, `max_batch_output_chars`, `max_results`, `regex_timeout`, `read_error`). |
 | `project_edit` | Run ordered write, replace, insert, copy, move, delete, mkdir, or rmdir operations, optionally as a dry run. The batch is ordered but not atomic. |
 | `project_patch` | Prepare or apply a unified patch with policy checks, preconditions, dry-run behavior, and destructive confirmation where required. |
 | `project_run` | Submit 1–10 ordered execution requests (`type`: `check`, `script`, or `command`). Direct command execution uses native argv process spawn by default, with `shell=true` explicitly required and policy-gated (`allowShell`) for shell syntax or Windows `.cmd`/`.bat` launchers. Preflights all items before starting execution. Enforces an exact aggregate batch deadline (`batchTimeoutSecs`) with `batchTimedOut`, an aggregate output budget (`maxBatchOutputChars`) with `batchOutputTruncated`, and ordered process outcomes (`exited`, `spawn_failed`, `timed_out`, `signaled`, `output_limit`). Public audit events project execution type (`check`, `script`, `command`) and name. |
-| `project_policy` | Perform ordered permission, path-decision, and safe effective-configuration checks, or exactly one native administrative action: `register_project`, `update_permissions`, `list_audit`, or `read_audit`. |
+| `project_policy` | Perform ordered permission, path-decision, and safe read-only effective-configuration checks, or exactly one native administrative action: `register_project`, `list_audit`, or `read_audit`. |
 | `subagent_task` | Subagent lifecycle management using discriminated action union (`start`, `stop`, `cleanup`). Accepts ordered batch actions and returns ordered results. |
 | `subagent_context` | Batch read subagent execution status, events, stdout/stderr logs, and collected result artifacts. |
 
@@ -43,10 +43,10 @@ For cold start, call `project_context` with `include.projects=true` and omit `pr
 | Action | Capability | Required permission |
 |---|---|---|
 | `register_project` | Register a project using the strict registration schema. | `projectPolicy`. |
-| `update_permissions` | Update the strict supported permission set. | `projectPolicy`. |
 | `list_audit` | Return a bounded, safely projected audit listing. | `projectPolicy`. |
-| `read_audit` | Read one safely projected audit record. | `projectPolicy`. |
-These actions preserve canonical project-root handling, confirmation requirements, redacted audit projections, strict schemas, and safe errors. New administrative audit records identify `project_policy` as the tool and the native action as the operation. Operator configuration, environment pre-registration, and filesystem/state administration remain operator-only; the four actions above are the complete model-accessible management surface.
+| `read_audit` | Read safely projected audit records selected by event or session ID. | `projectPolicy`. |
+
+The read-only `config` check reports `permissionSource: "operator_policy"`, `policySelection: "shipped" | "configured"`, effective permissions, and redacted path/traversal patterns without exposing the selected absolute policy path. These actions preserve canonical project-root handling, redacted audit projections, strict schemas, and safe errors. Operator configuration, policy editing, environment pre-registration, and filesystem/state administration remain operator-only. No MCP action accepts permission changes.
 
 Execution-capability discovery requires `projectContext`, not `projectPolicy`, so a client allowed to inspect and run a project can discover its effective command boundary without administrative policy access. `allowedCommands` means permitted to attempt through `project_run`, not verified installed. Skill `rootAlias` values do not support execution context.
 
@@ -65,7 +65,7 @@ Every adapter remains bounded by:
 - durable, redacted audit for mutation and execution; and
 - safe errors and project-relative path reporting.
 
-Callers cannot increase server maxima or override path, Git-ignore, permission, binary-file, confirmation, or audit policy. Text limits use Unicode code-point accounting. Ordinary reads, project-scoped context, search, policy checks, audit reads, and patch preparation remain unaudited; mutation, execution, registration, and permission updates retain audit guarantees. Results and errors do not disclose absolute project roots, secrets, command environments, or file contents as metadata.
+Callers cannot increase server maxima or override path policy, permission, binary-file, confirmation, or audit policy. Ignored search scope is the deliberate exception to default exclusion: `includeGitIgnored: true` requires the selected policy to authorize it and does not override traversal exclusions. Text limits use Unicode code-point accounting. Ordinary reads, project-scoped context, search, policy checks, audit reads, and patch preparation remain unaudited; mutation, execution, and registration retain audit guarantees. Results and errors do not disclose absolute project roots, policy-file paths, secrets, command environments, or file contents as metadata.
 
 The shipped direct-agent allowlist contains only `git`. Operators explicitly grant other device executables in `main_agent.permissions.allowedCommands`; spawned subagents use a separate allowlist. Shells and interpreters carry the authority of the Portus OS account and are not hard filesystem sandboxes.
 

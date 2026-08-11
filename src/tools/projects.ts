@@ -7,8 +7,7 @@ import { loadConfig } from "../config.js";
 import { getProject } from "../state/ProjectRegistry.js";
 import { stateStore } from "../state/StateStore.js";
 import { resolveProjectPath, resolveReadablePath } from "../policy/pathPolicy.js";
-import { loadPolicyConfig } from "../policy/policyConfig.js";
-import { getEffectivePermissions } from "../state/PermissionRegistry.js";
+import { loadPolicyConfig, policyPermissions, type PortusPolicyConfig } from "../policy/policyConfig.js";
 import { limitText } from "../runtime/outputLimits.js";
 import type { SkillRegistrySnapshot } from "../skills/SkillRegistry.js";
 export { registerBroadProjectTools, registerProjectReadTool } from "./projectBroad.js";
@@ -280,21 +279,21 @@ function isGitIgnored(projectRoot: string, target: string, classifier?: GitIgnor
   return new GitIgnoreClassifier(projectRoot).isIgnored(target);
 }
 
-export function assertCanReadProjectPath(projectAlias: string, target: string, relativePath: string, registry?: SkillRegistrySnapshot, classifier?: GitIgnoreClassifier): void {
+export function assertCanReadProjectPath(projectAlias: string, target: string, relativePath: string, registry?: SkillRegistrySnapshot, classifier?: GitIgnoreClassifier, policy: PortusPolicyConfig = loadPolicyConfig()): void {
   if (registry?.connected.byAlias.has(projectAlias)) return;
-  const permissions = getEffectivePermissions(projectAlias).main_agent;
+  const permissions = policyPermissions(policy).main_agent;
   if (permissions.readGitIgnoredFiles) return;
   if (isGitIgnored(getProject(projectAlias).rootPath, target, classifier)) {
     throw new Error(`Permission denied: readGitIgnoredFiles is false for ignored path: ${relativePath}`);
   }
 }
 
-export function canReadProjectRelativePath(projectAlias: string, relativePath: string, registry?: SkillRegistrySnapshot, classifier?: GitIgnoreClassifier): boolean {
+export function canReadProjectRelativePath(projectAlias: string, relativePath: string, registry?: SkillRegistrySnapshot, classifier?: GitIgnoreClassifier, policy: PortusPolicyConfig = loadPolicyConfig()): boolean {
   try {
     const target = registry
       ? resolveReadablePath(projectAlias, relativePath, registry)
       : resolveProjectPath(projectAlias, relativePath);
-    assertCanReadProjectPath(projectAlias, target, relativePath, registry, classifier);
+    assertCanReadProjectPath(projectAlias, target, relativePath, registry, classifier, policy);
     return true;
   } catch {
     return false;
@@ -328,7 +327,9 @@ export function collectPaths(
   maxEntries: number,
   includeFiles: boolean,
   includeDirs: boolean,
-  registry?: SkillRegistrySnapshot
+  registry?: SkillRegistrySnapshot,
+  includeGitIgnored?: boolean,
+  policy: PortusPolicyConfig = loadPolicyConfig()
 ): TraversalResult {
   const startTime = Date.now();
   const entries: TraversalEntry[] = [];
@@ -336,7 +337,11 @@ export function collectPaths(
   const excludedPatterns = getExcludedTraversalPatterns();
   const skill = registry?.connected.byAlias.get(projectAlias);
   const readableRoot = skill?.rootPath ?? getProject(projectAlias).rootPath;
-  const allowGitIgnored = skill ? true : getEffectivePermissions(projectAlias).main_agent.readGitIgnoredFiles;
+  const policyAllowsGitIgnored = policyPermissions(policy).main_agent.readGitIgnoredFiles;
+  if (!skill && includeGitIgnored === true && !policyAllowsGitIgnored) {
+    throw new Error("Permission denied: main_agent.readGitIgnoredFiles is false");
+  }
+  const allowGitIgnored = skill ? true : includeGitIgnored ?? policyAllowsGitIgnored;
   const classifier = allowGitIgnored ? null : new GitIgnoreClassifier(readableRoot);
 
   let filesVisited = 0;
@@ -380,7 +385,7 @@ export function collectPaths(
 
     for (const { entry, full, rel } of candidateEntries) {
       if (ignoredSet.has(rel)) continue;
-      if (!canReadProjectRelativePath(projectAlias, rel, registry, classifier ?? undefined)) continue;
+      if (!canReadProjectRelativePath(projectAlias, rel, registry, classifier ?? undefined, policy)) continue;
 
       if (entry.isDirectory()) {
         if (entries.length < maxEntries) {
@@ -421,27 +426,51 @@ export function collectPaths(
   };
 }
 
-export function collectSearchableFiles(projectAlias: string, relativePath: string, maxEntries: number): TraversalResult {
+export function collectSearchableFiles(projectAlias: string, relativePath: string, maxEntries: number, includeGitIgnored = false, policy: PortusPolicyConfig = loadPolicyConfig()): TraversalResult {
+  const startedAt = Date.now();
   const root = resolveProjectPath(projectAlias, relativePath);
-  assertCanReadProjectPath(projectAlias, root, relativePath);
-  const info = statSync(root);
-  if (info.isDirectory()) return collectPaths(projectAlias, root, maxEntries, true, false);
-  if (!info.isFile()) throw new Error(`Search root is not a regular file or directory: ${relativePath}`);
+  if (includeGitIgnored && !policyPermissions(policy).main_agent.readGitIgnoredFiles) {
+    throw new Error("Permission denied: main_agent.readGitIgnoredFiles is false");
+  }
 
   const projectRoot = getProject(projectAlias).rootPath;
   const normalizedRelativePath = path.relative(projectRoot, root).replace(/\\/g, "/") || ".";
   const excludedPatterns = getExcludedTraversalPatterns();
-  const allowGitIgnored = getEffectivePermissions(projectAlias).main_agent.readGitIgnoredFiles;
-  if (!canReadProjectRelativePath(projectAlias, normalizedRelativePath)
-    || shouldSkipTraversal(projectAlias, projectRoot, root, path.basename(root), excludedPatterns, allowGitIgnored)) {
-    return { entries: [], filesVisited: 1, directoriesVisited: 0, gitProcessesSpawned: 0, elapsedMs: 0, stoppedAtCap: false, reasons: [] };
+  const classifier = includeGitIgnored || normalizedRelativePath === "."
+    ? undefined
+    : new GitIgnoreClassifier(projectRoot);
+  if (normalizedRelativePath !== "." && shouldSkipTraversal(
+    projectAlias,
+    projectRoot,
+    root,
+    path.basename(root),
+    excludedPatterns,
+    includeGitIgnored,
+    undefined,
+    classifier
+  )) {
+    return {
+      entries: [],
+      filesVisited: 0,
+      directoriesVisited: 0,
+      gitProcessesSpawned: classifier?.gitProcessesSpawned ?? 0,
+      elapsedMs: Date.now() - startedAt,
+      stoppedAtCap: false,
+      reasons: []
+    };
   }
+
+  const info = statSync(root);
+  if (info.isDirectory()) {
+    return collectPaths(projectAlias, root, maxEntries, true, false, undefined, includeGitIgnored, policy);
+  }
+  if (!info.isFile()) throw new Error(`Search root is not a regular file or directory: ${relativePath}`);
   return {
     entries: [{ relativePath: normalizedRelativePath, kind: "file", bytes: info.size, modifiedAt: info.mtime.toISOString() }],
     filesVisited: 1,
     directoriesVisited: 0,
-    gitProcessesSpawned: 0,
-    elapsedMs: 0,
+    gitProcessesSpawned: classifier?.gitProcessesSpawned ?? 0,
+    elapsedMs: Date.now() - startedAt,
     stoppedAtCap: false,
     reasons: []
   };

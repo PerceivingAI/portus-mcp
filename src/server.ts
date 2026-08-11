@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { optionalEnv } from "./env.js";
+import { loadPolicyConfig, type PortusPolicyConfig } from "./policy/policyConfig.js";
 import { registerBroadProjectTools } from "./tools/projects.js";
 import { registerSubagentTools } from "./tools/subagents.js";
 import { registerBroadPolicyTools } from "./tools/config.js";
@@ -14,16 +15,21 @@ import type { SkillRegistrySnapshot } from "./skills/SkillRegistry.js";
 
 const PROJECT_DISCOVERY_INSTRUCTIONS = "Discover registered projects with project_context using include.projects=true. After selecting a project alias, call scoped project_context; its execution section reports the device commands permitted through project_run.";
 
-export function createMcpServer(skillRegistry: SkillRegistrySnapshot = loadSkillRegistry()): McpServer {
+export type PolicyProvider = () => PortusPolicyConfig;
+
+export function createMcpServer(
+  skillRegistry: SkillRegistrySnapshot = loadSkillRegistry(),
+  policy: PortusPolicyConfig = loadPolicyConfig()
+): McpServer {
   const server = new McpServer({
     name: "portus-mcp",
     version: "0.1.1"
   }, {
     instructions: `${PROJECT_DISCOVERY_INSTRUCTIONS}\n${connectedSkillInstructions(skillRegistry)}`
   });
-  registerBroadProjectTools(server, skillRegistry);
-  registerBroadPolicyTools(server);
-  registerSubagentTools(server, skillRegistry);
+  registerBroadProjectTools(server, skillRegistry, policy);
+  registerBroadPolicyTools(server, policy);
+  registerSubagentTools(server, skillRegistry, policy);
 
   return server;
 }
@@ -41,7 +47,11 @@ export function extractTailscaleUser(headers: IncomingMessage["headers"]): { use
   };
 }
 
-export function createHttpServer(mcpPath = optionalEnv("PORTUS_MCP_PATH", "/mcp")) {
+export function createHttpServer(
+  mcpPath = optionalEnv("PORTUS_MCP_PATH", "/mcp"),
+  policyProvider: PolicyProvider = loadPolicyConfig
+) {
+  policyProvider();
   const skillRegistry = loadSkillRegistry();
   const bearerToken = optionalEnv("PORTUS_MCP_BEARER_TOKEN", "").trim();
 
@@ -167,7 +177,7 @@ export function createHttpServer(mcpPath = optionalEnv("PORTUS_MCP_PATH", "/mcp"
         req.rawHeaders.push("accept", normalizedAccept);
       }
     }
-    const server = createMcpServer(skillRegistry);
+    const server = createMcpServer(skillRegistry, policyProvider());
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true

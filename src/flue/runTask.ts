@@ -9,8 +9,7 @@ import { appendSessionEvent, appendSessionEventById } from "../state/SessionEven
 import { getProject } from "../state/ProjectRegistry.js";
 import { optionalEnv } from "../env.js";
 import { assertSubagentPermission } from "../policy/permissionPolicy.js";
-import { getEffectivePermissions } from "../state/PermissionRegistry.js";
-import { loadSubagentCommandConfig, loadPolicyConfig } from "../policy/policyConfig.js";
+import { loadSubagentCommandConfig, loadPolicyConfig, policyPermissions } from "../policy/policyConfig.js";
 import { countChars } from "../runtime/outputLimits.js";
 import type { SkillAudienceRegistry } from "../skills/SkillRegistry.js";
 
@@ -59,9 +58,9 @@ type QueueItem = {
 export async function runFlueTask(input: RunFlueTaskInput): Promise<SessionRecord> {
   // Reject unknown projects before admitting work to the queue.
   getProject(input.projectAlias);
-  assertSubagentPermission("network", input.projectAlias);
+  assertSubagentPermission("network");
 
-  const maxRuntimeSecs = getEffectivePermissions(input.projectAlias).subagents.maxRuntimeSecs;
+  const maxRuntimeSecs = policyPermissions().subagents.maxRuntimeSecs;
   const timeoutSecs = input.timeoutSecs ?? maxRuntimeSecs;
   if (timeoutSecs > maxRuntimeSecs) {
     throw new Error(`Requested timeout ${timeoutSecs}s exceeds maxRuntimeSecs ${maxRuntimeSecs}s`);
@@ -147,7 +146,7 @@ async function startSessionExecution(input: RunFlueTaskInput, record: SessionRec
   const config = loadConfig();
   const providerConfig = loadAgentProviderConfig();
   const project = getProject(input.projectAlias);
-  const maxRuntimeSecs = getEffectivePermissions(input.projectAlias).subagents.maxRuntimeSecs;
+  const maxRuntimeSecs = policyPermissions().subagents.maxRuntimeSecs;
   const timeoutSecs = input.timeoutSecs ?? maxRuntimeSecs;
 
   acquireProjectLock(input.projectAlias, record.sessionId);

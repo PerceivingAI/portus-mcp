@@ -1,18 +1,19 @@
-import test from "node:test";
+import test, { after, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { homedir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-const root = mkdtempSync(path.join(tmpdir(), "portus-agents-security-regression-"));
+const root = mkdtempSync(path.join(homedir(), "portus-security-test-"));
 const projectRoot = path.join(root, "project");
 const stateDir = path.join(projectRoot, ".portus-mcp");
 const configPath = path.join(root, "config.json");
-const policyPath = path.join(root, "policy.json");
 const dotenvPath = path.join(root, "missing.env");
+after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+
 
 mkdirSync(projectRoot, { recursive: true });
 mkdirSync(path.join(projectRoot, "ignored-dir"), { recursive: true });
@@ -28,6 +29,7 @@ writeFileSync(path.join(projectRoot, "ignored-dir", "nested.txt"), "nested ignor
 writeFileSync(path.join(projectRoot, "ignored-delete-dir", "nested.txt"), "delete target\n", "utf8");
 writeFileSync(path.join(projectRoot, "ignored-package.json"), JSON.stringify({ scripts: { check: "node -e \"console.log('ignored')\"" } }, null, 2), "utf8");
 writeFileSync(path.join(projectRoot, "skip-me", "visible.txt"), "excluded traversal content\n", "utf8");
+writeFileSync(path.join(projectRoot, "pathological-regex.txt"), `${"a".repeat(40)}X\n`, "utf8");
 execFileSync("git", ["init"], { cwd: projectRoot, stdio: "ignore" });
 execFileSync("git", ["config", "user.email", "test@example.invalid"], { cwd: projectRoot, stdio: "ignore" });
 execFileSync("git", ["config", "user.name", "Test User"], { cwd: projectRoot, stdio: "ignore" });
@@ -36,85 +38,6 @@ execFileSync("git", ["add", "-f", ".env"], { cwd: projectRoot, stdio: "ignore" }
 execFileSync("git", ["commit", "-m", "initial"], { cwd: projectRoot, stdio: "ignore" });
 writeFileSync(path.join(projectRoot, ".env"), "SECRET_TOKEN=changed\n", "utf8");
 
-writeFileSync(policyPath, JSON.stringify({
-  subagents: {
-    concurrency: {
-      maxConcurrent: 4,
-      maxConcurrentPerProject: 2,
-      queueEnabled: false,
-      maxQueueDepth: 10,
-    },
-    lifecycle: {
-      queuedTaskTtlSecs: 300,
-      projectLockTimeoutSecs: 1800,
-      maxRuntimeSecs: 900,
-      startupWatchdogMs: 15000,
-      forcedCloseGraceMs: 8000,
-      killEscalationDelayMs: 1200,
-      queueDrainDelayMs: 50,
-    },
-    permissions: {
-      networkAccess: false,
-      allowedCommands: ["git"]
-    }
-  },
-  main_agent: {
-    permissions: {
-      subagentTask: true,
-      projectContext: true,
-      projectRead: true,
-      projectSearch: true,
-      projectEdit: true,
-      projectPatch: true,
-      projectRun: true,
-      projectPolicy: true,
-      readGitIgnoredFiles: false,
-      allowedCommands: ["git"]
-    }
-  },
-  pathPolicy: {
-    blockedPatterns: [".env"]
-  },
-  limits: {
-    fileRead: {
-      maxChars: 500000,
-    },
-    fileWrite: {
-      maxChars: 1000000,
-    },
-    patch: {
-      maxChars: 1000000,
-    },
-    textEdit: {
-      maxOperationChars: 200000,
-      maxSearchOrMarkerChars: 20000
-    },
-    search: {
-      maxScanEntries: 100000,
-      maxTextFileChars: 200000,
-    },
-    skills: {
-      maxReadChars: 200000,
-    },
-    subagentOutput: {
-      maxStdoutChars: 200000,
-      maxStderrChars: 200000,
-    },
-    sessionEvents: {
-      maxEvents: 500,
-      maxChunkChars: 4000,
-    },
-    audit: {
-      maxEvents: 1000,
-    },
-    process: {
-      maxOutputBufferMb: 10
-    }
-  },
-  audit: {
-    strictMode: false
-  }
-}, null, 2), "utf8");
 writeFileSync(configPath, JSON.stringify({
   subagents: {
     defaultTemplate: "ephemeral-project-subagent",
@@ -136,7 +59,7 @@ writeFileSync(configPath, JSON.stringify({
 
 process.env.DOTENV_CONFIG_PATH = dotenvPath;
 process.env.PORTUS_MCP_CONFIG_PATH = configPath;
-process.env.PORTUS_MCP_POLICY_PATH = policyPath;
+delete process.env.PORTUS_MCP_POLICY_PATH;
 process.env.PORTUS_MCP_STATE_DIR = stateDir;
 process.env.AGENT_SKILL_PATHS = "";
 process.env.SUBAGENTS_SKILL_PATHS = "";
@@ -146,53 +69,73 @@ process.env.CEREBRAS_API_KEY = "test-key";
 
 const { createHttpServer } = await import("../src/server.js");
 
-const { getEffectivePermissions, updatePermissions } = await import("../src/state/PermissionRegistry.js");
+const { loadPolicyConfig, policyPermissions } = await import("../src/policy/policyConfig.js");
 const { upsertProject } = await import("../src/state/ProjectRegistry.js");
+const selectedPolicy = loadPolicyConfig();
+const withMainAgentPermissions = (
+  permissions: Partial<typeof selectedPolicy.main_agent.permissions>
+): typeof selectedPolicy => ({
+  ...selectedPolicy,
+  main_agent: {
+    permissions: { ...selectedPolicy.main_agent.permissions, ...permissions }
+  }
+});
+const networkDeniedPolicy: typeof selectedPolicy = {
+  ...selectedPolicy,
+  subagents: {
+    ...selectedPolicy.subagents,
+    permissions: {
+      ...selectedPolicy.subagents.permissions,
+      networkAccess: false
+    }
+  }
+};
+
+
 
 function resultOf(response: any): any {
   assert.equal(response.isError, undefined, JSON.stringify(response.structuredContent));
   return response.structuredContent.result;
 }
 
-async function withClient(t: any): Promise<Client> {
-  const server = createHttpServer("/mcp");
+async function withClient(t: TestContext, policyProvider: () => typeof selectedPolicy = () => selectedPolicy): Promise<Client> {
+  const server = createHttpServer("/mcp", policyProvider);
   await new Promise<void>((resolve) => server.listen(0, resolve));
-  t.after(() => server.close());
   const address = server.address();
   assert.equal(typeof address, "object");
   assert(address && "port" in address);
   const client = new Client({ name: "security-regression-test", version: "0.1.1" });
   const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`));
   await client.connect(transport);
-  t.after(async () => client.close());
+  t.after(async () => {
+    await client.close();
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  });
   return client;
 }
 
-test("permission gates cover every main_agent and agents field", () => {
+test("permission gates cover every selected-policy permission", () => {
   for (const permission of ["readGitIgnoredFiles", "allowShell"] as const) {
-    assert.throws(() => assertMainAgentPermission(permission, "missing-project"), /Permission denied/);
+    assert.throws(() => assertMainAgentPermission(permission, selectedPolicy), /Permission denied/);
   }
   for (const permission of ["subagentTask", "projectContext", "projectRead", "projectSearch", "projectEdit", "projectPatch", "projectRun", "projectPolicy", "requireConfirmation"] as const) {
-    assert.doesNotThrow(() => assertMainAgentPermission(permission, "missing-project"));
+    assert.doesNotThrow(() => assertMainAgentPermission(permission, selectedPolicy));
   }
 
-  for (const permission of ["network"] as const) {
-    assert.throws(() => assertSubagentPermission(permission, "missing-project"), /Permission denied/);
-  }
-  for (const permission of ["maxRuntimeSecs"] as const) {
-    assert.doesNotThrow(() => assertSubagentPermission(permission, "missing-project"));
-  }
-});
+  assert.throws(() => assertSubagentPermission("network", networkDeniedPolicy), /Permission denied/);
+  assert.doesNotThrow(() => assertSubagentPermission("maxRuntimeSecs", selectedPolicy));
 
-test("runtime permissions override policy defaults", () => {
-  updatePermissions({ projectAlias: "runtime", permissions: { main_agent: { }, subagents: { network: true } } });
-  const effective = getEffectivePermissions("runtime");
+  const effective = policyPermissions(networkDeniedPolicy);
   assert.equal(effective.main_agent.projectEdit, true);
-  assert.equal(effective.subagents.network, true);
+  assert.equal(effective.subagents.network, false);
 });
 
-test("each broad project tool is gated only by its matching permission", async (t) => {
-  const client = await withClient(t);
+test("broad project operations use their matching selected-policy permission", async (t) => {
+  let activePolicy = selectedPolicy;
+  const client = await withClient(t, () => activePolicy);
   const projectAlias = "broad-gates";
   upsertProject({ projectAlias, rootPath: projectRoot });
   const cases = [
@@ -206,14 +149,94 @@ test("each broad project tool is gated only by its matching permission", async (
   ] as const;
 
   for (const entry of cases) {
-    updatePermissions({ projectAlias, permissions: { main_agent: { [entry.permission]: false } } });
+    activePolicy = withMainAgentPermissions({ [entry.permission]: false });
     const denied = await client.callTool({ name: entry.tool, arguments: entry.arguments });
     assert.equal(denied.isError, true, `${entry.tool} should be denied`);
-    assert.match(JSON.stringify(denied.structuredContent), new RegExp(`main_agent\\.${entry.permission}`));
-    updatePermissions({ projectAlias, permissions: { main_agent: { [entry.permission]: true } } });
+    assert.match(
+      JSON.stringify(denied.structuredContent),
+      new RegExp(`main_agent\\.${entry.permission}`)
+    );
+
+    activePolicy = selectedPolicy;
     const allowed = await client.callTool({ name: entry.tool, arguments: entry.arguments });
-    assert.equal(allowed.isError, undefined, `${entry.tool} should be allowed: ${JSON.stringify(allowed.structuredContent)}`);
+    assert.equal(allowed.isError, undefined, `${entry.tool} should be allowed: ${JSON.stringify(allowed)}`);
   }
+});
+
+test("ignored-file authorization does not widen default root search", async (t) => {
+  const ignoredAccessPolicy = withMainAgentPermissions({ readGitIgnoredFiles: true });
+  const client = await withClient(t, () => ignoredAccessPolicy);
+  const projectAlias = "ignored-search-scope";
+  upsertProject({ projectAlias, rootPath: projectRoot });
+
+  const defaultScope = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: {
+      projectAlias,
+      requests: [{
+        mode: "text",
+        query: "nested ignored content",
+        relativePath: ".",
+        expect: "absent"
+      }]
+    }
+  })).results[0].sections.text;
+  assert.deepEqual(defaultScope.matches, []);
+  assert.equal(defaultScope.scan.complete, true);
+  assert.equal(defaultScope.expectation.met, true);
+
+  const optedInScope = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: {
+      projectAlias,
+      requests: [{
+        mode: "text",
+        query: "nested ignored content",
+        relativePath: ".",
+        includeGitIgnored: true,
+        expect: "present"
+      }]
+    }
+  })).results[0].sections.text;
+  assert.equal(optedInScope.matches.length, 1);
+  assert.equal(optedInScope.matches[0].relativePath, "ignored-dir/nested.txt");
+  assert.equal(optedInScope.expectation.met, true);
+});
+
+test("regex timeout leaves the MCP server responsive", async (t) => {
+  const regexPolicy: typeof selectedPolicy = {
+    ...selectedPolicy,
+    limits: {
+      ...selectedPolicy.limits,
+      search: {
+        ...selectedPolicy.limits.search,
+        maxRegexExecutionMs: 50
+      }
+    }
+  };
+  const client = await withClient(t, () => regexPolicy);
+  const projectAlias = "regex-timeout";
+  upsertProject({ projectAlias, rootPath: projectRoot });
+
+  const section = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: {
+      projectAlias,
+      requests: [{
+        mode: "text",
+        query: "(a+)+$",
+        regex: true,
+        relativePath: "pathological-regex.txt",
+        maxResults: 10
+      }]
+    }
+  })).results[0].sections.text;
+  assert.equal(section.ok, true);
+  assert.equal(section.scan.complete, false);
+  assert.deepEqual(section.scan.reasons, ["regex_timeout"]);
+
+  const toolsAfterTimeout = await client.listTools();
+  assert.equal(toolsAfterTimeout.tools.some((tool) => tool.name === "project_search"), true);
 });
 
 test("unregistered tool invocations fail closed", async (t) => {
@@ -239,9 +262,17 @@ test("canonical project boundary permits internal links and rejects external jun
   symlinkSync(outsideRoot, outsideLink, directoryLinkType);
   symlinkSync(insideRoot, insideLink, directoryLinkType);
   symlinkSync(projectRoot, rootLink, directoryLinkType);
+  t.after(() => {
+    for (const junction of [outsideLink, insideLink, rootLink]) {
+      try {
+        unlinkSync(junction);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+  });
 
   const linkedRegistration = upsertProject({ projectAlias, rootPath: rootLink });
-  updatePermissions({ projectAlias, permissions: { main_agent: { } } });
   assert.equal(linkedRegistration.rootPath, realpathSync.native(projectRoot));
 
   const reads = resultOf(await client.callTool({
@@ -380,8 +411,9 @@ test("MCP denies gitignored-file reads and excludes traversal patterns", async (
     name: "project_search",
     arguments: { projectAlias: "sec", requests: [{ mode: "text", query: "hidden ignored content", relativePath: "ignored.txt" }] }
   })).results[0];
-  assert.equal(ignoredFileSearch.sections.text.ok, false);
-  assert.match(ignoredFileSearch.sections.text.error, /readGitIgnoredFiles/);
+  assert.equal(ignoredFileSearch.sections.text.ok, true);
+  assert.deepEqual(ignoredFileSearch.sections.text.matches, []);
+  assert.equal(ignoredFileSearch.sections.text.scan.complete, true);
 
   const excludedFileSearch = resultOf(await client.callTool({
     name: "project_search",
@@ -389,6 +421,48 @@ test("MCP denies gitignored-file reads and excludes traversal patterns", async (
   })).results[0];
   assert.equal(excludedFileSearch.sections.text.ok, true);
   assert.deepEqual(excludedFileSearch.sections.text.matches, []);
+
+  for (const mode of ["files", "text", "symbols", "all"] as const) {
+    const directExcludedSearch = resultOf(await client.callTool({
+      name: "project_search",
+      arguments: {
+        projectAlias: "sec",
+        requests: [{
+          mode,
+          query: "not present",
+          relativePath: `skip-me/missing-${mode}.txt`,
+          expect: "absent"
+        }]
+      }
+    })).results[0];
+    assert.equal(directExcludedSearch.ok, true);
+    assert.equal(directExcludedSearch.outcome, "completed");
+    const sectionNames = mode === "all" ? ["files", "text", "symbols"] as const : [mode];
+    for (const sectionName of sectionNames) {
+      const section = directExcludedSearch.sections[sectionName];
+      assert.deepEqual(section.matches, []);
+      assert.equal(section.scan.complete, true);
+      assert.equal(section.scan.filesVisited, 0);
+      assert.equal(section.scan.directoriesVisited, 0);
+    }
+  }
+
+  const missingIgnoredSearch = resultOf(await client.callTool({
+    name: "project_search",
+    arguments: {
+      projectAlias: "sec",
+      requests: [{
+        mode: "text",
+        query: "not present",
+        relativePath: "ignored-dir/missing.txt",
+        expect: "absent"
+      }]
+    }
+  })).results[0].sections.text;
+  assert.deepEqual(missingIgnoredSearch.matches, []);
+  assert.equal(missingIgnoredSearch.scan.complete, true);
+  assert.equal(missingIgnoredSearch.scan.filesVisited, 0);
+  assert.equal(missingIgnoredSearch.scan.directoriesVisited, 0);
 });
 
 test("MCP package script tools cannot consume ignored package.json files when ignored reads are disabled", async (t) => {
@@ -401,7 +475,6 @@ test("MCP package script tools cannot consume ignored package.json files when ig
 
   const projectAlias = "ignored-package";
   upsertProject({ projectAlias, rootPath: ignoredPackageProjectRoot });
-  updatePermissions({ projectAlias, permissions: { main_agent: { projectRun: true } } });
 
   const context = resultOf(await client.callTool({
     name: "project_context",
@@ -443,7 +516,6 @@ test("MCP mutation tools cannot operate on existing gitignored files when ignore
   const client = await withClient(t);
   const projectAlias = "ignored-mutation";
   upsertProject({ projectAlias, rootPath: projectRoot });
-  updatePermissions({ projectAlias, permissions: { main_agent: { } } });
 
   const operations = [
     { type: "write", relativePath: "ignored.txt", content: "overwrite\n" },

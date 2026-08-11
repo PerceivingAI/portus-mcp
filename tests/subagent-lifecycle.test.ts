@@ -118,6 +118,8 @@ const defaultPolicy = {
       projectRun: true,
       projectPolicy: false,
       readGitIgnoredFiles: false,
+      requireConfirmation: false,
+      allowShell: false,
       allowedCommands: ["git"]
     }
   },
@@ -141,6 +143,9 @@ const defaultPolicy = {
     search: {
       maxScanEntries: 100000,
       maxTextFileChars: 200000,
+      maxRegexExecutionMs: 120000,
+      maxBatchMatches: 5000,
+      maxBatchOutputChars: 500000
     },
     skills: {
       maxReadChars: 200000,
@@ -157,7 +162,8 @@ const defaultPolicy = {
       maxEvents: 1000,
     },
     process: {
-      maxOutputBufferMb: 10
+      maxOutputBufferMb: 10,
+      maxBatchOutputChars: 1000000
     }
   },
   audit: {

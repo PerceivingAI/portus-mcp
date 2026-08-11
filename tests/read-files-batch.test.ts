@@ -37,13 +37,13 @@ const basePolicy = {
     lifecycle: { queuedTaskTtlSecs: 300, projectLockTimeoutSecs: 1800, maxRuntimeSecs: 900, startupWatchdogMs: 15000, forcedCloseGraceMs: 8000, killEscalationDelayMs: 1200, queueDrainDelayMs: 50 },
     permissions: { networkAccess: true, allowedCommands: ["git"] }
   },
-  main_agent: { permissions: { subagentTask: false, projectContext: true, projectRead: true, projectSearch: true, projectEdit: false, projectPatch: false, projectRun: false, projectPolicy: true, readGitIgnoredFiles: false, allowedCommands: ["git"] } },
+  main_agent: { permissions: { subagentTask: false, projectContext: true, projectRead: true, projectSearch: true, projectEdit: false, projectPatch: false, projectRun: false, projectPolicy: true, readGitIgnoredFiles: false, requireConfirmation: false, allowShell: false, allowedCommands: ["git"] } },
   pathPolicy: { blockedPatterns: [".env"] },
   limits: {
     fileRead: { maxChars: 500000 }, fileWrite: { maxChars: 1000000 }, patch: { maxChars: 1000000 },
-    textEdit: { maxOperationChars: 200000, maxSearchOrMarkerChars: 20000 }, search: { maxScanEntries: 100000, maxTextFileChars: 200000 },
+    textEdit: { maxOperationChars: 200000, maxSearchOrMarkerChars: 20000 }, search: { maxScanEntries: 100000, maxTextFileChars: 200000, maxRegexExecutionMs: 120000, maxBatchMatches: 5000, maxBatchOutputChars: 500000 },
     skills: { maxReadChars: 200000 }, subagentOutput: { maxStdoutChars: 200000, maxStderrChars: 200000 },
-    sessionEvents: { maxEvents: 500, maxChunkChars: 4000 }, audit: { maxEvents: 1000 }, process: { maxOutputBufferMb: 10 }
+    sessionEvents: { maxEvents: 500, maxChunkChars: 4000 }, audit: { maxEvents: 1000 }, process: { maxOutputBufferMb: 10, maxBatchOutputChars: 1000000 }
   },
   audit: { strictMode: false }
 };
@@ -65,7 +65,6 @@ process.env.SUBAGENTS_SKILL_PATHS = "";
 
 // Configuration reads environment variables at module initialization, so this test intentionally imports after fixture setup.
 const { createHttpServer } = await import("../src/server.js");
-const { updatePermissions } = await import("../src/state/PermissionRegistry.js");
 const { upsertProject } = await import("../src/state/ProjectRegistry.js");
 const { stateStore } = await import("../src/state/StateStore.js");
 
@@ -208,11 +207,6 @@ test("project_read exposes and enforces its complete MCP batch contract", async 
     }
   });
 
-  await t.test("checks read permission once for the whole call", async () => {
-    updatePermissions({ projectAlias: "batch", permissions: { main_agent: { projectRead: false } } });
-    assert.equal(errorOf(await callRead(client, [{ relativePath: "missing.txt", mode: "content" }, { relativePath: "one.txt", mode: "content" }])), "Permission denied: main_agent.projectRead is false");
-    updatePermissions({ projectAlias: "batch", permissions: { main_agent: { projectRead: true } } });
-  });
 
   await t.test("applies the server limit independently and counts Unicode code points", async () => {
     writePolicy(3);

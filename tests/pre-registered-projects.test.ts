@@ -48,6 +48,8 @@ writeFileSync(policyPath, JSON.stringify({
       projectPatch: true,
       projectRun: false,
       projectPolicy: true,
+      requireConfirmation: false,
+      allowShell: false,
       allowedCommands: ["git"]
     }
   },
@@ -71,6 +73,9 @@ writeFileSync(policyPath, JSON.stringify({
     search: {
       maxScanEntries: 100000,
       maxTextFileChars: 200000,
+      maxRegexExecutionMs: 120000,
+      maxBatchMatches: 5000,
+      maxBatchOutputChars: 500000
     },
     skills: {
       maxReadChars: 200000,
@@ -87,7 +92,8 @@ writeFileSync(policyPath, JSON.stringify({
       maxEvents: 1000,
     },
     process: {
-      maxOutputBufferMb: 10
+      maxOutputBufferMb: 10,
+      maxBatchOutputChars: 1000000
     }
   },
   audit: {

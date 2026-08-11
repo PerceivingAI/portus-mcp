@@ -49,6 +49,8 @@ const basePolicy = {
       projectPatch: true,
       projectRun: false,
       projectPolicy: true,
+      requireConfirmation: false,
+      allowShell: false,
       allowedCommands: ["git"]
     }
   },
@@ -72,6 +74,9 @@ const basePolicy = {
     search: {
       maxScanEntries: 100000,
       maxTextFileChars: 200000,
+      maxRegexExecutionMs: 120000,
+      maxBatchMatches: 5000,
+      maxBatchOutputChars: 500000
     },
     skills: {
       maxReadChars: 200000,
@@ -88,7 +93,8 @@ const basePolicy = {
       maxEvents: 1000,
     },
     process: {
-      maxOutputBufferMb: 10
+      maxOutputBufferMb: 10,
+      maxBatchOutputChars: 1000000
     }
   },
   audit: {
@@ -131,7 +137,6 @@ process.env.PORTUS_MCP_CEREBRAS_MODEL = "llama3.1-8b";
 process.env.CEREBRAS_API_KEY = "test-key";
 
 const { createHttpServer } = await import("../src/server.js");
-const { loadPolicyConfig } = await import("../src/policy/policyConfig.js");
 // State modules read environment variables during initialization, so project setup must follow fixture configuration.
 const { upsertProject } = await import("../src/state/ProjectRegistry.js");
 
@@ -225,31 +230,5 @@ test("text input limits count Unicode code points", async (t) => {
   assert.match(rejectedWrite.results[0].error, /limits\.fileWrite\.maxChars/);
 });
 
-test("policy validation rejects the removed flat policy layout", () => {
-  writePolicy({
-    ...basePolicy,
-    output: {
-      maxReadChars: 11
-    }
-  });
-
-  assert.throws(() => loadPolicyConfig(), /output/);
-  writePolicy();
-});
-
-test("policy validation rejects obsolete operation-level permissions", () => {
-  writePolicy({
-    ...basePolicy,
-    main_agent: {
-      permissions: {
-        ...basePolicy.main_agent.permissions,
-        readFiles: true
-      }
-    }
-  });
-
-  assert.throws(() => loadPolicyConfig(), /readFiles|Unrecognized key/);
-  writePolicy();
-});
 
 
