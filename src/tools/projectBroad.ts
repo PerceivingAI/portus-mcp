@@ -733,22 +733,21 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
         continue;
       }
 
-      const itemTimeoutMs = Math.min(
-        (req.timeoutSecs ?? 120) * 1000,
-        remainingMs
-      );
+      const requestedTimeoutMs = (req.timeoutSecs ?? 120) * 1000;
+      const timeoutSource = remainingMs < requestedTimeoutMs ? "batch" : "request";
+      const itemTimeoutMs = Math.min(requestedTimeoutMs, remainingMs);
 
       const allowedExitCodes = resolveExpectedExitCodes(req);
       let itemResult: Record<string, unknown>;
       try {
         if (req.type === "check") {
           const checkRes = await runProjectCheck(projectRoot, req.name ?? "check", itemTimeoutMs);
-          stateStore.audit({ tool: "project_run", type: "check", projectAlias, name: req.name ?? "check", exitCode: checkRes.exitCode, batchIndex: index });
+          stateStore.audit({ tool: "project_run", type: "check", projectAlias, name: req.name ?? "check", outcome: checkRes.outcome, exitCode: checkRes.exitCode, batchIndex: index });
           const ok = checkRes.outcome === "exited" && checkRes.exitCode !== null && allowedExitCodes.includes(checkRes.exitCode);
           itemResult = { ok, index, type: "check", name: req.name ?? "check", status: "executed", ...checkRes };
         } else if (req.type === "script") {
           const scriptRes = await runProjectScript(projectRoot, req.name, req.args ?? [], itemTimeoutMs);
-          stateStore.audit({ tool: "project_run", type: "script", projectAlias, name: req.name, args: req.args ?? [], exitCode: scriptRes.exitCode, batchIndex: index });
+          stateStore.audit({ tool: "project_run", type: "script", projectAlias, name: req.name, args: req.args ?? [], outcome: scriptRes.outcome, exitCode: scriptRes.exitCode, batchIndex: index });
           const ok = scriptRes.outcome === "exited" && scriptRes.exitCode !== null && allowedExitCodes.includes(scriptRes.exitCode);
           itemResult = { ok, index, type: "script", name: req.name, status: "executed", ...scriptRes };
         } else {
@@ -757,7 +756,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
             throw new Error("Confirmation required: set confirm=true");
           }
           const cmdRes = await runProjectCommand(projectRoot, req.command, req.args ?? [], itemTimeoutMs, req.shell ?? false, policy);
-          stateStore.audit({ tool: "project_run", type: "command", projectAlias, command: req.command, args: req.args ?? [], exitCode: cmdRes.exitCode, confirm: req.confirm ?? false, batchIndex: index });
+          stateStore.audit({ tool: "project_run", type: "command", projectAlias, command: req.command, args: req.args ?? [], outcome: cmdRes.outcome, exitCode: cmdRes.exitCode, confirm: req.confirm ?? false, batchIndex: index });
           const ok = cmdRes.outcome === "exited" && cmdRes.exitCode !== null && allowedExitCodes.includes(cmdRes.exitCode);
           itemResult = { ok, index, type: "command", requiresConfirmation, status: "executed", ...cmdRes };
         }
@@ -775,6 +774,14 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
           error: safeError(error)
         };
       }
+      if (typeof itemResult.effectiveTimeoutMs === "number") {
+        itemResult.requestedTimeoutMs = requestedTimeoutMs;
+      }
+      if (itemResult.outcome === "timed_out") {
+        itemResult.timeoutSource = timeoutSource;
+        if (timeoutSource === "batch") batchTimedOut = true;
+      }
+
 
       const stdoutStr = typeof itemResult.stdout === "string" ? itemResult.stdout : "";
       const stderrStr = typeof itemResult.stderr === "string" ? itemResult.stderr : "";
@@ -782,17 +789,23 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
 
       if (accumulatedOutputChars + itemChars > maxBatchOutputChars) {
         batchOutputTruncated = true;
-        itemResult.truncated = true;
         const budgetLeft = Math.max(0, maxBatchOutputChars - accumulatedOutputChars);
+        let stdoutBatchTruncated = false;
+        let stderrBatchTruncated = false;
         if (typeof itemResult.stdout === "string") {
           const limited = limitText(itemResult.stdout, budgetLeft);
           itemResult.stdout = limited.text;
+          stdoutBatchTruncated = limited.truncated;
         }
         if (typeof itemResult.stderr === "string") {
           const remainingBudget = Math.max(0, budgetLeft - countChars(typeof itemResult.stdout === "string" ? itemResult.stdout : ""));
           const limited = limitText(itemResult.stderr, remainingBudget);
           itemResult.stderr = limited.text;
+          stderrBatchTruncated = limited.truncated;
         }
+        itemResult.stdoutTruncated = itemResult.stdoutTruncated === true || stdoutBatchTruncated;
+        itemResult.stderrTruncated = itemResult.stderrTruncated === true || stderrBatchTruncated;
+        itemResult.truncated = itemResult.stdoutTruncated === true || itemResult.stderrTruncated === true;
       }
       accumulatedOutputChars += itemChars;
 

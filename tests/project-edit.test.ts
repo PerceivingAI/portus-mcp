@@ -978,6 +978,36 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
   });
 
 
+  await t.test("removes an empty directory created earlier in the same ordered batch", async () => {
+    const target = path.join(projectRoot, "ordered-empty-directory");
+    const batch = resultOf(await callEdit(client, [
+      { type: "mkdir", relativePath: "ordered-empty-directory", recursive: false },
+      { type: "rmdir", relativePath: "ordered-empty-directory", recursive: false, confirm: true }
+    ], false, false, "ordered"));
+    assertBatchCountInvariant(batch);
+    assert.equal(batch.batchOutcome, "succeeded");
+    assert.equal(batch.repositoryState, "changed");
+    assert.equal(batch.appliedCount, 2);
+    assert.deepEqual(batch.results.map((result: Record<string, unknown>) => result.operationStatus), ["applied", "applied"]);
+    assert.equal(existsSync(target), false);
+  });
+
+  await t.test("preserves a non-empty directory when nonrecursive removal fails", async () => {
+    const target = path.join(projectRoot, "ordered-nonempty-directory");
+    const child = path.join(target, "child.txt");
+    mkdirSync(target);
+    writeFileSync(child, "keep\n", "utf8");
+    const batch = resultOf(await callEdit(client, [
+      { type: "rmdir", relativePath: "ordered-nonempty-directory", recursive: false, confirm: true }
+    ], false, false, "ordered"));
+    assertBatchCountInvariant(batch);
+    assert.equal(batch.batchOutcome, "failed");
+    assert.equal(batch.errorCount, 1);
+    assert.equal(batch.results[0].operationStatus, "failed");
+    assert.equal(existsSync(target), true);
+    assert.equal(readFileSync(child, "utf8"), "keep\n");
+  });
+
   await t.test("uses typed results for ordered filesystem operations", async () => {
     writeFileSync(path.join(projectRoot, "copy-source.txt"), "copy\n", "utf8");
     const batch = resultOf(await callEdit(client, [

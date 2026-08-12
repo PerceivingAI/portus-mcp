@@ -7,6 +7,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  rmdirSync,
   statSync,
   unlinkSync,
   writeFileSync
@@ -638,7 +639,11 @@ function executeRmdir(index: number, operation: Extract<EditOperation, { type: "
   stateStore.requireAuditWritable();
   resolveProjectPath(projectAlias, operation.relativePath);
   markMutation();
-  rmSync(target, { recursive: operation.recursive, force: false });
+  if (operation.recursive) {
+    rmSync(target, { recursive: true, force: false });
+  } else {
+    rmdirSync(target);
+  }
   return applied(identity);
 }
 

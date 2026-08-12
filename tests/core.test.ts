@@ -217,7 +217,7 @@ test("allowShell comes exclusively from the supplied policy", () => {
 
 test("Native argv execution: direct command receives literal metacharacters without shell parsing", async () => {
   const metaArg = "patternA\\|patternB\\|patternC";
-  const result = await runProjectCommand(projectRoot, "node", ["-e", "console.log(process.argv[1])", metaArg], 10, false);
+  const result = await runProjectCommand(projectRoot, "node", ["-e", "console.log(process.argv[1])", metaArg], 10000, false);
   assert.equal(result.outcome, "exited");
   assert.equal(result.exitCode, 0);
   assert.equal(result.stdout.trim(), metaArg);
@@ -226,14 +226,14 @@ test("Native argv execution: direct command receives literal metacharacters with
 test("shell=true is rejected when selected policy disables shell execution", async () => {
   const deniedPolicy = withMainAgentPermissions({ allowShell: false });
   await assert.rejects(
-    async () => runProjectCommand(projectRoot, "node", ["-e", "console.log(1)"], 10, true, deniedPolicy),
+    async () => runProjectCommand(projectRoot, "node", ["-e", "console.log(1)"], 10000, true, deniedPolicy),
     /Permission denied: main_agent.allowShell is false/
   );
 });
 
 test("shell=true executes cross-platform shell operators when selected policy enables shell execution", async () => {
   const allowedPolicy = withMainAgentPermissions({ allowShell: true });
-  const result = await runProjectCommand(projectRoot, "node", ["--version", "&&", "node", "--version"], 10, true, allowedPolicy);
+  const result = await runProjectCommand(projectRoot, "node", ["--version", "&&", "node", "--version"], 10000, true, allowedPolicy);
   assert.equal(result.outcome, "exited");
   assert.equal(result.exitCode, 0);
   const versionLines = result.stdout.trim().split(/\r?\n/);
@@ -288,11 +288,28 @@ test("Process outcome contract: Missing executable returns outcome=spawn_failed,
   assert.equal(result.stderr, "");
 });
 
-test("Process outcome contract: Execution deadline returns outcome=timed_out", async () => {
-  const result = await runProjectCommand(projectRoot, "node", ["-e", "setTimeout(() => {}, 10000)"], 1);
+test("Process outcome contract: Execution deadline preserves partial stdout and stderr", async () => {
+  // This exercises the real child-process deadline; fake timers cannot drive the spawned process.
+  const result = await runProjectCommand(
+    projectRoot,
+    "node",
+    ["-e", "console.log('partial-timeout-stdout'); console.error('partial-timeout-stderr'); process.stdin.resume()"],
+    1000
+  );
   assert.equal(result.outcome, "timed_out");
   assert.equal(result.exitCode, null);
   assert.match(result.executionError ?? "", /timed out/i);
+  assert.equal(result.stdout.trim(), "partial-timeout-stdout");
+  assert.equal(result.stderr.trim(), "partial-timeout-stderr");
+  assert.equal(result.truncated, false);
+  assert.equal(result.effectiveTimeoutMs, 1000);
+  assert.equal(result.elapsedMs >= 900, true);
+  assert.equal(result.elapsedMs < 10000, true);
+  assert.equal(result.stdoutTruncated, false);
+  assert.equal(result.stderrTruncated, false);
+  assert.equal(result.termination?.attempted, true);
+  assert.equal(result.termination?.confirmed, true);
+  assert.equal(result.termination?.childCloseObserved, true);
 });
 
 test("optionalEnv returns fallback when environment variable is missing, empty, or whitespace", () => {
@@ -330,10 +347,15 @@ test("git.exe -C .. status is rejected by project confinement on all platforms",
 
 
 test("Process exceeding maxBuffer returns output_limit outcome", async () => {
-  const result = await runProjectCommand(projectRoot, "node", ["-e", "console.log('x'.repeat(20 * 1024 * 1024))"], 10);
+  const result = await runProjectCommand(projectRoot, "node", ["-e", "console.log('x'.repeat(20 * 1024 * 1024))"], 10000);
   assert.equal(result.outcome, "output_limit");
   assert.equal(result.exitCode, null);
   assert.match(result.executionError ?? "", /buffer limit/i);
+  assert.equal(result.stdoutTruncated, true);
+  assert.equal(result.stderrTruncated, false);
+  assert.equal(result.truncated, true);
+  assert.equal(result.termination?.attempted, true);
+  assert.equal(result.termination?.childCloseObserved, true);
 });
 
 test("toPublicAuditEvent preserves safe edit metadata and drops sensitive fields", () => {

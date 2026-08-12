@@ -11,6 +11,7 @@ import { optionalEnv } from "../env.js";
 import { assertSubagentPermission } from "../policy/permissionPolicy.js";
 import { loadSubagentCommandConfig, loadPolicyConfig, policyPermissions } from "../policy/policyConfig.js";
 import { countChars } from "../runtime/outputLimits.js";
+import { terminateProcessTree } from "../runtime/processTermination.js";
 import type { SkillAudienceRegistry } from "../skills/SkillRegistry.js";
 
 const runningProcesses = new Map<string, ChildProcess>();
@@ -885,103 +886,16 @@ function delay(ms: number) {
   return promise;
 }
 
-const terminationPromises = new WeakMap<ChildProcess, Promise<void>>();
-
-function terminateChildTree(child: ChildProcess, reason: string): Promise<void> {
-  const existing = terminationPromises.get(child);
-  if (existing) return existing;
-  const termination = performChildTreeTermination(child, reason).catch((error) => {
-    terminationPromises.delete(child);
-    throw error;
+async function terminateChildTree(child: ChildProcess, reason: string): Promise<void> {
+  const lifecycle = loadPolicyConfig().subagents.lifecycle;
+  const result = await terminateProcessTree(child, {
+    escalationDelayMs: lifecycle.killEscalationDelayMs,
+    forcedCloseGraceMs: lifecycle.forcedCloseGraceMs,
+    fallbackToTrackedChild: false
   });
-  terminationPromises.set(child, termination);
-  return termination;
-}
-
-async function performChildTreeTermination(child: ChildProcess, reason: string): Promise<void> {
-  const pid = child.pid;
-  if (!pid) throw new Error("Cannot terminate process tree without a process id");
-  if (process.platform === "win32") {
-    if (hasChildExited(child)) {
-      throw new Error(`Cannot confirm process-tree termination for process ${pid}: the tracked process exited before taskkill`);
-    }
-    await runTaskkill(pid);
-    await confirmChildExit(child);
-  } else {
-    if (!hasProcessGroupExited(pid)) {
-      signalProcessGroup(pid, "SIGTERM");
-      const exitedDuringGrace = await waitForProcessGroupExit(pid, loadPolicyConfig().subagents.lifecycle.killEscalationDelayMs);
-      if (!exitedDuringGrace) {
-        signalProcessGroup(pid, "SIGKILL");
-      }
-    }
-    await confirmChildExit(child);
-    const groupExited = await waitForProcessGroupExit(pid, loadPolicyConfig().subagents.lifecycle.forcedCloseGraceMs);
-    if (!groupExited) throw new Error(`Process group ${pid} remained alive after SIGKILL`);
+  if (!result.confirmed || !result.childCloseObserved) {
+    throw new Error(result.error ?? `Process-tree termination could not be confirmed for process ${child.pid ?? "unknown"}`);
   }
-  stateStore.audit({ tool: "subagent_task", kill: "confirmed", pid, reason });
-}
-
-function hasChildExited(child: ChildProcess): boolean {
-  return child.exitCode !== null || child.signalCode !== null;
-}
-
-function hasProcessGroupExited(pid: number): boolean {
-  try {
-    process.kill(-pid, 0);
-    return false;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ESRCH";
-  }
-}
-
-function signalProcessGroup(pid: number, signal: NodeJS.Signals): void {
-  try {
-    process.kill(-pid, signal);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-  }
-}
-
-async function waitForProcessGroupExit(pid: number, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  do {
-    if (hasProcessGroupExited(pid)) return true;
-    await delay(20);
-  } while (Date.now() < deadline);
-  return hasProcessGroupExited(pid);
-}
-
-async function confirmChildExit(child: ChildProcess): Promise<void> {
-  if (hasChildExited(child)) return;
-  const timeoutMs = loadPolicyConfig().subagents.lifecycle.forcedCloseGraceMs;
-  const { promise, resolve, reject } = deferred<void>();
-  const timeout = setTimeout(() => {
-    cleanup();
-    reject(new Error(`Process ${child.pid ?? "unknown"} did not exit after tree termination`));
-  }, timeoutMs);
-  const onExit = () => {
-    cleanup();
-    resolve();
-  };
-  const cleanup = () => {
-    clearTimeout(timeout);
-    child.off("exit", onExit);
-    child.off("close", onExit);
-  };
-  child.once("exit", onExit);
-  child.once("close", onExit);
-  await promise;
-}
-
-async function runTaskkill(pid: number): Promise<void> {
-  const { promise, resolve, reject } = deferred<void>();
-  const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
-  killer.once("error", reject);
-  killer.once("close", (code) => {
-    if (code === 0) resolve();
-    else reject(new Error(`taskkill failed for process ${pid} with exit code ${code}`));
-  });
-  await promise;
+  stateStore.audit({ tool: "subagent_task", kill: "confirmed", pid: child.pid, reason });
 }
 

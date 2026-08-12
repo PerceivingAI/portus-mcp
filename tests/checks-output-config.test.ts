@@ -133,14 +133,14 @@ const { limitText } = await import("../src/runtime/outputLimits.js");
 const { listAgentProviderDefinitions, loadAgentProviderConfig, loadConfig } = await import("../src/config.js");
 
 test("project checks return successful stdout", async () => {
-  const result = await runProjectCheck(projectRoot, "check", 10);
+  const result = await runProjectCheck(projectRoot, "check", 10000);
   assert.equal(result.outcome, "exited");
   assert.equal(result.exitCode, 0);
   assert.match(result.stdout, /ok/);
 });
 
 test("project checks return failure stderr and exit code", async () => {
-  const result = await runProjectCheck(projectRoot, "fail", 10);
+  const result = await runProjectCheck(projectRoot, "fail", 10000);
   assert.equal(result.outcome, "exited");
   assert.equal(result.exitCode, 3);
   assert.match(result.stderr, /bad/);

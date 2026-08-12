@@ -26,9 +26,18 @@ mkdirSync(path.join(skillsDir, "no-entrypoint"), { recursive: true });
 writeFileSync(path.join(projectRoot, "README.md"), "# MCP Test README\n", "utf8");
 writeFileSync(path.join(projectRoot, "package.json"), JSON.stringify({
   scripts: {
-    check: "node -e \"console.log('check-ok')\""
+    check: "node -e \"console.log('check-ok')\"",
+    "timeout-output": "node -e \"console.log('mcp-timeout-stdout'); console.error('mcp-timeout-stderr'); process.stdin.resume()\"",
+    "timeout-tree": "node timeout-tree.cjs",
+    "batch-output": "node -e \"process.stdout.write('o'.repeat(199000)); process.stderr.write('e'.repeat(199000))\""
   }
 }, null, 2), "utf8");
+writeFileSync(path.join(projectRoot, "timeout-tree.cjs"), [
+  "const { spawn } = require('node:child_process');",
+  "const descendant = spawn(process.execPath, ['-e', \"require('node:net').createServer().listen(0)\"], { stdio: 'ignore' });",
+  "console.log(`descendant-pid=${descendant.pid}`);",
+  "require('node:net').createServer().listen(0);"
+].join("\n"), "utf8");
 execFileSync("git", ["init"], { cwd: projectRoot, stdio: "ignore" });
 writeFileSync(path.join(skillsDir, "sample", "SKILL.md"), [
   "---",
@@ -95,6 +104,16 @@ function resultOf(response: any): any {
   assert.equal(response.isError, undefined, JSON.stringify(response.structuredContent));
   return response.structuredContent.result;
 }
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
+}
+
 
 function assertPublicSession(session: any): void {
   assert.equal(typeof session.sessionId, "string");
@@ -660,6 +679,77 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   })).results[0];
   assert.equal(runScript.outcome, "exited");
   assert.equal(runScript.exitCode, 0);
+  // These calls exercise real child-process deadlines; fake timers cannot drive processes behind the MCP server.
+  const timeoutBatch = resultOf(await client.callTool({
+    name: "project_run",
+    arguments: {
+      projectAlias: "mcp",
+      requests: [{ type: "script", name: "timeout-output", timeoutSecs: 5 }]
+    }
+  }));
+  const timeoutResult = timeoutBatch.results[0];
+  assert.equal(timeoutResult.ok, false);
+  assert.equal(timeoutResult.status, "executed");
+  assert.equal(timeoutResult.outcome, "timed_out");
+  assert.equal(timeoutResult.exitCode, null);
+  assert.match(timeoutResult.stdout, /mcp-timeout-stdout/);
+  assert.match(timeoutResult.stderr, /mcp-timeout-stderr/);
+  assert.equal(timeoutResult.requestedTimeoutMs, 5000);
+  assert.equal(timeoutResult.effectiveTimeoutMs, 5000);
+  assert.equal(timeoutResult.timeoutSource, "request");
+  assert.equal(timeoutResult.elapsedMs >= 4500, true);
+  assert.equal(timeoutResult.stdoutTruncated, false);
+  assert.equal(timeoutResult.stderrTruncated, false);
+  assert.equal(timeoutResult.termination.confirmed, true);
+  assert.equal(timeoutResult.termination.childCloseObserved, true);
+  assert.equal(timeoutBatch.requestedCount, timeoutBatch.successCount + timeoutBatch.failedCount + timeoutBatch.errorCount + timeoutBatch.skippedCount);
+
+  const batchDeadline = resultOf(await client.callTool({
+    name: "project_run",
+    arguments: {
+      projectAlias: "mcp",
+      batchTimeoutSecs: 1,
+      requests: [{ type: "script", name: "timeout-output", timeoutSecs: 10 }]
+    }
+  }));
+  const batchDeadlineResult = batchDeadline.results[0];
+  assert.equal(batchDeadlineResult.outcome, "timed_out");
+  assert.equal(batchDeadlineResult.requestedTimeoutMs, 10000);
+  assert.equal(batchDeadlineResult.effectiveTimeoutMs > 0 && batchDeadlineResult.effectiveTimeoutMs <= 1000, true);
+  assert.equal(batchDeadlineResult.timeoutSource, "batch");
+  assert.equal(batchDeadline.batchTimedOut, true);
+
+  const timeoutTree = resultOf(await client.callTool({
+    name: "project_run",
+    arguments: {
+      projectAlias: "mcp",
+      requests: [{ type: "script", name: "timeout-tree", timeoutSecs: 5 }]
+    }
+  })).results[0];
+  assert.equal(timeoutTree.outcome, "timed_out");
+  assert.equal(timeoutTree.termination.confirmed, true);
+  const descendantMatch = timeoutTree.stdout.match(/descendant-pid=(\d+)/);
+  assert.notEqual(descendantMatch, null, timeoutTree.stdout);
+  assert.equal(isProcessAlive(Number(descendantMatch?.[1])), false);
+  const outputBoundedBatch = resultOf(await client.callTool({
+    name: "project_run",
+    arguments: {
+      projectAlias: "mcp",
+      requests: Array.from({ length: 3 }, () => ({ type: "script", name: "batch-output" }))
+    }
+  }));
+  assert.equal(outputBoundedBatch.batchOutputTruncated, true);
+  const outputBoundedLast = outputBoundedBatch.results[2];
+  assert.equal(outputBoundedLast.stdoutTruncated, false);
+  assert.equal(outputBoundedLast.stderrTruncated, true);
+  assert.equal(outputBoundedLast.truncated, true);
+  const returnedBatchChars = outputBoundedBatch.results.reduce(
+    (total: number, item: { stdout?: string; stderr?: string }) => total + (item.stdout?.length ?? 0) + (item.stderr?.length ?? 0),
+    0
+  );
+  assert.equal(returnedBatchChars <= selectedPolicy.limits.process.maxBatchOutputChars, true);
+
+
   const gitStatus = resultOf(await client.callTool({
     name: "project_run", arguments: { projectAlias: "mcp", requests: [{ type: "command", command: "git", args: ["status", "--short"] }] }
   })).results[0];

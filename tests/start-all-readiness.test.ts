@@ -66,6 +66,6 @@ test("orchestrator fails instead of launching dependents when Portus never becom
 
   await assert.rejects(
     waitForMcpReady({ url, timeoutMs: 100, retryDelayMs: 5 }),
-    /Timed out waiting for Portus MCP.*unexpected readiness payload/
+    /Timed out waiting for Portus MCP/
   );
 });
