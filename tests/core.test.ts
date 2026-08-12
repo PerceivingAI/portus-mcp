@@ -336,7 +336,66 @@ test("Process exceeding maxBuffer returns output_limit outcome", async () => {
   assert.match(result.executionError ?? "", /buffer limit/i);
 });
 
-test("toPublicAuditEvent preserves batchIndex, executionType, and name from raw audit event", () => {
+test("toPublicAuditEvent preserves safe edit metadata and drops sensitive fields", () => {
+  const rawEvent = {
+    timestamp: "2026-08-10T00:00:00.000Z",
+    tool: "project_edit",
+    operation: "replace",
+    projectAlias: "mcp",
+    batchIndex: 2,
+    batchMode: "staged",
+    batchOutcome: "rejected",
+    repositoryState: "unchanged",
+    outcome: "completed",
+    operationStatus: "not_applied",
+    reason: "occurrence_mismatch",
+    fileChanged: false,
+    requestedCount: 2,
+    successCount: 0,
+    failedCount: 1,
+    errorCount: 0,
+    appliedCount: 0,
+    noChangeCount: 0,
+    plannedCount: 0,
+    skippedCount: 1,
+    expectedOccurrences: 1,
+    matchesFound: 0,
+    matchesApplied: 0,
+    source: "secret source",
+    replacement: "secret replacement",
+    expectedSha256: "secret hash",
+    absolutePath: "C:\\secret\\target.txt",
+    error: "secret filesystem error"
+  };
+  const publicEvent = toPublicAuditEvent(rawEvent);
+  assert.deepEqual(publicEvent, {
+    timestamp: rawEvent.timestamp,
+    tool: "project_edit",
+    operation: "replace",
+    projectAlias: "mcp",
+    batchIndex: 2,
+    batchMode: "staged",
+    batchOutcome: "rejected",
+    repositoryState: "unchanged",
+    operationStatus: "not_applied",
+    fileChanged: false,
+    outcome: "completed",
+    requestedCount: 2,
+    successCount: 0,
+    failedCount: 1,
+    errorCount: 0,
+    appliedCount: 0,
+    noChangeCount: 0,
+    plannedCount: 0,
+    skippedCount: 1,
+    expectedOccurrences: 1,
+    matchesFound: 0,
+    matchesApplied: 0,
+    reason: "occurrence_mismatch"
+  } satisfies PublicAuditEvent);
+});
+
+test("toPublicAuditEvent preserves run execution metadata", () => {
   const rawEvent = { timestamp: "2026-08-10T00:00:00.000Z", tool: "project_run", batchIndex: 2, type: "script", name: "check", outcome: "exited", exitCode: 0 };
   const publicEvent = toPublicAuditEvent(rawEvent as Record<string, unknown>);
   assert.equal(publicEvent?.batchIndex, 2);

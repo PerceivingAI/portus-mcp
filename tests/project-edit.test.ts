@@ -122,6 +122,13 @@ function sha256(content: string | Buffer): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
+function assertBatchCountInvariant(batch: Record<string, any>): void {
+  assert.equal(
+    batch.requestedCount,
+    batch.successCount + batch.failedCount + batch.errorCount + batch.skippedCount
+  );
+}
+
 test("project_edit exposes typed exact-edit outcomes", async (t) => {
   const server = createHttpServer("/mcp");
   await new Promise<void>((resolve) => server.listen(0, resolve));
@@ -167,6 +174,7 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
     writeFileSync(target, "unchanged\n", "utf8");
     const before = statSync(target).mtimeMs;
     const batch = resultOf(await callEdit(client, [{ type: "replace", relativePath: "missing-match.txt", search: "absent", replace: "new", expectedOccurrences: 1 }]));
+    assertBatchCountInvariant(batch);
     assert.deepEqual({
       batchMode: batch.batchMode,
       batchOutcome: batch.batchOutcome,
@@ -262,6 +270,7 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
     const target = path.join(projectRoot, "dry-run.txt");
     writeFileSync(target, "marker\n", "utf8");
     const batch = resultOf(await callEdit(client, [{ type: "insert", relativePath: "dry-run.txt", marker: "marker", content: "before-", position: "before" }], true));
+    assertBatchCountInvariant(batch);
     assert.equal(batch.batchOutcome, "planned");
     assert.equal(batch.plannedCount, 1);
     assert.equal(batch.appliedCount, 0);
@@ -526,6 +535,27 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
     assert.equal(existsSync(path.join(projectRoot, "staged-withheld.txt")), false);
   });
 
+  await t.test("classifies staged execution errors separately from semantic rejections", async () => {
+    mkdirSync(path.join(projectRoot, "staged-directory-target"), { recursive: true });
+    const withheldTarget = path.join(projectRoot, "staged-withheld-on-error.txt");
+    const batch = resultOf(await callEdit(client, [
+      { type: "write", relativePath: "staged-withheld-on-error.txt", content: "withheld\n" },
+      { type: "write", relativePath: "staged-directory-target", content: "cannot replace a directory\n" }
+    ]));
+    assert.equal(batch.batchOutcome, "failed");
+    assert.equal(batch.repositoryState, "unchanged");
+    assert.equal(batch.successCount, 0);
+    assert.equal(batch.failedCount, 0);
+    assert.equal(batch.errorCount, 1);
+    assert.equal(batch.skippedCount, 1);
+    assert.equal(batch.requestedCount, batch.successCount + batch.failedCount + batch.errorCount + batch.skippedCount);
+    assert.equal(batch.results[0].operationStatus, "skipped");
+    assert.equal(batch.results[0].reason, "batch_failed");
+    assert.equal(batch.results[1].operationStatus, "failed");
+    assert.equal(batch.results[1].fileChanged, false);
+    assert.equal(existsSync(withheldTarget), false);
+  });
+
   await t.test("returns projected staged dry-run results without mutation", async () => {
     const target = path.join(projectRoot, "staged-dry-run.txt");
     const source = Buffer.from("alpha\nbeta\n");
@@ -624,6 +654,7 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
       { type: "write", relativePath: "staged-commit-parent", content: "parent file\n" },
       { type: "write", relativePath: "staged-commit-parent/child.txt", content: "child file\n" }
     ]));
+    assertBatchCountInvariant(batch);
     assert.equal(batch.batchMode, "staged");
     assert.equal(batch.batchOutcome, "partial");
     assert.equal(batch.repositoryState, "partially_changed");
@@ -694,6 +725,7 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
       { type: "mkdir", relativePath: "existing-dir", recursive: true },
       { type: "mkdir", relativePath: "existing-dir", recursive: true }
     ], false, false, "ordered"));
+    assertBatchCountInvariant(batch);
     assert.deepEqual(batch.results.map((result: Record<string, unknown>) => result.operationStatus), ["applied", "applied", "applied", "no_change"]);
     assert.equal(batch.appliedCount, 3);
     assert.equal(batch.noChangeCount, 1);

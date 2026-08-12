@@ -182,6 +182,16 @@ test("strict audit mode blocks selected mutations when audit log is not writable
     assert.equal(writeDenied.batchOutcome, "failed");
     assert.equal(writeDenied.errorCount, 0);
     assert.equal(writeDenied.skippedCount, 1);
+    assert.equal(writeDenied.requestedCount, 1);
+    assert.equal(writeDenied.successCount, 0);
+    assert.equal(writeDenied.failedCount, 0);
+    assert.equal(
+      writeDenied.requestedCount,
+      Number(writeDenied.successCount)
+      + Number(writeDenied.failedCount)
+      + Number(writeDenied.errorCount)
+      + Number(writeDenied.skippedCount)
+    );
     assert.equal(writeDenied.results[0].outcome, "skipped");
     assert.equal(writeDenied.results[0].reason, "batch_failed");
 

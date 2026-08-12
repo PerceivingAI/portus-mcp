@@ -1,7 +1,7 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -873,6 +873,33 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.equal(gitGrepAbsentExplicitZero.results[0].outcome, "exited");
   assert.equal(gitGrepAbsentExplicitZero.results[0].exitCode, 1);
 
+  writeFileSync(path.join(projectRoot, "audit-source.txt"), "stable\n", "utf8");
+  const auditedRejectedEdit = resultOf(await client.callTool({
+    name: "project_edit",
+    arguments: {
+      projectAlias: "mcp",
+      operations: [
+        {
+          type: "replace",
+          relativePath: "audit-source.txt",
+          search: "AUDIT_SECRET_MISSING_SOURCE",
+          replace: "AUDIT_SECRET_REPLACEMENT",
+          expectedOccurrences: 1
+        },
+        {
+          type: "write",
+          relativePath: "audit-withheld.txt",
+          content: "AUDIT_SECRET_WITHHELD_CONTENT\n"
+        }
+      ]
+    }
+  }));
+  assert.equal(auditedRejectedEdit.batchOutcome, "rejected");
+  assert.equal(auditedRejectedEdit.repositoryState, "unchanged");
+  assert.equal(auditedRejectedEdit.failedCount, 1);
+  assert.equal(auditedRejectedEdit.skippedCount, 1);
+  assert.equal(existsSync(path.join(projectRoot, "audit-withheld.txt")), false);
+
   // Public audit projection surfaces executionType, name, and batchIndex
   const auditList = resultOf(await client.callTool({
     name: "project_policy",
@@ -883,6 +910,110 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   const runEvents = auditList.events.filter((e: Record<string, unknown>) => e.tool === "project_run");
   assert.equal(runEvents.length > 0, true);
   assert.equal("executionType" in runEvents[0], true);
+  const rejectedEditOperations = auditList.events.filter((event: Record<string, unknown>) =>
+    event.tool === "project_edit"
+    && (event.relativePath === "audit-source.txt" || event.relativePath === "audit-withheld.txt")
+    && (event.reason === "occurrence_mismatch" || event.reason === "batch_rejected")
+  );
+  assert.deepEqual(rejectedEditOperations.map((event: Record<string, unknown>) => ({
+    batchIndex: event.batchIndex,
+    operation: event.operation,
+    outcome: event.outcome,
+    operationStatus: event.operationStatus,
+    reason: event.reason,
+    fileChanged: event.fileChanged,
+    expectedOccurrences: event.expectedOccurrences,
+    matchesFound: event.matchesFound,
+    matchesApplied: event.matchesApplied
+  })), [
+    {
+      batchIndex: 0,
+      operation: "replace",
+      outcome: "completed",
+      operationStatus: "not_applied",
+      reason: "occurrence_mismatch",
+      fileChanged: false,
+      expectedOccurrences: 1,
+      matchesFound: 0,
+      matchesApplied: 0
+    },
+    {
+      batchIndex: 1,
+      operation: "write",
+      outcome: "skipped",
+      operationStatus: "skipped",
+      reason: "batch_rejected",
+      fileChanged: false,
+      expectedOccurrences: undefined,
+      matchesFound: undefined,
+      matchesApplied: undefined
+    }
+  ]);
+  const rejectedEditSummary = auditList.events.find((event: Record<string, unknown>) =>
+    event.tool === "project_edit"
+    && event.batchMode === "staged"
+    && event.batchOutcome === "rejected"
+    && event.requestedCount === 2
+    && event.failedCount === 1
+    && event.skippedCount === 1
+  );
+  assert.deepEqual({
+    repositoryState: rejectedEditSummary?.repositoryState,
+    successCount: rejectedEditSummary?.successCount,
+    errorCount: rejectedEditSummary?.errorCount,
+    appliedCount: rejectedEditSummary?.appliedCount,
+    noChangeCount: rejectedEditSummary?.noChangeCount,
+    plannedCount: rejectedEditSummary?.plannedCount,
+    dryRun: rejectedEditSummary?.dryRun
+  }, {
+    repositoryState: "unchanged",
+    successCount: 0,
+    errorCount: 0,
+    appliedCount: 0,
+    noChangeCount: 0,
+    plannedCount: 0,
+    dryRun: false
+  });
+  const orderedWriteSummary = auditList.events.find((event: Record<string, unknown>) =>
+    event.tool === "project_edit"
+    && event.batchMode === "ordered"
+    && event.batchOutcome === "succeeded"
+    && event.requestedCount === 3
+    && event.successCount === 3
+    && event.appliedCount === 3
+  );
+  assert.deepEqual({
+    repositoryState: orderedWriteSummary?.repositoryState,
+    failedCount: orderedWriteSummary?.failedCount,
+    errorCount: orderedWriteSummary?.errorCount,
+    noChangeCount: orderedWriteSummary?.noChangeCount,
+    plannedCount: orderedWriteSummary?.plannedCount,
+    skippedCount: orderedWriteSummary?.skippedCount,
+    dryRun: orderedWriteSummary?.dryRun
+  }, {
+    repositoryState: "changed",
+    failedCount: 0,
+    errorCount: 0,
+    noChangeCount: 0,
+    plannedCount: 0,
+    skippedCount: 0,
+    dryRun: false
+  });
+  const rawEditEvents = readFileSync(path.join(stateDir, "audit.log"), "utf8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((event) => event.tool === "project_edit");
+  for (const event of rawEditEvents) {
+    for (const unsafeField of ["content", "search", "replace", "marker", "replacement", "expectedSha256", "oldSha256", "newSha256", "projectedSha256", "error"]) {
+      assert.equal(unsafeField in event, false, `project_edit audit leaked ${unsafeField}`);
+    }
+  }
+  const rawEditJson = JSON.stringify(rawEditEvents);
+  assert.equal(rawEditJson.includes(projectRoot), false);
+  assert.equal(rawEditJson.includes("AUDIT_SECRET_MISSING_SOURCE"), false);
+  assert.equal(rawEditJson.includes("AUDIT_SECRET_REPLACEMENT"), false);
+  assert.equal(rawEditJson.includes("AUDIT_SECRET_WITHHELD_CONTENT"), false);
   // Hard-cutover search audit through project_search batch
   const searchBatchSmoke = resultOf(await client.callTool({
     name: "project_search",

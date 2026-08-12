@@ -380,22 +380,6 @@ function readTextSource(projectAlias: string, relativePath: string, expectedSha2
   return { target, source: content.toString("utf8") };
 }
 
-function auditTextOperation(input: {
-  operation: "replace" | "insert" | "replace_range";
-  projectAlias: string;
-  relativePath: string;
-  matchesFound?: number;
-  dryRun: boolean;
-}): void {
-  stateStore.audit({
-    tool: "project_edit",
-    operation: input.operation,
-    projectAlias: input.projectAlias,
-    relativePath: input.relativePath,
-    ...(input.matchesFound === undefined ? {} : { occurrences: input.matchesFound }),
-    dryRun: input.dryRun
-  });
-}
 
 function executeWrite(index: number, operation: Extract<EditOperation, { type: "write" }>, projectAlias: string, dryRun: boolean, policy: PortusPolicyConfig, markMutation: () => void): SuccessfulEvaluation {
   const identity = operationIdentity(index, operation);
@@ -408,7 +392,6 @@ function executeWrite(index: number, operation: Extract<EditOperation, { type: "
     const current = readFileSync(target);
     assertExpectedHash(operation.expectedSha256, operation.relativePath, current);
     if (current.equals(desired)) {
-      stateStore.audit({ tool: "project_edit", operation: "write", projectAlias, relativePath: operation.relativePath, dryRun, bytes: desired.length });
       return noChange(identity, { bytes: desired.length });
     }
   } else if (operation.expectedSha256) {
@@ -416,7 +399,6 @@ function executeWrite(index: number, operation: Extract<EditOperation, { type: "
   }
 
   if (dryRun) {
-    stateStore.audit({ tool: "project_edit", operation: "write", projectAlias, relativePath: operation.relativePath, dryRun, bytes: desired.length });
     return planned(identity, { bytes: desired.length });
   }
 
@@ -426,7 +408,6 @@ function executeWrite(index: number, operation: Extract<EditOperation, { type: "
   mkdirSync(path.dirname(target), { recursive: true });
   resolveProjectPath(projectAlias, operation.relativePath);
   writeFileSync(target, desired);
-  stateStore.audit({ tool: "project_edit", operation: "write", projectAlias, relativePath: operation.relativePath, dryRun, bytes: desired.length });
   return applied(identity, { bytes: desired.length });
 }
 
@@ -448,14 +429,12 @@ function executeReplace(index: number, operation: Extract<EditOperation, { type:
   }
 
   if (operation.search === operation.replace) {
-    auditTextOperation({ operation: "replace", projectAlias, relativePath: operation.relativePath, matchesFound: scan.matchesFound, dryRun });
     return noChange(identity, { ...matchDetails, matchesApplied: 0 });
   }
   const projectedChars = scan.sourceChars + scan.matchesFound * (replacementChars - searchChars);
   assertCharCount("limits.fileWrite.maxChars", projectedChars, policy.limits.fileWrite.maxChars);
   const updated = replaceExactMatches(source, operation.search, operation.replace);
   if (dryRun) {
-    auditTextOperation({ operation: "replace", projectAlias, relativePath: operation.relativePath, matchesFound: scan.matchesFound, dryRun });
     return planned(identity, { ...matchDetails, matchesPlanned: scan.matchesFound, matchesApplied: 0 });
   }
 
@@ -463,7 +442,6 @@ function executeReplace(index: number, operation: Extract<EditOperation, { type:
   resolveProjectPath(projectAlias, operation.relativePath);
   markMutation();
   writeFileSync(target, updated, "utf8");
-  auditTextOperation({ operation: "replace", projectAlias, relativePath: operation.relativePath, matchesFound: scan.matchesFound, dryRun });
   return applied(identity, { ...matchDetails, matchesApplied: scan.matchesFound });
 }
 
@@ -485,7 +463,6 @@ function executeInsert(index: number, operation: Extract<EditOperation, { type: 
   }
 
   if (contentChars === 0) {
-    auditTextOperation({ operation: "insert", projectAlias, relativePath: operation.relativePath, matchesFound: 1, dryRun });
     return noChange(identity, { ...matchDetails, matchesApplied: 0 });
   }
   assertCharCount("limits.fileWrite.maxChars", scan.sourceChars + contentChars, policy.limits.fileWrite.maxChars);
@@ -494,7 +471,6 @@ function executeInsert(index: number, operation: Extract<EditOperation, { type: 
     ? `${source.slice(0, scan.firstIndex)}${operation.content}${source.slice(scan.firstIndex)}`
     : `${source.slice(0, markerEnd)}${operation.content}${source.slice(markerEnd)}`;
   if (dryRun) {
-    auditTextOperation({ operation: "insert", projectAlias, relativePath: operation.relativePath, matchesFound: 1, dryRun });
     return planned(identity, { ...matchDetails, matchesPlanned: 1, matchesApplied: 0 });
   }
 
@@ -502,7 +478,6 @@ function executeInsert(index: number, operation: Extract<EditOperation, { type: 
   resolveProjectPath(projectAlias, operation.relativePath);
   markMutation();
   writeFileSync(target, updated, "utf8");
-  auditTextOperation({ operation: "insert", projectAlias, relativePath: operation.relativePath, matchesFound: 1, dryRun });
   return applied(identity, { ...matchDetails, matchesApplied: 1 });
 }
 function executeReplaceRange(index: number, operation: Extract<EditOperation, { type: "replace_range" }>, projectAlias: string, dryRun: boolean, policy: PortusPolicyConfig, markMutation: () => void): OperationResult {
@@ -525,7 +500,6 @@ function executeReplaceRange(index: number, operation: Extract<EditOperation, { 
   }
 
   if (!transformation.wouldChange) {
-    auditTextOperation({ operation: "replace_range", projectAlias, relativePath: operation.relativePath, dryRun });
     return noChange(identity, {
       oldRange: transformation.oldRange,
       newRange: transformation.newRange,
@@ -536,7 +510,6 @@ function executeReplaceRange(index: number, operation: Extract<EditOperation, { 
 
   assertCharCount("limits.fileWrite.maxChars", countChars(transformation.updatedContent.toString("utf8")), policy.limits.fileWrite.maxChars);
   if (dryRun) {
-    auditTextOperation({ operation: "replace_range", projectAlias, relativePath: operation.relativePath, dryRun });
     return planned(identity, {
       oldRange: transformation.oldRange,
       projectedNewRange: transformation.newRange,
@@ -549,7 +522,6 @@ function executeReplaceRange(index: number, operation: Extract<EditOperation, { 
   resolveProjectPath(projectAlias, operation.relativePath);
   markMutation();
   writeFileSync(target, transformation.updatedContent);
-  auditTextOperation({ operation: "replace_range", projectAlias, relativePath: operation.relativePath, dryRun });
   return applied(identity, {
     oldRange: transformation.oldRange,
     newRange: transformation.newRange,
@@ -571,7 +543,6 @@ function executeCopy(index: number, operation: Extract<EditOperation, { type: "c
   if (existed) assertCanReadProjectPath(projectAlias, destination, operation.destinationRelativePath);
   if (existed && !operation.overwrite) throw new Error(`Destination already exists: ${operation.destinationRelativePath}`);
   if (dryRun) {
-    stateStore.audit({ tool: "project_edit", operation: "copy", projectAlias, sourceRelativePath: operation.sourceRelativePath, destinationRelativePath: operation.destinationRelativePath, overwrite: operation.overwrite, dryRun });
     return planned(identity, { overwrote: existed });
   }
 
@@ -582,7 +553,6 @@ function executeCopy(index: number, operation: Extract<EditOperation, { type: "c
   mkdirSync(path.dirname(destination), { recursive: true });
   resolveProjectPath(projectAlias, operation.destinationRelativePath);
   copyFileSync(source, destination);
-  stateStore.audit({ tool: "project_edit", operation: "copy", projectAlias, sourceRelativePath: operation.sourceRelativePath, destinationRelativePath: operation.destinationRelativePath, overwrite: operation.overwrite, dryRun });
   return applied(identity, { overwrote: existed });
 }
 
@@ -599,7 +569,6 @@ function executeMove(index: number, operation: Extract<EditOperation, { type: "m
   if (existed && !operation.overwrite) throw new Error(`Destination already exists: ${operation.destinationRelativePath}`);
   if (existed) assertCanReadProjectPath(projectAlias, destination, operation.destinationRelativePath);
   if (dryRun) {
-    stateStore.audit({ tool: "project_edit", operation: "move", projectAlias, sourceRelativePath: operation.sourceRelativePath, destinationRelativePath: operation.destinationRelativePath, overwrite: operation.overwrite, dryRun });
     return planned(identity, { overwrote: existed });
   }
 
@@ -610,7 +579,6 @@ function executeMove(index: number, operation: Extract<EditOperation, { type: "m
   if (existed) unlinkSync(destination);
   resolveProjectPath(projectAlias, operation.destinationRelativePath);
   renameSync(source, destination);
-  stateStore.audit({ tool: "project_edit", operation: "move", projectAlias, sourceRelativePath: operation.sourceRelativePath, destinationRelativePath: operation.destinationRelativePath, overwrite: operation.overwrite, dryRun });
   return applied(identity, { overwrote: existed });
 }
 
@@ -624,7 +592,6 @@ function executeDelete(index: number, operation: Extract<EditOperation, { type: 
   const info = statSync(target);
   if (!info.isFile()) throw new Error(`Not a file: ${operation.relativePath}`);
   if (dryRun) {
-    stateStore.audit({ tool: "project_edit", operation: "delete", projectAlias, relativePath: operation.relativePath, bytes: info.size, dryRun });
     return planned(identity, { bytes: info.size });
   }
 
@@ -632,7 +599,6 @@ function executeDelete(index: number, operation: Extract<EditOperation, { type: 
   resolveProjectPath(projectAlias, operation.relativePath);
   markMutation();
   unlinkSync(target);
-  stateStore.audit({ tool: "project_edit", operation: "delete", projectAlias, relativePath: operation.relativePath, bytes: info.size, dryRun });
   return applied(identity, { bytes: info.size });
 }
 
@@ -641,13 +607,11 @@ function executeMkdir(index: number, operation: Extract<EditOperation, { type: "
   const target = resolveProjectPath(projectAlias, operation.relativePath);
   if (existsSync(target)) {
     if (operation.recursive && lstatSync(target).isDirectory()) {
-      stateStore.audit({ tool: "project_edit", operation: "mkdir", projectAlias, relativePath: operation.relativePath, recursive: operation.recursive, dryRun });
       return noChange(identity);
     }
     throw new Error(`Destination already exists: ${operation.relativePath}`);
   }
   if (dryRun) {
-    stateStore.audit({ tool: "project_edit", operation: "mkdir", projectAlias, relativePath: operation.relativePath, recursive: operation.recursive, dryRun });
     return planned(identity);
   }
 
@@ -655,7 +619,6 @@ function executeMkdir(index: number, operation: Extract<EditOperation, { type: "
   resolveProjectPath(projectAlias, operation.relativePath);
   markMutation();
   mkdirSync(target, { recursive: operation.recursive });
-  stateStore.audit({ tool: "project_edit", operation: "mkdir", projectAlias, relativePath: operation.relativePath, recursive: operation.recursive, dryRun });
   return applied(identity);
 }
 
@@ -669,7 +632,6 @@ function executeRmdir(index: number, operation: Extract<EditOperation, { type: "
   const info = lstatSync(target);
   if (!info.isDirectory()) throw new Error(`Not a directory: ${operation.relativePath}`);
   if (dryRun) {
-    stateStore.audit({ tool: "project_edit", operation: "rmdir", projectAlias, relativePath: operation.relativePath, recursive: operation.recursive, dryRun });
     return planned(identity);
   }
 
@@ -677,7 +639,6 @@ function executeRmdir(index: number, operation: Extract<EditOperation, { type: "
   resolveProjectPath(projectAlias, operation.relativePath);
   markMutation();
   rmSync(target, { recursive: operation.recursive, force: false });
-  stateStore.audit({ tool: "project_edit", operation: "rmdir", projectAlias, relativePath: operation.relativePath, recursive: operation.recursive, dryRun });
   return applied(identity);
 }
 
@@ -970,20 +931,78 @@ function evaluateStagedOperation(
   };
 }
 
-function auditStagedResults(projectAlias: string, dryRun: boolean, evaluations: StagedEvaluation[]): void {
-  for (const evaluation of evaluations) {
-    const result = evaluation.result;
-    if (!result?.ok) continue;
-    const event: Record<string, unknown> = {
-      tool: "project_edit",
-      operation: evaluation.operation.type,
-      projectAlias,
-      relativePath: evaluation.operation.relativePath,
-      dryRun
+
+const PROJECT_EDIT_MATCH_COUNT_FIELDS = [
+  "expectedOccurrences",
+  "matchesFound",
+  "matchesApplied",
+  "matchesPlanned"
+] as const;
+
+function auditProjectEditOperation(projectAlias: string, dryRun: boolean, result: OperationResult): void {
+  const resultRecord = result as unknown as Record<string, unknown>;
+  const event: Record<string, unknown> = {
+    tool: "project_edit",
+    projectAlias,
+    batchIndex: result.index,
+    operation: result.type,
+    outcome: result.outcome,
+    operationStatus: result.operationStatus,
+    dryRun
+  };
+  if (result.relativePath !== undefined) event.relativePath = safeRelativePath(result.relativePath);
+  if (result.sourceRelativePath !== undefined) event.sourceRelativePath = safeRelativePath(result.sourceRelativePath);
+  if (result.destinationRelativePath !== undefined) event.destinationRelativePath = safeRelativePath(result.destinationRelativePath);
+  if ("reason" in result) event.reason = result.reason;
+  if ("fileChanged" in result) event.fileChanged = result.fileChanged;
+  if ("repositoryState" in result) event.repositoryState = result.repositoryState;
+  for (const field of PROJECT_EDIT_MATCH_COUNT_FIELDS) {
+    if (typeof resultRecord[field] === "number") event[field] = resultRecord[field];
+  }
+  stateStore.audit(event);
+}
+
+function auditProjectEditBatchSummary(result: ProjectEditBatchResult): void {
+  stateStore.audit({
+    tool: "project_edit",
+    projectAlias: result.projectAlias,
+    batchMode: result.batchMode,
+    batchOutcome: result.batchOutcome,
+    repositoryState: result.repositoryState,
+    requestedCount: result.requestedCount,
+    successCount: result.successCount,
+    failedCount: result.failedCount,
+    errorCount: result.errorCount,
+    appliedCount: result.appliedCount,
+    noChangeCount: result.noChangeCount,
+    plannedCount: result.plannedCount,
+    skippedCount: result.skippedCount,
+    dryRun: result.dryRun
+  });
+}
+
+function combineBatchErrors(existing: string | undefined, auditError: string): string {
+  return existing ?? auditError;
+}
+
+function auditProjectEditBatchResult(result: ProjectEditBatchResult): ProjectEditBatchResult {
+  try {
+    for (const operation of result.results) {
+      auditProjectEditOperation(result.projectAlias, result.dryRun, operation);
+    }
+    auditProjectEditBatchSummary(result);
+    return result;
+  } catch (error) {
+    const batchOutcome = result.batchOutcome === "partial"
+      || result.repositoryState === "changed"
+      || result.repositoryState === "partially_changed"
+      ? "partial"
+      : "failed";
+    return {
+      ...result,
+      batchOutcome,
+      batchError: combineBatchErrors(result.batchError, safeError(error))
     };
-    if ("bytes" in result && typeof result.bytes === "number") event.bytes = result.bytes;
-    if ("matchesFound" in result && typeof result.matchesFound === "number") event.occurrences = result.matchesFound;
-    stateStore.audit(event);
   }
 }
 
@@ -1021,7 +1040,7 @@ function summarizeProjectEditBatch(input: {
         : input.dryRun
           ? "planned"
           : "succeeded");
-  return {
+  const result: ProjectEditBatchResult = {
     projectAlias: input.projectAlias,
     batchMode: input.batchMode,
     batchOutcome,
@@ -1038,6 +1057,7 @@ function summarizeProjectEditBatch(input: {
     ...(input.batchError === undefined ? {} : { batchError: input.batchError }),
     results: input.results
   };
+  return auditProjectEditBatchResult(result);
 }
 
 function executeStagedProjectEditBatch(input: {
@@ -1093,18 +1113,15 @@ function executeStagedProjectEditBatch(input: {
     }
   }
 
-  const planningRejected = evaluations.some((evaluation) => evaluation.result && !evaluation.result.ok);
+  const planningFailed = evaluations.some((evaluation) => evaluation.result?.outcome === "failed");
+  const planningRejected = evaluations.some((evaluation) =>
+    evaluation.result?.outcome === "completed" && !evaluation.result.ok
+  );
   if (input.dryRun) {
     for (const evaluation of evaluations) {
       if (evaluation.change) {
         evaluation.result = planned(operationIdentity(evaluation.index, evaluation.operation), evaluation.change.plannedDetails);
       }
-    }
-    let batchError: string | undefined;
-    try {
-      auditStagedResults(input.projectAlias, true, evaluations);
-    } catch (error) {
-      batchError = safeError(error);
     }
     return summarizeProjectEditBatch({
       projectAlias: input.projectAlias,
@@ -1112,22 +1129,19 @@ function executeStagedProjectEditBatch(input: {
       dryRun: true,
       results: evaluations.map((evaluation) => evaluation.result!),
       repositoryState: "unchanged",
-      batchOutcome: batchError ? "failed" : planningRejected ? "rejected" : "planned",
-      ...(batchError ? { batchError } : {})
+      batchOutcome: planningFailed ? "failed" : planningRejected ? "rejected" : "planned"
     });
   }
 
-  if (planningRejected) {
+  if (planningFailed || planningRejected) {
     for (const evaluation of evaluations) {
       if (evaluation.change) {
-        evaluation.result = skipped(evaluation.index, evaluation.operation, "batch_rejected");
+        evaluation.result = skipped(
+          evaluation.index,
+          evaluation.operation,
+          planningFailed ? "batch_failed" : "batch_rejected"
+        );
       }
-    }
-    let batchError: string | undefined;
-    try {
-      auditStagedResults(input.projectAlias, false, evaluations);
-    } catch (error) {
-      batchError = safeError(error);
     }
     return summarizeProjectEditBatch({
       projectAlias: input.projectAlias,
@@ -1135,8 +1149,7 @@ function executeStagedProjectEditBatch(input: {
       dryRun: false,
       results: evaluations.map((evaluation) => evaluation.result!),
       repositoryState: "unchanged",
-      batchOutcome: batchError ? "failed" : "rejected",
-      ...(batchError ? { batchError } : {})
+      batchOutcome: planningFailed ? "failed" : "rejected"
     });
   }
 
@@ -1153,20 +1166,13 @@ function executeStagedProjectEditBatch(input: {
   }
 
   if (changedProjections.length === 0) {
-    let batchError: string | undefined;
-    try {
-      auditStagedResults(input.projectAlias, false, evaluations);
-    } catch (error) {
-      batchError = safeError(error);
-    }
     return summarizeProjectEditBatch({
       projectAlias: input.projectAlias,
       batchMode: "staged",
       dryRun: false,
       results: evaluations.map((evaluation) => evaluation.result!),
       repositoryState: "unchanged",
-      batchOutcome: batchError ? "failed" : "succeeded",
-      ...(batchError ? { batchError } : {})
+      batchOutcome: "succeeded"
     });
   }
 
@@ -1228,20 +1234,13 @@ function executeStagedProjectEditBatch(input: {
         evaluation.result = skipped(evaluation.index, evaluation.operation, "batch_rejected");
       }
     }
-    let batchError: string | undefined;
-    try {
-      auditStagedResults(input.projectAlias, false, evaluations);
-    } catch (error) {
-      batchError = safeError(error);
-    }
     return summarizeProjectEditBatch({
       projectAlias: input.projectAlias,
       batchMode: "staged",
       dryRun: false,
       results: evaluations.map((evaluation) => evaluation.result!),
       repositoryState: "unchanged",
-      batchOutcome: batchError ? "failed" : "rejected",
-      ...(batchError ? { batchError } : {})
+      batchOutcome: "rejected"
     });
   }
 
@@ -1301,12 +1300,6 @@ function executeStagedProjectEditBatch(input: {
         inspectionUnknown = true;
       }
     }
-    let auditError: string | undefined;
-    try {
-      auditStagedResults(input.projectAlias, false, evaluations);
-    } catch (error) {
-      auditError = safeError(error);
-    }
     const repositoryState = inspectionUnknown ? "unknown" : mutationObserved ? "partially_changed" : "unchanged";
     const batchError = safeError(commitError, failedProjection?.relativePath);
     return summarizeProjectEditBatch({
@@ -1316,7 +1309,7 @@ function executeStagedProjectEditBatch(input: {
       results: evaluations.map((evaluation) => evaluation.result!),
       repositoryState,
       batchOutcome: committedProjectionKeys.size > 0 ? "partial" : "failed",
-      batchError: auditError ? `${batchError}; ${auditError}`.slice(0, 2000) : batchError
+      batchError
     });
   }
 
@@ -1325,20 +1318,13 @@ function executeStagedProjectEditBatch(input: {
       evaluation.result = applied(operationIdentity(evaluation.index, evaluation.operation), evaluation.change.appliedDetails);
     }
   }
-  let auditError: string | undefined;
-  try {
-    auditStagedResults(input.projectAlias, false, evaluations);
-  } catch (error) {
-    auditError = safeError(error);
-  }
   return summarizeProjectEditBatch({
     projectAlias: input.projectAlias,
     batchMode: "staged",
     dryRun: false,
     results: evaluations.map((evaluation) => evaluation.result!),
     repositoryState: "changed",
-    batchOutcome: auditError ? "failed" : "succeeded",
-    ...(auditError ? { batchError: auditError } : {})
+    batchOutcome: "succeeded"
   });
 }
 

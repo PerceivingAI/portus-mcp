@@ -83,14 +83,46 @@ export type PublicAuditEvent = {
   executionType?: string;
   name?: string;
   batchIndex?: number;
+  batchMode?: string;
+  batchOutcome?: string;
+  repositoryState?: string;
+  operationStatus?: string;
+  fileChanged?: boolean;
   outcome?: string | null;
   exitCode?: number | null;
   bytes?: number;
   count?: number;
   dryRun?: boolean;
+  requestedCount?: number;
+  successCount?: number;
+  failedCount?: number;
+  errorCount?: number;
+  appliedCount?: number;
+  noChangeCount?: number;
+  plannedCount?: number;
+  skippedCount?: number;
+  expectedOccurrences?: number;
+  matchesFound?: number;
+  matchesApplied?: number;
+  matchesPlanned?: number;
   reason?: string;
   failureType?: string | null;
 };
+const PUBLIC_AUDIT_NUMBER_FIELDS = [
+  "requestedCount",
+  "successCount",
+  "failedCount",
+  "errorCount",
+  "appliedCount",
+  "noChangeCount",
+  "plannedCount",
+  "skippedCount",
+  "expectedOccurrences",
+  "matchesFound",
+  "matchesApplied",
+  "matchesPlanned"
+] as const;
+
 
 export function toPublicAuditEvent(event: Record<string, unknown>): PublicAuditEvent | null {
   if (typeof event.timestamp !== "string") return null;
@@ -109,10 +141,18 @@ export function toPublicAuditEvent(event: Record<string, unknown>): PublicAuditE
   if (typeof event.type === "string") output.executionType = event.type;
   if (typeof event.name === "string") output.name = event.name;
   if (typeof event.batchIndex === "number") output.batchIndex = event.batchIndex;
+  if (typeof event.batchMode === "string") output.batchMode = event.batchMode;
+  if (typeof event.batchOutcome === "string") output.batchOutcome = event.batchOutcome;
+  if (typeof event.repositoryState === "string") output.repositoryState = event.repositoryState;
+  if (typeof event.operationStatus === "string") output.operationStatus = event.operationStatus;
+  if (typeof event.fileChanged === "boolean") output.fileChanged = event.fileChanged;
   if (typeof event.outcome === "string" || event.outcome === null) output.outcome = event.outcome;
   if (typeof event.exitCode === "number" || event.exitCode === null) output.exitCode = event.exitCode;
   if (typeof event.bytes === "number") output.bytes = event.bytes;
   if (typeof event.count === "number") output.count = event.count;
+  for (const field of PUBLIC_AUDIT_NUMBER_FIELDS) {
+    if (typeof event[field] === "number") output[field] = event[field];
+  }
   if (Array.isArray(event.stopped)) output.count = event.stopped.length;
   if (typeof event.dryRun === "boolean") output.dryRun = event.dryRun;
   if (typeof event.reason === "string") output.reason = event.reason;
