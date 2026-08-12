@@ -68,7 +68,7 @@ writeFileSync(policyPath, JSON.stringify({
     fileRead: { maxChars: 500000 },
     fileWrite: { maxChars: 1000000 },
     patch: { maxChars: 1000000 },
-    textEdit: { maxOperationChars: 200000, maxSearchOrMarkerChars: 20000 },
+    textEdit: { maxOperationChars: 200000, maxSearchOrMarkerChars: 20000, maxRangeLines: 2000 },
     search: {
       maxScanEntries: 100000,
       maxTextFileChars: 200000,

@@ -66,7 +66,8 @@ const policySchema = z.object({
     }).strict(),
     textEdit: z.object({
       maxOperationChars: z.number().int().positive(),
-      maxSearchOrMarkerChars: z.number().int().positive()
+      maxSearchOrMarkerChars: z.number().int().positive(),
+      maxRangeLines: z.number().int().positive()
     }).strict(),
     search: z.object({
       maxScanEntries: z.number().int().positive(),

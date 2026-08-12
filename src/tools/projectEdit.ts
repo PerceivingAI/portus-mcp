@@ -26,6 +26,7 @@ export const editOperationSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("write"), relativePath: z.string().min(1), content: z.string(), expectedSha256: SHA256_SCHEMA.optional() }).strict(),
   z.object({ type: z.literal("replace"), relativePath: z.string().min(1), search: z.string().min(1), replace: z.string(), expectedOccurrences: z.number().int().positive(), expectedSha256: SHA256_SCHEMA.optional() }).strict(),
   z.object({ type: z.literal("insert"), relativePath: z.string().min(1), marker: z.string().min(1), content: z.string(), position: z.enum(["before", "after"]), expectedSha256: SHA256_SCHEMA.optional() }).strict(),
+  z.object({ type: z.literal("replace_range"), relativePath: z.string().min(1), expectedSha256: SHA256_SCHEMA, startLine: z.number().int().positive(), endLine: z.number().int().positive(), replacement: z.string() }).strict(),
   z.object({ type: z.literal("copy"), sourceRelativePath: z.string().min(1), destinationRelativePath: z.string().min(1), overwrite: z.boolean().default(false) }).strict(),
   z.object({ type: z.literal("move"), sourceRelativePath: z.string().min(1), destinationRelativePath: z.string().min(1), overwrite: z.boolean().default(false) }).strict(),
   z.object({ type: z.literal("delete"), relativePath: z.string().min(1), confirm: z.boolean().default(false) }).strict(),
@@ -45,6 +46,25 @@ type OperationIdentity = {
   destinationRelativePath?: string;
 };
 type ResultDetails = Record<string, unknown>;
+type LineRange = { startLine: number; endLine: number };
+export type RangeTransformationResult =
+  | {
+      ok: false;
+      reason: "invalid_range";
+      requestedRange: LineRange;
+      availableLines?: number;
+      maxRangeLines: number;
+    }
+  | {
+      ok: true;
+      updatedContent: Buffer;
+      oldRange: LineRange;
+      newRange: LineRange | null;
+      oldSha256: string;
+      newSha256: string;
+      wouldChange: boolean;
+    };
+
 
 type AppliedResult = OperationIdentity & ResultDetails & {
   ok: true;
@@ -254,27 +274,113 @@ function replaceExactMatches(source: string, marker: string, replacement: string
   parts.push(source.slice(cursor));
   return parts.join("");
 }
+export function transformLineRange(input: {
+  source: Buffer;
+  startLine: number;
+  endLine: number;
+  replacement: string;
+  maxRangeLines: number;
+}): RangeTransformationResult {
+  const requestedRange = { startLine: input.startLine, endLine: input.endLine };
+  const width = input.endLine - input.startLine + 1;
+  if (
+    !Number.isInteger(input.startLine)
+    || !Number.isInteger(input.endLine)
+    || input.startLine <= 0
+    || input.endLine < input.startLine
+    || width > input.maxRangeLines
+  ) {
+    return { ok: false, reason: "invalid_range", requestedRange, maxRangeLines: input.maxRangeLines };
+  }
+
+  let availableLines = 0;
+  let lineStart = 0;
+  let rangeStart = -1;
+  let rangeEnd = -1;
+  let preferredLineEnding: Buffer | undefined;
+  for (let index = 0; index < input.source.length; index += 1) {
+    const byte = input.source[index];
+    let endingEnd = -1;
+    if (byte === 0x0d) {
+      endingEnd = input.source[index + 1] === 0x0a ? index + 2 : index + 1;
+    } else if (byte === 0x0a) {
+      endingEnd = index + 1;
+    } else {
+      continue;
+    }
+
+    availableLines += 1;
+    if (availableLines === input.startLine) rangeStart = lineStart;
+    if (availableLines === input.endLine) rangeEnd = endingEnd;
+    preferredLineEnding ??= input.source.subarray(index, endingEnd);
+    lineStart = endingEnd;
+    index = endingEnd - 1;
+  }
+
+  const hasFinalLineEnding = input.source.length > 0 && lineStart === input.source.length;
+  if (lineStart < input.source.length) {
+    availableLines += 1;
+    if (availableLines === input.startLine) rangeStart = lineStart;
+    if (availableLines === input.endLine) rangeEnd = input.source.length;
+  }
+
+  if (input.endLine > availableLines || rangeStart < 0 || rangeEnd < 0) {
+    return { ok: false, reason: "invalid_range", requestedRange, availableLines, maxRangeLines: input.maxRangeLines };
+  }
+
+  const lineEnding = (preferredLineEnding ?? Buffer.from("\n")).toString("utf8");
+  const replacementLines = input.replacement === "" ? [] : input.replacement.split(/\r\n|\r|\n/);
+  if (replacementLines.at(-1) === "") replacementLines.pop();
+  let replacementContent = Buffer.from(replacementLines.join(lineEnding), "utf8");
+  const suffix = input.source.subarray(rangeEnd);
+  if (replacementLines.length > 0 && (suffix.length > 0 || (input.endLine === availableLines && hasFinalLineEnding))) {
+    replacementContent = Buffer.concat([replacementContent, Buffer.from(lineEnding)]);
+  }
+
+  const updatedContent = Buffer.concat([
+    input.source.subarray(0, rangeStart),
+    replacementContent,
+    suffix
+  ]);
+  return {
+    ok: true,
+    updatedContent,
+    oldRange: requestedRange,
+    newRange: replacementLines.length === 0
+      ? null
+      : { startLine: input.startLine, endLine: input.startLine + replacementLines.length - 1 },
+    oldSha256: hashSha256(input.source),
+    newSha256: hashSha256(updatedContent),
+    wouldChange: !input.source.equals(updatedContent)
+  };
+}
+
 
 function assertExpectedHash(expectedSha256: string | undefined, relativePath: string, content: Buffer): void {
-  if (expectedSha256 && hashSha256(content) !== expectedSha256) {
+  if (expectedSha256 && hashSha256(content) !== expectedSha256.toLowerCase()) {
     throw new SemanticRejection("stale_file", { relativePath: safeRelativePath(relativePath) });
   }
 }
 
-function readTextSource(projectAlias: string, relativePath: string, expectedSha256: string | undefined): { target: string; source: string } {
+function readTextContent(projectAlias: string, relativePath: string, expectedSha256: string | undefined): { target: string; content: Buffer } {
   const target = resolveProjectPath(projectAlias, relativePath);
   assertCanReadProjectPath(projectAlias, target, relativePath);
   if (!isTextLikely(target)) throw new Error("binary_file");
   const content = readFileSync(target);
   assertExpectedHash(expectedSha256, relativePath, content);
+  return { target, content };
+}
+
+function readTextSource(projectAlias: string, relativePath: string, expectedSha256: string | undefined): { target: string; source: string } {
+  const { target, content } = readTextContent(projectAlias, relativePath, expectedSha256);
   return { target, source: content.toString("utf8") };
 }
 
 function auditTextOperation(input: {
-  operation: "replace" | "insert";
+  operation: "replace" | "insert" | "replace_range";
   projectAlias: string;
   relativePath: string;
-  matchesFound: number;
+  matchesFound?: number;
   dryRun: boolean;
 }): void {
   stateStore.audit({
@@ -282,7 +388,7 @@ function auditTextOperation(input: {
     operation: input.operation,
     projectAlias: input.projectAlias,
     relativePath: input.relativePath,
-    occurrences: input.matchesFound,
+    ...(input.matchesFound === undefined ? {} : { occurrences: input.matchesFound }),
     dryRun: input.dryRun
   });
 }
@@ -395,6 +501,59 @@ function executeInsert(index: number, operation: Extract<EditOperation, { type: 
   auditTextOperation({ operation: "insert", projectAlias, relativePath: operation.relativePath, matchesFound: 1, dryRun });
   return applied(identity, { ...matchDetails, matchesApplied: 1 });
 }
+function executeReplaceRange(index: number, operation: Extract<EditOperation, { type: "replace_range" }>, projectAlias: string, dryRun: boolean, policy: PortusPolicyConfig, markMutation: () => void): OperationResult {
+  const identity = operationIdentity(index, operation);
+  assertInputChars("limits.textEdit.maxOperationChars", operation.replacement, policy.limits.textEdit.maxOperationChars);
+  const { target, content } = readTextContent(projectAlias, operation.relativePath, operation.expectedSha256);
+  const transformation = transformLineRange({
+    source: content,
+    startLine: operation.startLine,
+    endLine: operation.endLine,
+    replacement: operation.replacement,
+    maxRangeLines: policy.limits.textEdit.maxRangeLines
+  });
+  if (!transformation.ok) {
+    throw new SemanticRejection("invalid_range", {
+      requestedRange: transformation.requestedRange,
+      ...(transformation.availableLines === undefined ? {} : { availableLines: transformation.availableLines }),
+      maxRangeLines: transformation.maxRangeLines
+    });
+  }
+
+  if (!transformation.wouldChange) {
+    auditTextOperation({ operation: "replace_range", projectAlias, relativePath: operation.relativePath, dryRun });
+    return noChange(identity, {
+      oldRange: transformation.oldRange,
+      newRange: transformation.newRange,
+      oldSha256: transformation.oldSha256,
+      newSha256: transformation.newSha256
+    });
+  }
+
+  assertCharCount("limits.fileWrite.maxChars", countChars(transformation.updatedContent.toString("utf8")), policy.limits.fileWrite.maxChars);
+  if (dryRun) {
+    auditTextOperation({ operation: "replace_range", projectAlias, relativePath: operation.relativePath, dryRun });
+    return planned(identity, {
+      oldRange: transformation.oldRange,
+      projectedNewRange: transformation.newRange,
+      oldSha256: transformation.oldSha256,
+      projectedSha256: transformation.newSha256
+    });
+  }
+
+  stateStore.requireAuditWritable();
+  resolveProjectPath(projectAlias, operation.relativePath);
+  markMutation();
+  writeFileSync(target, transformation.updatedContent);
+  auditTextOperation({ operation: "replace_range", projectAlias, relativePath: operation.relativePath, dryRun });
+  return applied(identity, {
+    oldRange: transformation.oldRange,
+    newRange: transformation.newRange,
+    oldSha256: transformation.oldSha256,
+    newSha256: transformation.newSha256
+  });
+}
+
 
 function executeCopy(index: number, operation: Extract<EditOperation, { type: "copy" }>, projectAlias: string, dryRun: boolean, markMutation: () => void): SuccessfulEvaluation {
   const identity = operationIdentity(index, operation);
@@ -529,6 +688,7 @@ function executeOperation(index: number, operation: EditOperation, projectAlias:
       case "write": return executeWrite(index, operation, projectAlias, dryRun, policy, markMutation);
       case "replace": return executeReplace(index, operation, projectAlias, dryRun, policy, markMutation);
       case "insert": return executeInsert(index, operation, projectAlias, dryRun, policy, markMutation);
+      case "replace_range": return executeReplaceRange(index, operation, projectAlias, dryRun, policy, markMutation);
       case "copy": return executeCopy(index, operation, projectAlias, dryRun, markMutation);
       case "move": return executeMove(index, operation, projectAlias, dryRun, markMutation);
       case "delete": return executeDelete(index, operation, projectAlias, dryRun, policy, markMutation);

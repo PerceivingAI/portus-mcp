@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -64,7 +65,7 @@ const basePolicy = {
     fileRead: { maxChars: 500000 },
     fileWrite: { maxChars: 1000000 },
     patch: { maxChars: 1000000 },
-    textEdit: { maxOperationChars: 200000, maxSearchOrMarkerChars: 20000 },
+    textEdit: { maxOperationChars: 200000, maxSearchOrMarkerChars: 20000, maxRangeLines: 2000 },
     search: { maxScanEntries: 100000, maxTextFileChars: 200000, maxRegexExecutionMs: 120000, maxBatchMatches: 5000, maxBatchOutputChars: 500000 },
     skills: { maxReadChars: 200000 },
     subagentOutput: { maxStdoutChars: 200000, maxStderrChars: 200000 },
@@ -121,8 +122,20 @@ const rangeResultSchema = z.object({
     endLine: z.number().int().positive().nullable(),
     lineCount: z.number().int().nonnegative()
   }).strict(),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
   content: z.string(),
   hasMore: z.boolean(),
+  truncated: z.boolean(),
+  chars: z.number().int().nonnegative(),
+  totalChars: z.number().int().nonnegative(),
+  omittedChars: z.number().int().nonnegative(),
+  limit: z.number().int().positive()
+}).strict();
+const fullResultSchema = z.object({
+  projectAlias: z.string(),
+  relativePath: z.string(),
+  content: z.string(),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
   truncated: z.boolean(),
   chars: z.number().int().nonnegative(),
   totalChars: z.number().int().nonnegative(),
@@ -158,6 +171,10 @@ function errorOf(response: CallToolResult): string {
   if (structured.success) return structured.data.error;
   return response.content.map((item) => item.type === "text" ? item.text : "").join("\n");
 }
+function sha256(content: string | Buffer): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
 
 async function withClient(t: TestContext): Promise<Client> {
   const server = createHttpServer("/mcp");
@@ -179,6 +196,10 @@ async function callRange(client: Client, arguments_: Record<string, unknown>): P
     : requested;
   return client.callTool({ name: "project_read", arguments: { projectAlias, requests: [{ mode: "content", ...request }] } });
 }
+async function callFull(client: Client, relativePath: string): Promise<CallToolResult> {
+  return client.callTool({ name: "project_read", arguments: { projectAlias: "range", requests: [{ mode: "content", relativePath }] } });
+}
+
 
 test("project_read range operation exposes and enforces its complete MCP contract", async (t) => {
   t.after(() => writePolicy());
@@ -216,6 +237,7 @@ test("project_read range operation exposes and enforces its complete MCP contrac
       relativePath: "lines.txt",
       requested: { startLine: 3, endLine: 5 },
       actual: { startLine: 3, endLine: 5, lineCount: 3 },
+      sha256: sha256(Array.from({ length: 10 }, (_, index) => `line ${index + 1}`).join("\n") + "\n"),
       content: "line 3\nline 4\nline 5",
       hasMore: true,
       truncated: false,
@@ -265,6 +287,27 @@ test("project_read range operation exposes and enforces its complete MCP contrac
     assert.equal(beyondEof.content, "");
     assert.equal(beyondEof.hasMore, false);
   });
+  await t.test("returns the complete raw-file hash for full, bounded, and truncated reads", async () => {
+    const rawContent = Array.from({ length: 10 }, (_, index) => `line ${index + 1}`).join("\n") + "\n";
+    const expectedSha256 = sha256(rawContent);
+    const full = resultOf(await callFull(client, "lines.txt"), fullResultSchema);
+    const bounded = resultOf(await callRange(client, {
+      projectAlias: "range",
+      relativePath: "lines.txt",
+      startLine: 4,
+      endLine: 4
+    }), rangeResultSchema);
+    assert.equal(full.sha256, expectedSha256);
+    assert.equal(bounded.sha256, expectedSha256);
+    assert.equal(bounded.content, "line 4");
+
+    writePolicy(8);
+    const truncated = resultOf(await callFull(client, "lines.txt"), fullResultSchema);
+    assert.equal(truncated.truncated, true);
+    assert.equal(truncated.sha256, expectedSha256);
+    writePolicy();
+  });
+
 
   await t.test("normalizes CRLF input without phantom carriage returns", async () => {
     const crlf = resultOf(await callRange(client, {

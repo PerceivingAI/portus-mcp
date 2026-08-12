@@ -41,7 +41,7 @@ const basePolicy = {
   pathPolicy: { blockedPatterns: [".env"] },
   limits: {
     fileRead: { maxChars: 500000 }, fileWrite: { maxChars: 1000000 }, patch: { maxChars: 1000000 },
-    textEdit: { maxOperationChars: 200000, maxSearchOrMarkerChars: 20000 }, search: { maxScanEntries: 100000, maxTextFileChars: 200000, maxRegexExecutionMs: 120000, maxBatchMatches: 5000, maxBatchOutputChars: 500000 },
+    textEdit: { maxOperationChars: 200000, maxSearchOrMarkerChars: 20000, maxRangeLines: 2000 }, search: { maxScanEntries: 100000, maxTextFileChars: 200000, maxRegexExecutionMs: 120000, maxBatchMatches: 5000, maxBatchOutputChars: 500000 },
     skills: { maxReadChars: 200000 }, subagentOutput: { maxStdoutChars: 200000, maxStderrChars: 200000 },
     sessionEvents: { maxEvents: 500, maxChunkChars: 4000 }, audit: { maxEvents: 1000 }, process: { maxOutputBufferMb: 10, maxBatchOutputChars: 1000000 }
   },
@@ -72,7 +72,7 @@ const requestedSchema = z.object({ startLine: z.number().int().positive(), endLi
 const actualSchema = z.object({ startLine: z.number().int().positive().nullable(), endLine: z.number().int().positive().nullable(), lineCount: z.number().int().nonnegative() }).strict();
 const successSchema = z.object({
   ok: z.literal(true), index: z.number().int().nonnegative(), mode: z.literal("content"), relativePath: z.string(), requested: requestedSchema, actual: actualSchema, content: z.string(), hasMore: z.boolean(), truncated: z.boolean(),
-  chars: z.number().int().nonnegative(), totalChars: z.number().int().nonnegative(), omittedChars: z.number().int().nonnegative(), limit: z.number().int().positive(), projectAlias: z.string()
+  sha256: z.string().regex(/^[a-f0-9]{64}$/), chars: z.number().int().nonnegative(), totalChars: z.number().int().nonnegative(), omittedChars: z.number().int().nonnegative(), limit: z.number().int().positive(), projectAlias: z.string()
 }).strict();
 const itemErrorSchema = z.object({ ok: z.literal(false), index: z.number().int().nonnegative(), mode: z.literal("content"), relativePath: z.string(), error: z.string() }).strict();
 const readSchema = z.object({
@@ -163,6 +163,7 @@ test("project_read exposes and enforces its complete MCP batch contract", async 
     assert.deepEqual(successes[1].requested, { startLine: 1, endLine: 200 });
     assert.equal(successes[1].content, "alpha\nbeta\ngamma");
     assert.equal(successes[2].content, "one");
+    assert.equal(successes[0].sha256, successes[2].sha256);
   });
 
   await t.test("isolates ordinary and unsafe file failures while the batch succeeds", async () => {

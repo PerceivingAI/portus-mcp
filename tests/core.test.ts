@@ -147,6 +147,16 @@ test("complete policy validation rejects every formerly defaulted field when omi
       }
     },
     {
+      path: "limits.textEdit.maxRangeLines",
+      value: {
+        ...selectedPolicy,
+        limits: {
+          ...selectedPolicy.limits,
+          textEdit: withoutKey(selectedPolicy.limits.textEdit, "maxRangeLines")
+        }
+      }
+    },
+    {
       path: "limits.process.maxBatchOutputChars",
       value: {
         ...selectedPolicy,
@@ -165,6 +175,31 @@ test("complete policy validation rejects every formerly defaulted field when omi
     );
   }
 });
+test("text-edit range limit rejects invalid values and unknown fields", () => {
+  for (const maxRangeLines of [0, -1, 1.5]) {
+    assert.throws(
+      () => parsePolicyConfig({
+        ...selectedPolicy,
+        limits: {
+          ...selectedPolicy.limits,
+          textEdit: { ...selectedPolicy.limits.textEdit, maxRangeLines }
+        }
+      }),
+      /limits\.textEdit\.maxRangeLines/
+    );
+  }
+  assert.throws(
+    () => parsePolicyConfig({
+      ...selectedPolicy,
+      limits: {
+        ...selectedPolicy.limits,
+        textEdit: { ...selectedPolicy.limits.textEdit, unknownLimit: 1 }
+      }
+    }),
+    /limits\.textEdit/
+  );
+});
+
 
 test("requireConfirmation comes exclusively from the supplied policy", () => {
   const requiredPolicy = withMainAgentPermissions({ requireConfirmation: true });

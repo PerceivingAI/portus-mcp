@@ -71,7 +71,8 @@ writeFileSync(policyPath, JSON.stringify({
     },
     textEdit: {
       maxOperationChars: 200000,
-      maxSearchOrMarkerChars: 20000
+      maxSearchOrMarkerChars: 20000,
+      maxRangeLines: 2000
     },
     search: {
       maxScanEntries: 100000,

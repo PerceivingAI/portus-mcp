@@ -67,7 +67,7 @@ writeFileSync(policyPath, JSON.stringify({
     fileRead: { maxChars: 500000 },
     fileWrite: { maxChars: 1000000 },
     patch: { maxChars: 1000000 },
-    textEdit: { maxOperationChars: 200000, maxSearchOrMarkerChars: 20000 },
+    textEdit: { maxOperationChars: 200000, maxSearchOrMarkerChars: 20000, maxRangeLines: 2000 },
     search: { maxScanEntries: 100000, maxTextFileChars: 200000, maxRegexExecutionMs: 120000, maxBatchMatches: 5000, maxBatchOutputChars: 500000 },
     skills: { maxReadChars: 200000 },
     subagentOutput: { maxStdoutChars: 200000, maxStderrChars: 200000 },
@@ -102,7 +102,7 @@ async function callEdit(client: Client, operations: Array<Record<string, unknown
   return client.callTool({ name: "project_edit", arguments: { projectAlias: "edit", operations, dryRun, continueOnFailure } });
 }
 
-function sha256(content: string): string {
+function sha256(content: string | Buffer): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
@@ -116,7 +116,7 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`)));
   t.after(async () => client.close());
 
-  await t.test("hard-cuts over replace and insert input schemas", async () => {
+  await t.test("hard-cuts over exact edit and range input schemas", async () => {
     writeFileSync(path.join(projectRoot, "schema.txt"), "marker\n", "utf8");
     const missingExpected = await callEdit(client, [{ type: "replace", relativePath: "schema.txt", search: "marker", replace: "updated" }]);
     assert.equal(missingExpected.isError, true);
@@ -124,6 +124,10 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
     assert.equal(zeroExpected.isError, true);
     const retiredInsertMultiplicity = await callEdit(client, [{ type: "insert", relativePath: "schema.txt", marker: "marker", content: "before-", position: "before", expectedOccurrences: 1 }]);
     assert.equal(retiredInsertMultiplicity.isError, true);
+    const missingRangeHash = await callEdit(client, [{ type: "replace_range", relativePath: "schema.txt", startLine: 1, endLine: 1, replacement: "updated" }]);
+    assert.equal(missingRangeHash.isError, true);
+    const invalidRangeBound = await callEdit(client, [{ type: "replace_range", relativePath: "schema.txt", expectedSha256: sha256("marker\n"), startLine: 0, endLine: 1, replacement: "updated" }]);
+    assert.equal(invalidRangeBound.isError, true);
     assert.equal(readFileSync(path.join(projectRoot, "schema.txt"), "utf8"), "marker\n");
   });
 
@@ -249,6 +253,143 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
     assert.equal(batch.results[0].operationStatus, "not_applied");
     assert.equal(readFileSync(target, "utf8"), "current\n");
   });
+  await t.test("applies guarded ranges while preserving CRLF and missing-final-newline state", async () => {
+    const crlfTarget = path.join(projectRoot, "range-crlf.txt");
+    const crlfSource = Buffer.from("one\r\ntwo\r\nthree\r\n");
+    const crlfUpdated = Buffer.from("one\r\nTWO\r\nSECOND\r\nthree\r\n");
+    writeFileSync(crlfTarget, crlfSource);
+    const crlfBatch = resultOf(await callEdit(client, [{
+      type: "replace_range",
+      relativePath: "range-crlf.txt",
+      expectedSha256: sha256(crlfSource).toUpperCase(),
+      startLine: 2,
+      endLine: 2,
+      replacement: "TWO\nSECOND"
+    }]));
+    assert.deepEqual(crlfBatch.results[0], {
+      index: 0,
+      type: "replace_range",
+      relativePath: "range-crlf.txt",
+      ok: true,
+      outcome: "completed",
+      operationStatus: "applied",
+      fileChanged: true,
+      oldRange: { startLine: 2, endLine: 2 },
+      newRange: { startLine: 2, endLine: 3 },
+      oldSha256: sha256(crlfSource),
+      newSha256: sha256(crlfUpdated)
+    });
+    assert.deepEqual(readFileSync(crlfTarget), crlfUpdated);
+
+    const noFinalTarget = path.join(projectRoot, "range-no-final.txt");
+    const noFinalSource = Buffer.from("first\nlast");
+    const noFinalUpdated = Buffer.from("first\n🙂\nfinal");
+    writeFileSync(noFinalTarget, noFinalSource);
+    const noFinalBatch = resultOf(await callEdit(client, [{
+      type: "replace_range",
+      relativePath: "range-no-final.txt",
+      expectedSha256: sha256(noFinalSource),
+      startLine: 2,
+      endLine: 2,
+      replacement: "🙂\r\nfinal\r\n"
+    }]));
+    assert.deepEqual(noFinalBatch.results[0].newRange, { startLine: 2, endLine: 3 });
+    assert.equal(noFinalBatch.results[0].newSha256, sha256(noFinalUpdated));
+    assert.deepEqual(readFileSync(noFinalTarget), noFinalUpdated);
+  });
+
+  await t.test("deletes a complete range without disturbing surrounding bytes", async () => {
+    const target = path.join(projectRoot, "range-delete.txt");
+    const source = Buffer.from("alpha\nremove one\nremove two\nomega\n");
+    const updated = Buffer.from("alpha\nomega\n");
+    writeFileSync(target, source);
+    const batch = resultOf(await callEdit(client, [{
+      type: "replace_range",
+      relativePath: "range-delete.txt",
+      expectedSha256: sha256(source),
+      startLine: 2,
+      endLine: 3,
+      replacement: ""
+    }]));
+    assert.equal(batch.results[0].operationStatus, "applied");
+    assert.deepEqual(batch.results[0].oldRange, { startLine: 2, endLine: 3 });
+    assert.equal(batch.results[0].newRange, null);
+    assert.equal(batch.results[0].newSha256, sha256(updated));
+    assert.deepEqual(readFileSync(target), updated);
+  });
+
+  await t.test("returns no_change for an identical guarded range without touching the file", async () => {
+    const target = path.join(projectRoot, "range-no-change.txt");
+    const source = Buffer.from("same\r\n");
+    writeFileSync(target, source);
+    const before = statSync(target).mtimeMs;
+    const batch = resultOf(await callEdit(client, [{
+      type: "replace_range",
+      relativePath: "range-no-change.txt",
+      expectedSha256: sha256(source),
+      startLine: 1,
+      endLine: 1,
+      replacement: "same"
+    }]));
+    assert.equal(batch.results[0].operationStatus, "no_change");
+    assert.equal(batch.results[0].fileChanged, false);
+    assert.equal(batch.results[0].oldSha256, sha256(source));
+    assert.equal(batch.results[0].newSha256, sha256(source));
+    assert.equal(statSync(target).mtimeMs, before);
+  });
+
+  await t.test("plans guarded range hashes and ranges without mutation", async () => {
+    const target = path.join(projectRoot, "range-dry-run.txt");
+    const source = Buffer.from("alpha\nomega\n");
+    const projected = Buffer.from("first\nsecond\nomega\n");
+    writeFileSync(target, source);
+    const batch = resultOf(await callEdit(client, [{
+      type: "replace_range",
+      relativePath: "range-dry-run.txt",
+      expectedSha256: sha256(source),
+      startLine: 1,
+      endLine: 1,
+      replacement: "first\nsecond"
+    }], true));
+    assert.equal(batch.batchOutcome, "planned");
+    assert.equal(batch.results[0].operationStatus, "planned");
+    assert.deepEqual(batch.results[0].oldRange, { startLine: 1, endLine: 1 });
+    assert.deepEqual(batch.results[0].projectedNewRange, { startLine: 1, endLine: 2 });
+    assert.equal(batch.results[0].oldSha256, sha256(source));
+    assert.equal(batch.results[0].projectedSha256, sha256(projected));
+    assert.equal(batch.results[0].fileChanged, false);
+    assert.deepEqual(readFileSync(target), source);
+  });
+
+  await t.test("rejects stale, reversed, unavailable, and overwide ranges without mutation", async () => {
+    const target = path.join(projectRoot, "range-rejected.txt");
+    const source = Buffer.from("one\ntwo\nthree\n");
+    writeFileSync(target, source);
+    const before = statSync(target).mtimeMs;
+    const operations = [
+      { expectedSha256: sha256("stale\n"), startLine: 1, endLine: 1, reason: "stale_file" },
+      { expectedSha256: sha256(source), startLine: 3, endLine: 2, reason: "invalid_range" },
+      { expectedSha256: sha256(source), startLine: 2, endLine: 4, reason: "invalid_range" },
+      { expectedSha256: sha256(source), startLine: 1, endLine: 2001, reason: "invalid_range" }
+    ];
+    for (const operation of operations) {
+      const batch = resultOf(await callEdit(client, [{
+        type: "replace_range",
+        relativePath: "range-rejected.txt",
+        expectedSha256: operation.expectedSha256,
+        startLine: operation.startLine,
+        endLine: operation.endLine,
+        replacement: "changed"
+      }]));
+      assert.equal(batch.batchOutcome, "rejected");
+      assert.equal(batch.results[0].reason, operation.reason);
+      assert.equal(batch.results[0].operationStatus, "not_applied");
+      assert.equal(batch.results[0].fileChanged, false);
+      assert.deepEqual(readFileSync(target), source);
+    }
+    assert.equal(statSync(target).mtimeMs, before);
+  });
+
 
   await t.test("summarizes ordered partial mutation accurately", async () => {
     const created = path.join(projectRoot, "partial.txt");

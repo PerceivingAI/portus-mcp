@@ -44,14 +44,24 @@ function resolveReadableTextFile(projectAlias: string, relativePath: string, reg
 export async function readProjectTextFile(input: { projectAlias: string; relativePath: string }, registry: SkillRegistrySnapshot) {
   const readLimit = loadPolicyConfig().limits.fileRead.maxChars;
   const target = resolveReadableTextFile(input.projectAlias, input.relativePath, registry);
-  let content: string;
+  let content: Buffer;
   try {
-    content = readFileSync(target, "utf8");
+    content = readFileSync(target);
   } catch {
     throw new Error(`Unable to read text file: ${input.relativePath}`);
   }
-  const limited = limitText(content, readLimit);
-  return { projectAlias: input.projectAlias, relativePath: input.relativePath, content: limited.text, truncated: limited.truncated, chars: limited.chars, totalChars: limited.totalChars, omittedChars: limited.omittedChars, limit: limited.limit };
+  const limited = limitText(content.toString("utf8"), readLimit);
+  return {
+    projectAlias: input.projectAlias,
+    relativePath: input.relativePath,
+    content: limited.text,
+    sha256: hashSha256(content),
+    truncated: limited.truncated,
+    chars: limited.chars,
+    totalChars: limited.totalChars,
+    omittedChars: limited.omittedChars,
+    limit: limited.limit
+  };
 }
 
 function assertValidLineRange(startLine: number, endLine: number): void {
@@ -68,7 +78,11 @@ export async function readProjectTextFileRange(input: { projectAlias: string; re
   assertValidLineRange(startLine, endLine);
 
   const target = resolveReadableTextFile(input.projectAlias, input.relativePath, registry);
-  const stream = createReadStream(target, { encoding: "utf8" });
+  const stream = createReadStream(target);
+  const completeFileHash = crypto.createHash("sha256");
+  stream.on("data", (chunk: string | Buffer) => {
+    completeFileHash.update(chunk);
+  });
   const lines: string[] = [];
   let lineNumber = 0;
   let hasMore = false;
@@ -79,10 +93,9 @@ export async function readProjectTextFileRange(input: { projectAlias: string; re
       if (lineNumber < startLine) continue;
       if (lineNumber <= endLine) {
         lines.push(line);
-        continue;
+      } else {
+        hasMore = true;
       }
-      hasMore = true;
-      break;
     }
   } catch {
     throw new Error(`Unable to read text file: ${input.relativePath}`);
@@ -102,6 +115,7 @@ export async function readProjectTextFileRange(input: { projectAlias: string; re
       endLine: lineCount > 0 ? startLine + lineCount - 1 : null,
       lineCount
     },
+    sha256: completeFileHash.digest("hex"),
     content: limited.text,
     hasMore,
     truncated: limited.truncated,

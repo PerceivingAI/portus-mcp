@@ -352,7 +352,7 @@ async function textSearch(
 const expectedFileSchema = z.object({ relativePath: z.string().min(1), sha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(), sizeBytes: z.number().int().nonnegative().optional(), modifiedAt: z.string().optional() }).strict();
 
 export function registerProjectReadTool(server: McpServer, registry: SkillRegistrySnapshot, policy: PortusPolicyConfig = loadPolicyConfig()): void {
-  registerStrictProjectTool(server, "project_read", "Read content or metadata from registered project paths and configured read-only skill paths. Use a project alias or a skill rootAlias returned by project_context; skill entrypoints and supporting files use their catalog-provided relative paths. Supports 1–50 batched content, binary, metadata, or existence requests with ordered per-item results.", {
+  registerStrictProjectTool(server, "project_read", "Read content or metadata from registered project paths and configured read-only skill paths. Text content results include the complete raw-file SHA-256, including for bounded or truncated reads. Use a project alias or a skill rootAlias returned by project_context; skill entrypoints and supporting files use their catalog-provided relative paths. Supports 1–50 batched content, binary, metadata, or existence requests with ordered per-item results.", {
     projectAlias: z.string().min(1),
     requests: z.array(z.object({ relativePath: z.string().min(1), mode: z.enum(["content", "binary", "metadata", "exists"]).default("content"), startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional() }).strict().superRefine((request, context) => { if (request.mode !== "content" && (request.startLine !== undefined || request.endLine !== undefined)) context.addIssue({ code: z.ZodIssueCode.custom, message: "Line ranges are only valid for content mode" }); })).min(1).max(50)
   }, readAnnotations, async ({ projectAlias, requests }) => {
@@ -832,7 +832,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     };
   });
 
-  registerStrictProjectTool(server, "project_edit", "Apply an ordered, policy-checked project edit batch. Stops after the first rejected or failed operation unless continueOnFailure=true; dry runs report planned mutations without changing files.", {
+  registerStrictProjectTool(server, "project_edit", "Apply an ordered, policy-checked project edit batch, including hash-guarded inclusive line-range replacement. Stops after the first rejected or failed operation unless continueOnFailure=true; dry runs report planned mutations without changing files.", {
     projectAlias: z.string().min(1),
     operations: z.array(editOperationSchema).min(1).max(50),
     dryRun: z.boolean().default(false),
