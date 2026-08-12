@@ -679,7 +679,6 @@ type PathProjection = {
   suppliedBaseHash?: string;
   firstTouchOrder: number;
   projectedIsText?: boolean;
-  blocked: boolean;
 };
 
 type StagedChange = {
@@ -742,7 +741,6 @@ function captureStagedProjection(
     ...(baseContent === null ? {} : { baseSha256: hashSha256(baseContent) }),
     projectedContent: baseContent,
     firstTouchOrder: projections.size,
-    blocked: false
   };
   projections.set(key, projection);
   return projection;
@@ -761,10 +759,10 @@ function evaluateStagedOperation(
     if (projection.suppliedBaseHash && projection.suppliedBaseHash !== expectedSha256) {
       throw new SemanticRejection("conflicting_base_hash", {});
     }
-    projection.suppliedBaseHash ??= expectedSha256;
     if (!projection.baseExists || projection.baseSha256 !== expectedSha256) {
       throw new SemanticRejection("stale_file", {});
     }
+    projection.suppliedBaseHash ??= expectedSha256;
   }
 
   if (operation.type === "write") {
@@ -1096,19 +1094,23 @@ function executeStagedProjectEditBatch(input: {
     }
 
     let projection: PathProjection | undefined;
+    let projectedContentBefore: Buffer | null | undefined;
+    let projectedIsTextBefore: boolean | undefined;
     try {
       projection = captureStagedProjection(input.projectAlias, operation.relativePath, projections, input.policy);
-      if (projection.blocked) {
-        evaluations.push({ index, operation, projection, result: skipped(index, operation) });
-        continue;
-      }
+      projectedContentBefore = projection.projectedContent;
+      projectedIsTextBefore = projection.projectedIsText;
       evaluations.push(evaluateStagedOperation(index, operation, projection, input.dryRun, input.policy));
     } catch (error) {
       const result = error instanceof SemanticRejection
         ? rejected(operationIdentity(index, operation), error)
         : failed(operationIdentity(index, operation), error, operation.relativePath, false);
-      if (projection) projection.blocked = true;
-      else blockedRelativePaths.add(blockedKey);
+      if (projection && projectedContentBefore !== undefined) {
+        projection.projectedContent = projectedContentBefore;
+        projection.projectedIsText = projectedIsTextBefore;
+      } else {
+        blockedRelativePaths.add(blockedKey);
+      }
       evaluations.push({ index, operation, projection, result });
     }
   }

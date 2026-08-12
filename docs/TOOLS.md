@@ -34,6 +34,42 @@ subagent_context
 
 Connected-agent skill metadata is delivered through MCP server instructions; selected files are read through `project_read`.
 
+### `project_edit` Input and Result Contract
+
+The top-level input is strict:
+
+| Field | Contract |
+|---|---|
+| `projectAlias` | Required registered project alias. `skill/<name>` aliases are read-only and cannot be edited. |
+| `operations` | Required ordered array of 1–50 operations. |
+| `batchMode` | `"staged"` by default; `"ordered"` is an explicit opt-in. |
+| `dryRun` | Defaults to `false`. Reports projected operation results without filesystem mutation when `true`. |
+| `continueOnFailure` | Defaults to `false`; valid only with `batchMode: "ordered"`. |
+
+Operation inputs are also strict:
+
+| Type | Fields |
+|---|---|
+| `write` | `relativePath`, `content`, optional complete-file `expectedSha256`. |
+| `replace` | `relativePath`, non-empty `search`, `replace`, required positive `expectedOccurrences`, optional complete-file `expectedSha256`. Applies only when the non-overlapping exact-match count equals `expectedOccurrences`. |
+| `insert` | `relativePath`, non-empty `marker`, `content`, `position: "before" \| "after"`, optional complete-file `expectedSha256`. Applies only when the marker occurs exactly once. |
+| `replace_range` | `relativePath`, required complete-file `expectedSha256`, positive one-based inclusive `startLine` and `endLine`, and `replacement`. |
+| `copy` | `sourceRelativePath`, `destinationRelativePath`, optional `overwrite` (default `false`). Ordered mode only. |
+| `move` | `sourceRelativePath`, `destinationRelativePath`, optional `overwrite` (default `false`). Ordered mode only. |
+| `delete` | `relativePath`, optional `confirm` (default `false`). Ordered mode only. |
+| `mkdir` | `relativePath`, optional `recursive` (default `true`). Ordered mode only. |
+| `rmdir` | `relativePath`, optional `recursive` and `confirm` (both default `false`). Ordered mode only. |
+
+Staged evaluation continues after an operation-local semantic rejection or execution failure whenever the path's captured projection remains available. The failed operation leaves the last valid projected state unchanged, so later same-path operations are still checked in order. If the batch is rejected, valid mutations are withheld as `skipped/batch_rejected`; if staging has an execution failure, they are withheld as `skipped/batch_failed`. `skipped/prior_operation_failed` is reserved for operations that cannot be evaluated because their path projection is unavailable.
+
+Every operation result has `index`, operation `type`, safe relative path fields, `ok`, `outcome`, and `operationStatus`. `operationStatus` is exactly one of `applied`, `no_change`, `planned`, `not_applied`, `failed`, or `skipped`; `outcome` distinguishes completed semantic decisions from execution failure and skipped execution. Rejections use typed `reason` values and exact edits return bounded match counts and one-based Unicode line/column locations. Range edits return old/new ranges and hashes, using `projectedNewRange` and `projectedSha256` during dry runs.
+
+Every batch returns `batchMode`, `batchOutcome`, `repositoryState`, `dryRun`, all counters, optional sanitized `batchError`, and ordered `results`. `failedCount` counts completed semantic rejections, `errorCount` counts execution failures, and `skippedCount` counts unattempted or withheld operations. The primary counter invariant is:
+
+```text
+requestedCount = successCount + failedCount + errorCount + skippedCount
+```
+
 ## Project Discovery and Policy Actions
 
 For cold start, call `project_context` with `include.projects=true` and omit `projectAlias`. The response is a safe inventory of registered aliases only: it contains no absolute roots, timestamps, environment values, registry-storage details, or command policy. After choosing an alias, call scoped `project_context`; its default response includes `execution` with effective `enabled`, `allowedCommands`, `allowShell`, and `requireConfirmation` values before the client uses `project_run`. Combining alias discovery with project-scoped context requires `projectAlias`.

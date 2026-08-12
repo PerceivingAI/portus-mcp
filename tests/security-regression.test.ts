@@ -322,7 +322,14 @@ test("canonical project boundary permits internal links and rejects external jun
       ]
     }
   }));
+  assert.equal(edits.batchMode, "ordered");
+  assert.equal(edits.batchOutcome, "failed");
+  assert.equal(edits.repositoryState, "unchanged");
+  assert.equal(edits.errorCount, 4);
+  assert.equal(edits.skippedCount, 0);
   for (const escaped of edits.results) {
+    assert.equal(escaped.outcome, "failed");
+    assert.equal(escaped.operationStatus, "failed");
     assert.equal(escaped.ok, false);
     assert.match(escaped.error, /Path escapes project root/);
   }
@@ -533,7 +540,14 @@ test("MCP mutation tools cannot operate on existing gitignored files when ignore
     name: "project_edit",
     arguments: { projectAlias, batchMode: "ordered", operations, dryRun: true, continueOnFailure: true }
   }));
+  assert.equal(edits.batchMode, "ordered");
+  assert.equal(edits.batchOutcome, "failed");
+  assert.equal(edits.repositoryState, "unchanged");
+  assert.equal(edits.errorCount, operations.length);
+  assert.equal(edits.skippedCount, 0);
   for (const denied of edits.results) {
+    assert.equal(denied.outcome, "failed");
+    assert.equal(denied.operationStatus, "failed");
     assert.equal(denied.ok, false);
     assert.match(denied.error, /readGitIgnoredFiles/);
   }

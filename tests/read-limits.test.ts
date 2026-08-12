@@ -217,6 +217,12 @@ test("text input limits count Unicode code points", async (t) => {
       operations: [{ type: "write", relativePath: "emoji.txt", content: "🙂" }]
     }
   }));
+  assert.equal(write.batchMode, "staged");
+  assert.equal(write.batchOutcome, "succeeded");
+  assert.equal(write.repositoryState, "changed");
+  assert.equal(write.appliedCount, 1);
+  assert.equal(write.results[0].operationStatus, "applied");
+  assert.equal(write.results[0].fileChanged, true);
   assert.equal(write.results[0].ok, true);
   assert.equal(write.results[0].bytes, Buffer.byteLength("🙂", "utf8"));
 
@@ -227,6 +233,12 @@ test("text input limits count Unicode code points", async (t) => {
       operations: [{ type: "write", relativePath: "too-many.txt", content: "🙂🙂" }]
     }
   }));
+  assert.equal(rejectedWrite.batchMode, "staged");
+  assert.equal(rejectedWrite.batchOutcome, "failed");
+  assert.equal(rejectedWrite.repositoryState, "unchanged");
+  assert.equal(rejectedWrite.errorCount, 1);
+  assert.equal(rejectedWrite.results[0].outcome, "failed");
+  assert.equal(rejectedWrite.results[0].operationStatus, "failed");
   assert.equal(rejectedWrite.results[0].ok, false);
   assert.match(rejectedWrite.results[0].error, /limits\.fileWrite\.maxChars/);
 });
