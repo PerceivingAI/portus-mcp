@@ -62,7 +62,22 @@ Operation inputs are also strict:
 
 Staged evaluation continues after an operation-local semantic rejection or execution failure whenever the path's captured projection remains available. The failed operation leaves the last valid projected state unchanged, so later same-path operations are still checked in order. If the batch is rejected, valid mutations are withheld as `skipped/batch_rejected`; if staging has an execution failure, they are withheld as `skipped/batch_failed`. `skipped/prior_operation_failed` is reserved for operations that cannot be evaluated because their path projection is unavailable.
 
-Every operation result has `index`, operation `type`, safe relative path fields, `ok`, `outcome`, and `operationStatus`. `operationStatus` is exactly one of `applied`, `no_change`, `planned`, `not_applied`, `failed`, or `skipped`; `outcome` distinguishes completed semantic decisions from execution failure and skipped execution. Rejections use typed `reason` values and exact edits return bounded match counts and one-based Unicode line/column locations. Range edits return old/new ranges and hashes, using `projectedNewRange` and `projectedSha256` during dry runs.
+Every operation result has `index`, operation `type`, safe relative path fields, `ok`, `outcome`, and `operationStatus`. `operationStatus` is exactly one of `applied`, `no_change`, `planned`, `not_applied`, `failed`, or `skipped`; `outcome` distinguishes completed semantic decisions from execution failure and skipped execution. Exact edits return bounded match counts and one-based Unicode line/column locations. Range edits return old/new ranges and hashes, using `projectedNewRange` and `projectedSha256` during dry runs.
+
+Rejected and skipped operations use this complete typed `reason` taxonomy:
+
+| Reason | Contract |
+|---|---|
+| `occurrence_mismatch` | A replacement's exact-match count differs from `expectedOccurrences`, or an insertion marker is not unique. |
+| `stale_file` | An operation's expected SHA-256 does not match the captured on-disk base, or pre-commit revalidation detects that the base changed. |
+| `invalid_range` | A requested line range is reversed, outside the projected file, or wider than the configured limit. |
+| `conflicting_base_hash` | A later staged operation supplies a different `expectedSha256` from the already accepted base guard for the same path. |
+| `unsupported_batch_mode` | The selected batch mode does not support the requested operation. |
+| `batch_rejected` | An otherwise valid staged mutation is withheld because the batch contains a semantic rejection. |
+| `batch_failed` | An otherwise valid staged mutation is withheld because staging encountered an execution failure. |
+| `prior_operation_failed` | The operation cannot be evaluated because its required path projection is unavailable. |
+
+Execution failures use `outcome: "failed"`, `operationStatus: "failed"`, and a sanitized `error` rather than a `reason`. Human-readable diagnostics may supplement a typed reason but do not replace it.
 
 Every batch returns `batchMode`, `batchOutcome`, `repositoryState`, `dryRun`, all counters, optional sanitized `batchError`, and ordered `results`. `failedCount` counts completed semantic rejections, `errorCount` counts execution failures, and `skippedCount` counts unattempted or withheld operations. The primary counter invariant is:
 

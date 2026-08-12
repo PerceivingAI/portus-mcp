@@ -832,7 +832,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     };
   });
 
-  registerStrictProjectTool(server, "project_edit", "Apply a policy-checked edit batch. Staged execution is the default for write and text edits: it evaluates projected same-path state, revalidates every base before commit, and writes each changed path once. Use batchMode=ordered for filesystem sequencing or continueOnFailure.", {
+  registerStrictProjectTool(server, "project_edit", "Apply a policy-checked edit batch. Staged execution is the default for write and text edits: it evaluates projected same-path state, revalidates every base before commit, and writes each changed path once. Use batchMode=ordered for filesystem sequencing or continueOnFailure. Rejected and skipped operations use the typed reasons occurrence_mismatch, stale_file, invalid_range, conflicting_base_hash, unsupported_batch_mode, batch_rejected, batch_failed, and prior_operation_failed. conflicting_base_hash identifies contradictory same-path base guards; stale_file identifies an expected or revalidated on-disk base mismatch.", {
     projectAlias: z.string().min(1),
     operations: z.array(editOperationSchema).min(1).max(50),
     batchMode: editBatchModeSchema,
