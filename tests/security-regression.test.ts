@@ -312,6 +312,7 @@ test("canonical project boundary permits internal links and rejects external jun
     name: "project_edit",
     arguments: {
       projectAlias,
+      continueOnFailure: true,
       operations: [
         { type: "write", relativePath: "outside-link/created.txt", content: "must not escape\n" },
         { type: "mkdir", relativePath: "outside-link/created-dir", recursive: true },
@@ -523,12 +524,12 @@ test("MCP mutation tools cannot operate on existing gitignored files when ignore
     { type: "move", sourceRelativePath: "README.md", destinationRelativePath: "ignored.txt", overwrite: true },
     { type: "delete", relativePath: "ignored.txt", confirm: true },
     { type: "rmdir", relativePath: "ignored-delete-dir", recursive: true, confirm: true },
-    { type: "replace", relativePath: "ignored.txt", search: "hidden", replace: "visible" },
+    { type: "replace", relativePath: "ignored.txt", search: "hidden", replace: "visible", expectedOccurrences: 1 },
     { type: "insert", relativePath: "ignored.txt", marker: "hidden", content: "visible", position: "before" }
   ];
   const edits = resultOf(await client.callTool({
     name: "project_edit",
-    arguments: { projectAlias, operations, dryRun: true }
+    arguments: { projectAlias, operations, dryRun: true, continueOnFailure: true }
   }));
   for (const denied of edits.results) {
     assert.equal(denied.ok, false);
@@ -589,8 +590,8 @@ test("MCP mutation tools reject oversized input payloads", async (t) => {
 
   for (const [operation, error] of [
     [{ type: "write", relativePath: "large.txt", content: "x".repeat(1000001) }, /limits\.fileWrite\.maxChars/],
-    [{ type: "replace", relativePath: "README.md", search: "x".repeat(20001), replace: "small" }, /limits\.textEdit\.maxSearchOrMarkerChars/],
-    [{ type: "replace", relativePath: "README.md", search: "Security", replace: "x".repeat(200001) }, /limits\.textEdit\.maxOperationChars/],
+    [{ type: "replace", relativePath: "README.md", search: "x".repeat(20001), replace: "small", expectedOccurrences: 1 }, /limits\.textEdit\.maxSearchOrMarkerChars/],
+    [{ type: "replace", relativePath: "README.md", search: "Security", replace: "x".repeat(200001), expectedOccurrences: 1 }, /limits\.textEdit\.maxOperationChars/],
     [{ type: "insert", relativePath: "README.md", marker: "x".repeat(20001), content: "small", position: "after" }, /limits\.textEdit\.maxSearchOrMarkerChars/],
     [{ type: "insert", relativePath: "README.md", marker: "Security", content: "x".repeat(200001), position: "after" }, /limits\.textEdit\.maxOperationChars/]
   ] as const) {

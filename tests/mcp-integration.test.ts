@@ -136,6 +136,8 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   ]);
   const readTool = tools.tools.find((tool) => tool.name === "project_read");
   const contextTool = tools.tools.find((tool) => tool.name === "project_context");
+  const editTool = tools.tools.find((tool) => tool.name === "project_edit");
+  assert.deepEqual(Object.keys(editTool?.inputSchema.properties ?? {}).sort(), ["continueOnFailure", "dryRun", "operations", "projectAlias"]);
   assert.match(readTool?.description ?? "", /skill rootAlias returned by project_context/);
   assert.match(contextTool?.description ?? "", /catalog-provided skill rootAlias/);
   const includeProperties = ((contextTool?.inputSchema.properties?.include as { properties?: Record<string, unknown> } | undefined)?.properties) ?? {};
@@ -235,9 +237,14 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     ] }
   }));
   assert.equal(writes.successCount, 3);
+  assert.equal(writes.batchMode, "ordered");
+  assert.equal(writes.batchOutcome, "succeeded");
+  assert.equal(writes.repositoryState, "changed");
+  assert.equal(writes.appliedCount, 3);
+  assert.equal(writes.errorCount, 0);
   assert.equal(writes.results[0].bytes, Buffer.byteLength("written through MCP\n", "utf8"));
   assert.equal(writes.results[1].bytes, Buffer.byteLength("�\n", "utf8"));
-  assert.equal(writes.results[2].ok, true);
+  assert.equal(writes.results[2].operationStatus, "applied");
 
   const metadata = resultOf(await client.callTool({
     name: "project_context",
@@ -472,10 +479,14 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     name: "project_edit",
     arguments: { projectAlias: "mcp", operations: [
       { type: "replace", relativePath: "generated.txt", search: "written", replace: "updated", expectedOccurrences: 1 },
-      { type: "insert", relativePath: "generated.txt", marker: "updated", content: "new-", position: "before", expectedOccurrences: 1 }
+      { type: "insert", relativePath: "generated.txt", marker: "updated", content: "new-", position: "before" }
     ] }
   }));
   assert.equal(edits.successCount, 2);
+  assert.equal(edits.batchOutcome, "succeeded");
+  assert.equal(edits.appliedCount, 2);
+  assert.deepEqual(edits.results.map((operation: Record<string, unknown>) => operation.operationStatus), ["applied", "applied"]);
+  assert.deepEqual(edits.results.map((operation: Record<string, unknown>) => operation.matchesApplied), [1, 1]);
 
   const patchMissingExpected = await client.callTool({
     name: "project_patch",
@@ -518,7 +529,7 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   }));
   assert.equal(movedAndDeleted.successCount, 2);
   assert.equal(movedAndDeleted.results[0].destinationRelativePath, "copy/generated-moved.txt");
-  assert.equal(movedAndDeleted.results[1].deleted, true);
+  assert.equal(movedAndDeleted.results[1].operationStatus, "applied");
 
   const registry = loadSkillRegistry();
   assert.deepEqual(registry.connected.catalog.map((skill) => skill.name), ["sample"]);

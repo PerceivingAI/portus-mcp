@@ -6,7 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { optionalEnv } from "./env.js";
 import { loadPolicyConfig, type PortusPolicyConfig } from "./policy/policyConfig.js";
-import { registerBroadProjectTools } from "./tools/projects.js";
+import { registerBroadProjectTools } from "./tools/projectBroad.js";
 import { registerSubagentTools } from "./tools/subagents.js";
 import { registerBroadPolicyTools } from "./tools/config.js";
 import { readSessionEvents } from "./state/SessionEvents.js";

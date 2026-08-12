@@ -27,7 +27,7 @@ The adapters divide work by intent:
 | `project_context` | Alias-only discovery with `include.projects=true` and no `projectAlias`; with an alias, effective execution capabilities plus bounded status, tree, file-list, path metadata/existence, and package-script context. The default scoped response includes execution; project-scoped sections require `projectAlias`. |
 | `project_read` | Ordered, bounded content, range, metadata, and existence requests. |
 | `project_search` | File, text, symbol, or combined search; ignored paths are excluded unless one request explicitly opts in and the selected policy authorizes that scope. |
-| `project_edit` | Ordered write, replace, insert, copy, move, delete, mkdir, and rmdir operations; batches are not atomic. |
+| `project_edit` | Ordered write, exact replace, unique-marker insert, copy, move, delete, mkdir, and rmdir operations with typed mutation outcomes; batches stop on failure by default and are not atomic. |
 | `project_patch` | Patch preparation or application, including preconditions and dry runs. |
 | `project_run` | Approved checks, package scripts, or allowlisted device-installed commands. |
 | `project_policy` | Ordered permission, path-decision, and safe read-only effective-configuration checks, or one native registration or audit action. |

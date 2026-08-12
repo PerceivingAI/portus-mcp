@@ -173,6 +173,8 @@ test("strict audit mode blocks selected mutations when audit log is not writable
       }
     }));
     assert.equal(writeDenied.results[0].ok, false);
+    assert.equal(writeDenied.repositoryState, "unchanged");
+    assert.equal((writeDenied.results[0] as Record<string, unknown>).fileChanged, false);
     assert.equal(writeDenied.results[0].error, "Audit log is not writable: [redacted path]");
     assert.equal(existsSync(path.join(projectRoot, "created.txt")), false);
 
@@ -201,6 +203,9 @@ test("project_edit reports sanitized filesystem causes", async (t) => {
 
   const operation = writeDenied.results[0] as Record<string, unknown>;
   assert.equal(operation.ok, false);
+  assert.equal(operation.fileChanged, false);
+  assert.equal("repositoryState" in operation, false);
+  assert.equal(writeDenied.repositoryState, "unchanged");
   assert.match(String(operation.error), /EISDIR|EPERM|EACCES|illegal operation|permission denied/i);
   assert.equal(String(operation.error).includes(root), false);
 });

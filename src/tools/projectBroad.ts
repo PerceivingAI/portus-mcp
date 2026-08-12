@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { execFile } from "node:child_process";
@@ -16,7 +16,8 @@ import { loadPolicyConfig, policyPermissions, type PortusPolicyConfig } from "..
 import { countChars, limitText } from "../runtime/outputLimits.js";
 import { runProjectCheck, runProjectScript } from "../runtime/checks.js";
 import { runProjectCommand } from "../runtime/commands.js";
-import { registerStrictProjectTool } from "./projectToolUtils.js";
+import { registerStrictProjectTool, safeError, safeRelativePath } from "./projectToolUtils.js";
+import { editOperationSchema, executeProjectEditBatch } from "./projectEdit.js";
 import type { SkillRegistrySnapshot } from "../skills/SkillRegistry.js";
 import {
   assertCanReadProjectPath,
@@ -46,30 +47,6 @@ function assertInputChars(name: string, value: string, limit: number): void {
   if (chars > limit) throw new Error(`Input exceeds ${name}: ${chars} > ${limit} chars`);
 }
 
-function safeRelativePath(relativePath: string): string {
-  return path.posix.isAbsolute(relativePath) || path.win32.isAbsolute(relativePath) ? "[invalid path]" : relativePath;
-}
-
-function safeError(error: unknown, relativePath?: string): string {
-  const safePath = relativePath ? safeRelativePath(relativePath) : undefined;
-  const fallback = safePath ? `Operation failed: ${safePath}` : "Project operation failed";
-  if (!(error instanceof Error) || error.message.trim() === "") return fallback;
-  if (safePath === "[invalid path]") return fallback;
-
-  const errorRecord = error as Error & { path?: unknown };
-  let message = error.message;
-  if (typeof errorRecord.path === "string" && errorRecord.path !== "") {
-    message = message.split(errorRecord.path).join(safePath ?? "[redacted path]");
-  }
-  message = message
-    .replace(/(["'])(?:(?:\\\\\?\\)?[A-Za-z]:[\\/]|\\\\[^\\/\r\n]+[\\/]|\/(?:Users|home|var|tmp)\/)[^"'\r\n]*\1/g, "$1[redacted path]$1")
-    .replace(/(?:\\\\\?\\)?[A-Za-z]:[\\/][^\r\n]*/g, "[redacted path]")
-    .replace(/\\\\[^\\/\r\n]+[\\/][^\r\n]*/g, "[redacted path]")
-    .replace(/\/(?:Users|home|var|tmp)\/[^\r\n]*/g, "[redacted path]")
-    .replace(/[\r\n\t]+/g, " ")
-    .trim();
-  return message === "" ? fallback : message.slice(0, 2000);
-}
 
 function pathMetadata(projectAlias: string, relativePath: string, includeHash: boolean, registry?: SkillRegistrySnapshot): Record<string, unknown> {
   const target = registry
@@ -373,91 +350,6 @@ async function textSearch(
 }
 
 const expectedFileSchema = z.object({ relativePath: z.string().min(1), sha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(), sizeBytes: z.number().int().nonnegative().optional(), modifiedAt: z.string().optional() }).strict();
-const editOperationSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("write"), relativePath: z.string().min(1), content: z.string(), expectedSha256: z.string().regex(/^[a-f0-9]{64}$/i).optional() }).strict(),
-  z.object({ type: z.literal("replace"), relativePath: z.string().min(1), search: z.string().min(1), replace: z.string(), expectedOccurrences: z.number().int().nonnegative().optional(), expectedSha256: z.string().regex(/^[a-f0-9]{64}$/i).optional() }).strict(),
-  z.object({ type: z.literal("insert"), relativePath: z.string().min(1), marker: z.string().min(1), content: z.string(), position: z.enum(["before", "after"]), expectedOccurrences: z.number().int().positive().optional(), expectedSha256: z.string().regex(/^[a-f0-9]{64}$/i).optional() }).strict(),
-  z.object({ type: z.literal("copy"), sourceRelativePath: z.string().min(1), destinationRelativePath: z.string().min(1), overwrite: z.boolean().default(false) }).strict(),
-  z.object({ type: z.literal("move"), sourceRelativePath: z.string().min(1), destinationRelativePath: z.string().min(1), overwrite: z.boolean().default(false) }).strict(),
-  z.object({ type: z.literal("delete"), relativePath: z.string().min(1), confirm: z.boolean().default(false) }).strict(),
-  z.object({ type: z.literal("mkdir"), relativePath: z.string().min(1), recursive: z.boolean().default(true) }).strict(),
-  z.object({ type: z.literal("rmdir"), relativePath: z.string().min(1), recursive: z.boolean().default(false), confirm: z.boolean().default(false) }).strict()
-]);
-
-type EditOperation = z.infer<typeof editOperationSchema>;
-
-function performEdit(projectAlias: string, operation: EditOperation, dryRun: boolean, policy: PortusPolicyConfig): Record<string, unknown> {
-  if (operation.type === "write") {
-    assertInputChars("limits.fileWrite.maxChars", operation.content, policy.limits.fileWrite.maxChars);
-    const target = resolveProjectPath(projectAlias, operation.relativePath);
-    if (existsSync(target)) {
-      assertCanReadProjectPath(projectAlias, target, operation.relativePath);
-      ensureExpectedHash(projectAlias, operation.expectedSha256, operation.relativePath);
-    } else if (operation.expectedSha256) throw new Error(`stale_file:${operation.relativePath}`);
-    if (!dryRun) { stateStore.requireAuditWritable(); resolveProjectPath(projectAlias, operation.relativePath); mkdirSync(path.dirname(target), { recursive: true }); resolveProjectPath(projectAlias, operation.relativePath); writeFileSync(target, operation.content, "utf8"); }
-    stateStore.audit({ tool: "project_edit", operation: "write", projectAlias, relativePath: operation.relativePath, dryRun, bytes: Buffer.byteLength(operation.content) });
-    return { relativePath: operation.relativePath, bytes: Buffer.byteLength(operation.content), dryRun };
-  }
-  if (operation.type === "replace" || operation.type === "insert") {
-    const limits = policy.limits.textEdit;
-    const marker = operation.type === "replace" ? operation.search : operation.marker;
-    const content = operation.type === "replace" ? operation.replace : operation.content;
-    assertInputChars("limits.textEdit.maxSearchOrMarkerChars", marker, limits.maxSearchOrMarkerChars);
-    assertInputChars("limits.textEdit.maxOperationChars", content, limits.maxOperationChars);
-    const target = resolveProjectPath(projectAlias, operation.relativePath);
-    assertCanReadProjectPath(projectAlias, target, operation.relativePath);
-    if (!isTextLikely(target)) throw new Error("binary_file");
-    ensureExpectedHash(projectAlias, operation.expectedSha256, operation.relativePath);
-    const source = readFileSync(target, "utf8");
-    const occurrences = source.split(marker).length - 1;
-    if (operation.expectedOccurrences !== undefined && operation.expectedOccurrences !== occurrences) throw new Error(`occurrence_mismatch:${operation.relativePath}`);
-    const updated = operation.type === "replace" ? source.split(marker).join(content) : operation.position === "before" ? source.replace(marker, `${content}${marker}`) : source.replace(marker, `${marker}${content}`);
-    if (!dryRun) { stateStore.requireAuditWritable(); resolveProjectPath(projectAlias, operation.relativePath); writeFileSync(target, updated, "utf8"); }
-    stateStore.audit({ tool: "project_edit", operation: operation.type, projectAlias, relativePath: operation.relativePath, occurrences, dryRun });
-    return { relativePath: operation.relativePath, occurrences, bytesWritten: Buffer.byteLength(updated), dryRun };
-  }
-  if (operation.type === "copy") {
-    const source = resolveProjectPath(projectAlias, operation.sourceRelativePath); const destination = resolveProjectPath(projectAlias, operation.destinationRelativePath);
-    assertCanReadProjectPath(projectAlias, source, operation.sourceRelativePath);
-    if (!existsSync(source) || !lstatSync(source).isFile()) throw new Error(`Source file does not exist or is not a file: ${operation.sourceRelativePath}`);
-    const existed = existsSync(destination);
-    if (existed) assertCanReadProjectPath(projectAlias, destination, operation.destinationRelativePath);
-    if (existed && !operation.overwrite) throw new Error(`Destination already exists: ${operation.destinationRelativePath}`);
-    if (!dryRun) { stateStore.requireAuditWritable(); resolveProjectPath(projectAlias, operation.sourceRelativePath); resolveProjectPath(projectAlias, operation.destinationRelativePath); mkdirSync(path.dirname(destination), { recursive: true }); resolveProjectPath(projectAlias, operation.destinationRelativePath); copyFileSync(source, destination); }
-    stateStore.audit({ tool: "project_edit", operation: "copy", projectAlias, sourceRelativePath: operation.sourceRelativePath, destinationRelativePath: operation.destinationRelativePath, overwrite: operation.overwrite, dryRun });
-    return { sourceRelativePath: operation.sourceRelativePath, destinationRelativePath: operation.destinationRelativePath, overwrote: existed, dryRun };
-  }
-  if (operation.type === "move") {
-    const source = resolveProjectPath(projectAlias, operation.sourceRelativePath); const destination = resolveProjectPath(projectAlias, operation.destinationRelativePath);
-    assertCanReadProjectPath(projectAlias, source, operation.sourceRelativePath);
-    if (!existsSync(source) || !lstatSync(source).isFile()) throw new Error(`Source file does not exist or is not a file: ${operation.sourceRelativePath}`);
-    if (!existsSync(path.dirname(destination))) throw new Error(`Destination parent does not exist: ${operation.destinationRelativePath}`);
-    const existed = existsSync(destination); if (existed && !operation.overwrite) throw new Error(`Destination already exists: ${operation.destinationRelativePath}`);
-    if (existed) assertCanReadProjectPath(projectAlias, destination, operation.destinationRelativePath);
-    if (!dryRun) { stateStore.requireAuditWritable(); resolveProjectPath(projectAlias, operation.sourceRelativePath); resolveProjectPath(projectAlias, operation.destinationRelativePath); if (existed) unlinkSync(destination); resolveProjectPath(projectAlias, operation.destinationRelativePath); renameSync(source, destination); }
-    stateStore.audit({ tool: "project_edit", operation: "move", projectAlias, sourceRelativePath: operation.sourceRelativePath, destinationRelativePath: operation.destinationRelativePath, overwrite: operation.overwrite, dryRun });
-    return { sourceRelativePath: operation.sourceRelativePath, destinationRelativePath: operation.destinationRelativePath, overwrote: existed, dryRun };
-  }
-  const requireConfirm = policyPermissions(policy).main_agent.requireConfirmation;
-  if (operation.type === "delete") {
-    if (requireConfirm && !operation.confirm) throw new Error("Confirmation required: set confirm=true");
-    const target = resolveProjectPath(projectAlias, operation.relativePath); assertCanReadProjectPath(projectAlias, target, operation.relativePath); const info = statSync(target);
-    if (!info.isFile()) throw new Error(`Not a file: ${operation.relativePath}`);
-    if (!dryRun) { stateStore.requireAuditWritable(); resolveProjectPath(projectAlias, operation.relativePath); unlinkSync(target); }
-    stateStore.audit({ tool: "project_edit", operation: "delete", projectAlias, relativePath: operation.relativePath, bytes: info.size, dryRun });
-    return { relativePath: operation.relativePath, bytes: info.size, deleted: !dryRun, dryRun };
-  }
-  if (operation.type === "mkdir") { const target = resolveProjectPath(projectAlias, operation.relativePath);
-    if (!dryRun) { stateStore.requireAuditWritable(); resolveProjectPath(projectAlias, operation.relativePath); mkdirSync(target, { recursive: operation.recursive }); }
-    stateStore.audit({ tool: "project_edit", operation: "mkdir", projectAlias, relativePath: operation.relativePath, recursive: operation.recursive, dryRun });
-    return { relativePath: operation.relativePath, created: !dryRun, dryRun };
-  }
-  if (requireConfirm && !operation.confirm) throw new Error("Confirmation required: set confirm=true");
-  const target = resolveProjectPath(projectAlias, operation.relativePath); assertCanReadProjectPath(projectAlias, target, operation.relativePath);
-  if (!dryRun) { stateStore.requireAuditWritable(); resolveProjectPath(projectAlias, operation.relativePath); rmSync(target, { recursive: operation.recursive, force: false }); }
-  stateStore.audit({ tool: "project_edit", operation: "rmdir", projectAlias, relativePath: operation.relativePath, recursive: operation.recursive, dryRun });
-  return { relativePath: operation.relativePath, deleted: !dryRun, dryRun };
-}
 
 export function registerProjectReadTool(server: McpServer, registry: SkillRegistrySnapshot, policy: PortusPolicyConfig = loadPolicyConfig()): void {
   registerStrictProjectTool(server, "project_read", "Read content or metadata from registered project paths and configured read-only skill paths. Use a project alias or a skill rootAlias returned by project_context; skill entrypoints and supporting files use their catalog-provided relative paths. Supports 1–50 batched content, binary, metadata, or existence requests with ordered per-item results.", {
@@ -940,12 +832,13 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     };
   });
 
-  registerStrictProjectTool(server, "project_edit", "Apply an ordered, non-atomic batch of policy-checked project file and directory edits.", {
-    projectAlias: z.string().min(1), operations: z.array(editOperationSchema).min(1).max(50), dryRun: z.boolean().default(false)
-  }, mutateAnnotations, async ({ projectAlias, operations, dryRun }) => {
+  registerStrictProjectTool(server, "project_edit", "Apply an ordered, policy-checked project edit batch. Stops after the first rejected or failed operation unless continueOnFailure=true; dry runs report planned mutations without changing files.", {
+    projectAlias: z.string().min(1),
+    operations: z.array(editOperationSchema).min(1).max(50),
+    dryRun: z.boolean().default(false),
+    continueOnFailure: z.boolean().default(false)
+  }, mutateAnnotations, async ({ projectAlias, operations, dryRun, continueOnFailure }) => {
     assertMainAgentPermission("projectEdit", policy);
-    const results: Array<Record<string, unknown>> = [];
-    for (const [index, operation] of operations.entries()) { try { results.push({ ok: true, index, type: operation.type, ...performEdit(projectAlias, operation, dryRun, policy) }); } catch (error) { const relativePath = "relativePath" in operation ? operation.relativePath : "sourceRelativePath" in operation ? operation.sourceRelativePath : undefined; results.push({ ok: false, index, type: operation.type, relativePath: relativePath ? safeRelativePath(relativePath) : undefined, error: safeError(error, relativePath) }); } }
-    return { projectAlias, dryRun, atomic: false, requestedCount: operations.length, successCount: results.filter((result) => result.ok).length, errorCount: results.filter((result) => !result.ok).length, results };
+    return executeProjectEditBatch({ projectAlias, operations, dryRun, continueOnFailure, policy });
   });
 }

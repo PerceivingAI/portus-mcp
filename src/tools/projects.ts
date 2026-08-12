@@ -11,7 +11,6 @@ import { resolveProjectPath, resolveReadablePath } from "../policy/pathPolicy.js
 import { loadPolicyConfig, policyPermissions, type PortusPolicyConfig } from "../policy/policyConfig.js";
 import { limitText } from "../runtime/outputLimits.js";
 import type { SkillRegistrySnapshot } from "../skills/SkillRegistry.js";
-export { registerBroadProjectTools, registerProjectReadTool } from "./projectBroad.js";
 
 const TEXT_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json", ".md", ".txt", ".yaml", ".yml", ".toml", ".env", ".html", ".css", ".scss", ".xml", ".sh", ".ps1", ".sql"]);
 
