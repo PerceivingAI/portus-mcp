@@ -1307,7 +1307,7 @@ function executeStagedProjectEditBatch(input: {
         inspectionUnknown = true;
       }
     }
-    const repositoryState = inspectionUnknown ? "unknown" : mutationObserved ? "partially_changed" : "unchanged";
+    const repositoryState = mutationObserved ? "partially_changed" : inspectionUnknown ? "unknown" : "unchanged";
     const batchError = safeError(commitError, failedProjection?.relativePath);
     return summarizeProjectEditBatch({
       projectAlias: input.projectAlias,
