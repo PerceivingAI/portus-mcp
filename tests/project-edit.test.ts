@@ -91,6 +91,7 @@ after(() => rmSync(root, { recursive: true, force: true }));
 const { createHttpServer } = await import("../src/server.js");
 const { upsertProject } = await import("../src/state/ProjectRegistry.js");
 upsertProject({ projectAlias: "edit", rootPath: projectRoot });
+const { stateStore } = await import("../src/state/StateStore.js");
 
 function resultOf(response: CallToolResult): Record<string, any> {
   assert.equal(response.isError, undefined, JSON.stringify(response.structuredContent));
@@ -98,8 +99,23 @@ function resultOf(response: CallToolResult): Record<string, any> {
   return response.structuredContent.result as Record<string, any>;
 }
 
-async function callEdit(client: Client, operations: Array<Record<string, unknown>>, dryRun = false, continueOnFailure = false): Promise<CallToolResult> {
-  return client.callTool({ name: "project_edit", arguments: { projectAlias: "edit", operations, dryRun, continueOnFailure } });
+async function callEdit(
+  client: Client,
+  operations: Array<Record<string, unknown>>,
+  dryRun = false,
+  continueOnFailure = false,
+  batchMode?: "staged" | "ordered"
+): Promise<CallToolResult> {
+  return client.callTool({
+    name: "project_edit",
+    arguments: {
+      projectAlias: "edit",
+      operations,
+      dryRun,
+      continueOnFailure,
+      ...(batchMode === undefined ? {} : { batchMode })
+    }
+  });
 }
 
 function sha256(content: string | Buffer): string {
@@ -116,7 +132,7 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`)));
   t.after(async () => client.close());
 
-  await t.test("hard-cuts over exact edit and range input schemas", async () => {
+  await t.test("hard-cuts over staged and ordered batch schemas", async () => {
     writeFileSync(path.join(projectRoot, "schema.txt"), "marker\n", "utf8");
     const missingExpected = await callEdit(client, [{ type: "replace", relativePath: "schema.txt", search: "marker", replace: "updated" }]);
     assert.equal(missingExpected.isError, true);
@@ -129,6 +145,21 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
     const invalidRangeBound = await callEdit(client, [{ type: "replace_range", relativePath: "schema.txt", expectedSha256: sha256("marker\n"), startLine: 0, endLine: 1, replacement: "updated" }]);
     assert.equal(invalidRangeBound.isError, true);
     assert.equal(readFileSync(path.join(projectRoot, "schema.txt"), "utf8"), "marker\n");
+    const invalidMode = await client.callTool({
+      name: "project_edit",
+      arguments: { projectAlias: "edit", batchMode: "invalid", operations: [{ type: "write", relativePath: "schema.txt", content: "updated" }] }
+    });
+    assert.equal(invalidMode.isError, true);
+    const invalidContinuation = await callEdit(client, [{ type: "write", relativePath: "schema.txt", content: "updated" }], false, true);
+    assert.equal(invalidContinuation.isError, true);
+    const stagedFilesystemOperation = resultOf(await callEdit(client, [{
+      type: "copy",
+      sourceRelativePath: "schema.txt",
+      destinationRelativePath: "schema-copy.txt"
+    }]));
+    assert.equal(stagedFilesystemOperation.batchMode, "staged");
+    assert.equal(stagedFilesystemOperation.results[0].reason, "unsupported_batch_mode");
+    assert.equal(existsSync(path.join(projectRoot, "schema-copy.txt")), false);
   });
 
   await t.test("reports zero matches as a completed rejection without touching the file", async () => {
@@ -145,7 +176,7 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
       errorCount: batch.errorCount,
       appliedCount: batch.appliedCount
     }, {
-      batchMode: "ordered",
+      batchMode: "staged",
       batchOutcome: "rejected",
       repositoryState: "unchanged",
       successCount: 0,
@@ -237,7 +268,6 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
     assert.equal(batch.repositoryState, "unchanged");
     assert.equal(batch.results[0].operationStatus, "planned");
     assert.equal(batch.results[0].matchesPlanned, 1);
-    assert.equal(batch.results[0].matchesApplied, 0);
     assert.equal(batch.results[0].fileChanged, false);
     assert.equal(readFileSync(target, "utf8"), "marker\n");
   });
@@ -389,6 +419,224 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
     }
     assert.equal(statSync(target).mtimeMs, before);
   });
+  await t.test("stages same-file operations against projected state and writes once", async () => {
+    const target = path.join(projectRoot, "staged-compose.txt");
+    const source = Buffer.from("alpha\nbeta\n");
+    const expected = Buffer.from("ALPHA\nBETA\nSECOND\n");
+    writeFileSync(target, source);
+    const before = statSync(target).mtimeMs;
+    const baseHash = sha256(source);
+    const batch = resultOf(await callEdit(client, [
+      {
+        type: "replace",
+        relativePath: "staged-compose.txt",
+        search: "alpha",
+        replace: "ALPHA",
+        expectedOccurrences: 1,
+        expectedSha256: baseHash
+      },
+      {
+        type: "replace_range",
+        relativePath: "staged-compose.txt",
+        expectedSha256: baseHash,
+        startLine: 2,
+        endLine: 2,
+        replacement: "BETA\nSECOND"
+      }
+    ]));
+    assert.equal(batch.batchMode, "staged");
+    assert.equal(batch.batchOutcome, "succeeded");
+    assert.equal(batch.appliedCount, 2);
+    assert.deepEqual(batch.results.map((result: Record<string, unknown>) => result.operationStatus), ["applied", "applied"]);
+    assert.deepEqual(batch.results[1].newRange, { startLine: 2, endLine: 3 });
+    assert.equal(batch.results[1].oldSha256, sha256("ALPHA\nbeta\n"));
+    assert.deepEqual(readFileSync(target), expected);
+    assert(statSync(target).mtimeMs >= before);
+  });
+
+  await t.test("rejects conflicting same-path hashes and withholds valid changes", async () => {
+    const target = path.join(projectRoot, "staged-conflict.txt");
+    const source = Buffer.from("alpha\n");
+    writeFileSync(target, source);
+    const before = statSync(target).mtimeMs;
+    const batch = resultOf(await callEdit(client, [
+      {
+        type: "replace",
+        relativePath: "staged-conflict.txt",
+        search: "alpha",
+        replace: "ALPHA",
+        expectedOccurrences: 1,
+        expectedSha256: sha256(source)
+      },
+      {
+        type: "insert",
+        relativePath: "staged-conflict.txt",
+        marker: "ALPHA",
+        content: "before-",
+        position: "before",
+        expectedSha256: sha256("different\n")
+      }
+    ]));
+    assert.equal(batch.batchOutcome, "rejected");
+    assert.equal(batch.failedCount, 1);
+    assert.equal(batch.skippedCount, 1);
+    assert.equal(batch.results[0].reason, "batch_rejected");
+    assert.equal(batch.results[1].reason, "conflicting_base_hash");
+    assert.deepEqual(readFileSync(target), source);
+    assert.equal(statSync(target).mtimeMs, before);
+  });
+
+  await t.test("collects independent staged rejections and preserves successful no-change results", async () => {
+    writeFileSync(path.join(projectRoot, "staged-invalid-a.txt"), "alpha\n", "utf8");
+    writeFileSync(path.join(projectRoot, "staged-invalid-b.txt"), "beta\n", "utf8");
+    writeFileSync(path.join(projectRoot, "staged-no-change.txt"), "same\n", "utf8");
+    const batch = resultOf(await callEdit(client, [
+      {
+        type: "replace",
+        relativePath: "staged-invalid-a.txt",
+        search: "missing",
+        replace: "updated",
+        expectedOccurrences: 1
+      },
+      {
+        type: "replace",
+        relativePath: "staged-invalid-b.txt",
+        search: "absent",
+        replace: "updated",
+        expectedOccurrences: 1
+      },
+      {
+        type: "write",
+        relativePath: "staged-no-change.txt",
+        content: "same\n"
+      },
+      {
+        type: "write",
+        relativePath: "staged-withheld.txt",
+        content: "withheld\n"
+      }
+    ]));
+    assert.equal(batch.batchOutcome, "rejected");
+    assert.equal(batch.failedCount, 2);
+    assert.equal(batch.successCount, 1);
+    assert.equal(batch.noChangeCount, 1);
+    assert.equal(batch.skippedCount, 1);
+    assert.equal(batch.results[2].operationStatus, "no_change");
+    assert.equal(batch.results[3].reason, "batch_rejected");
+    assert.equal(existsSync(path.join(projectRoot, "staged-withheld.txt")), false);
+  });
+
+  await t.test("returns projected staged dry-run results without mutation", async () => {
+    const target = path.join(projectRoot, "staged-dry-run.txt");
+    const source = Buffer.from("alpha\nbeta\n");
+    writeFileSync(target, source);
+    const baseHash = sha256(source);
+    const batch = resultOf(await callEdit(client, [
+      {
+        type: "replace",
+        relativePath: "staged-dry-run.txt",
+        search: "alpha",
+        replace: "ALPHA",
+        expectedOccurrences: 1,
+        expectedSha256: baseHash
+      },
+      {
+        type: "insert",
+        relativePath: "staged-dry-run.txt",
+        marker: "ALPHA",
+        content: "before-",
+        position: "before",
+        expectedSha256: baseHash
+      }
+    ], true));
+    assert.equal(batch.batchOutcome, "planned");
+    assert.equal(batch.plannedCount, 2);
+    assert.equal(batch.appliedCount, 0);
+    assert.deepEqual(batch.results.map((result: Record<string, unknown>) => result.operationStatus), ["planned", "planned"]);
+    assert.deepEqual(readFileSync(target), source);
+  });
+
+  await t.test("collapses canceling same-path changes to no-change without a write", async () => {
+    const target = path.join(projectRoot, "staged-cancel.txt");
+    const source = Buffer.from("alpha\n");
+    writeFileSync(target, source);
+    const before = statSync(target).mtimeMs;
+    const baseHash = sha256(source);
+    const batch = resultOf(await callEdit(client, [
+      {
+        type: "replace",
+        relativePath: "staged-cancel.txt",
+        search: "alpha",
+        replace: "ALPHA",
+        expectedOccurrences: 1,
+        expectedSha256: baseHash
+      },
+      {
+        type: "replace",
+        relativePath: "staged-cancel.txt",
+        search: "ALPHA",
+        replace: "alpha",
+        expectedOccurrences: 1,
+        expectedSha256: baseHash
+      }
+    ]));
+    assert.equal(batch.batchOutcome, "succeeded");
+    assert.equal(batch.appliedCount, 0);
+    assert.equal(batch.noChangeCount, 2);
+    assert.deepEqual(batch.results.map((result: Record<string, unknown>) => result.operationStatus), ["no_change", "no_change"]);
+    assert.deepEqual(batch.results.map((result: Record<string, unknown>) => result.matchesApplied), [0, 0]);
+    assert.deepEqual(readFileSync(target), source);
+    assert.equal(statSync(target).mtimeMs, before);
+  });
+
+
+  await t.test("rejects a pre-commit disk change without applying staged output", async () => {
+    const target = path.join(projectRoot, "staged-stale-gate.txt");
+    const source = Buffer.from("alpha\n");
+    const external = Buffer.from("external\n");
+    writeFileSync(target, source);
+    const originalRequireAuditWritable = stateStore.requireAuditWritable;
+    stateStore.requireAuditWritable = (): void => {
+      writeFileSync(target, external);
+    };
+    try {
+      const batch = resultOf(await callEdit(client, [{
+        type: "replace",
+        relativePath: "staged-stale-gate.txt",
+        search: "alpha",
+        replace: "ALPHA",
+        expectedOccurrences: 1,
+        expectedSha256: sha256(source)
+      }]));
+      assert.equal(batch.batchOutcome, "rejected");
+      assert.equal(batch.repositoryState, "unchanged");
+      assert.equal(batch.failedCount, 1);
+      assert.equal(batch.results[0].reason, "stale_file");
+      assert.deepEqual(readFileSync(target), external);
+    } finally {
+      stateStore.requireAuditWritable = originalRequireAuditWritable;
+    }
+  });
+  await t.test("reports partial staged commit failures from the commit journal", async () => {
+    const parentTarget = path.join(projectRoot, "staged-commit-parent");
+    const childTarget = path.join(parentTarget, "child.txt");
+    const batch = resultOf(await callEdit(client, [
+      { type: "write", relativePath: "staged-commit-parent", content: "parent file\n" },
+      { type: "write", relativePath: "staged-commit-parent/child.txt", content: "child file\n" }
+    ]));
+    assert.equal(batch.batchMode, "staged");
+    assert.equal(batch.batchOutcome, "partial");
+    assert.equal(batch.repositoryState, "partially_changed");
+    assert.equal(batch.appliedCount, 1);
+    assert.equal(batch.skippedCount, 1);
+    assert.equal(batch.results[0].operationStatus, "applied");
+    assert.equal(batch.results[1].operationStatus, "skipped");
+    assert.equal(batch.results[1].reason, "batch_failed");
+    assert.match(String(batch.batchError), /EEXIST|ENOTDIR|not a directory|file already exists/i);
+    assert.equal(String(batch.batchError).includes(root), false);
+    assert.equal(readFileSync(parentTarget, "utf8"), "parent file\n");
+    assert.equal(existsSync(childTarget), false);
+  });
 
 
   await t.test("summarizes ordered partial mutation accurately", async () => {
@@ -396,7 +644,7 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
     const batch = resultOf(await callEdit(client, [
       { type: "write", relativePath: "partial.txt", content: "created\n" },
       { type: "replace", relativePath: "partial.txt", search: "absent", replace: "updated", expectedOccurrences: 1 }
-    ]));
+    ], false, false, "ordered"));
     assert.equal(batch.batchOutcome, "partial");
     assert.equal(batch.repositoryState, "partially_changed");
     assert.equal(batch.successCount, 1);
@@ -412,7 +660,7 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
     const batch = resultOf(await callEdit(client, [
       { type: "replace", relativePath: "stop.txt", search: "absent", replace: "updated", expectedOccurrences: 1 },
       { type: "write", relativePath: "must-not-exist.txt", content: "not written\n" }
-    ]));
+    ], false, false, "ordered"));
     assert.equal(batch.batchOutcome, "rejected");
     assert.equal(batch.failedCount, 1);
     assert.equal(batch.skippedCount, 1);
@@ -428,7 +676,7 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
     const batch = resultOf(await callEdit(client, [
       { type: "replace", relativePath: "stop.txt", search: "absent", replace: "updated", expectedOccurrences: 1 },
       { type: "write", relativePath: "continued.txt", content: "written\n" }
-    ], false, true));
+    ], false, true, "ordered"));
     assert.equal(batch.batchOutcome, "partial");
     assert.equal(batch.failedCount, 1);
     assert.equal(batch.appliedCount, 1);
@@ -445,7 +693,7 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
       { type: "delete", relativePath: "nested/copy.txt", confirm: true },
       { type: "mkdir", relativePath: "existing-dir", recursive: true },
       { type: "mkdir", relativePath: "existing-dir", recursive: true }
-    ]));
+    ], false, false, "ordered"));
     assert.deepEqual(batch.results.map((result: Record<string, unknown>) => result.operationStatus), ["applied", "applied", "applied", "no_change"]);
     assert.equal(batch.appliedCount, 3);
     assert.equal(batch.noChangeCount, 1);

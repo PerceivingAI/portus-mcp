@@ -4,6 +4,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -35,7 +36,10 @@ export const editOperationSchema = z.discriminatedUnion("type", [
 ]);
 
 export type EditOperation = z.infer<typeof editOperationSchema>;
+export const editBatchModeSchema = z.enum(["staged", "ordered"]).default("staged");
+export type EditBatchMode = z.infer<typeof editBatchModeSchema>;
 type EditOperationType = EditOperation["type"];
+type StagedEditOperation = Extract<EditOperation, { type: "write" | "replace" | "insert" | "replace_range" }>;
 type SemanticReason = "occurrence_mismatch" | "stale_file" | "invalid_range" | "conflicting_base_hash" | "unsupported_batch_mode";
 type ExactMatchLocation = { line: number; column: number };
 type OperationIdentity = {
@@ -102,7 +106,7 @@ type SkippedResult = OperationIdentity & {
   ok: false;
   outcome: "skipped";
   operationStatus: "skipped";
-  reason: "prior_operation_failed";
+  reason: "prior_operation_failed" | "batch_rejected" | "batch_failed";
   fileChanged: false;
 };
 
@@ -189,13 +193,13 @@ function failed(identity: OperationIdentity, error: unknown, relativePath: strin
   };
 }
 
-function skipped(index: number, operation: EditOperation): SkippedResult {
+function skipped(index: number, operation: EditOperation, reason: SkippedResult["reason"] = "prior_operation_failed"): SkippedResult {
   return {
     ...operationIdentity(index, operation),
     ok: false,
     outcome: "skipped",
     operationStatus: "skipped",
-    reason: "prior_operation_failed",
+    reason,
     fileChanged: false
   };
 }
@@ -703,9 +707,645 @@ function executeOperation(index: number, operation: EditOperation, projectAlias:
   }
 }
 
+type PathProjection = {
+  key: string;
+  relativePath: string;
+  target: string;
+  baseExists: boolean;
+  baseContent: Buffer | null;
+  baseSha256?: string;
+  projectedContent: Buffer | null;
+  suppliedBaseHash?: string;
+  firstTouchOrder: number;
+  projectedIsText?: boolean;
+  blocked: boolean;
+};
+
+type StagedChange = {
+  plannedDetails: ResultDetails;
+  appliedDetails: ResultDetails;
+  canceledDetails: ResultDetails;
+};
+
+type StagedEvaluation = {
+  index: number;
+  operation: StagedEditOperation;
+  projection?: PathProjection;
+  result?: OperationResult;
+  change?: StagedChange;
+};
+
+function canonicalProjectionKey(target: string): string {
+  let nearestExisting = target;
+  const missingSegments: string[] = [];
+  while (!existsSync(nearestExisting)) {
+    const parent = path.dirname(nearestExisting);
+    if (parent === nearestExisting) break;
+    missingSegments.unshift(path.basename(nearestExisting));
+    nearestExisting = parent;
+  }
+  const canonicalExisting = realpathSync.native(nearestExisting);
+  const canonicalTarget = path.join(canonicalExisting, ...missingSegments);
+  return process.platform === "win32" ? canonicalTarget.toLowerCase() : canonicalTarget;
+}
+
+function captureStagedProjection(
+  projectAlias: string,
+  relativePath: string,
+  projections: Map<string, PathProjection>,
+  policy: PortusPolicyConfig
+): PathProjection {
+  const target = resolveProjectPath(projectAlias, relativePath);
+  const key = canonicalProjectionKey(target);
+  const existing = projections.get(key);
+  if (existing) {
+    if (existing.baseExists) {
+      assertCanReadProjectPath(projectAlias, target, relativePath, undefined, policy);
+    }
+    return existing;
+  }
+
+  const baseExists = existsSync(target);
+  let baseContent: Buffer | null = null;
+  if (baseExists) {
+    assertCanReadProjectPath(projectAlias, target, relativePath, undefined, policy);
+    if (!statSync(target).isFile()) throw new Error(`Not a file: ${relativePath}`);
+    baseContent = readFileSync(target);
+  }
+  const projection: PathProjection = {
+    key,
+    relativePath: safeRelativePath(relativePath),
+    target,
+    baseExists,
+    baseContent,
+    ...(baseContent === null ? {} : { baseSha256: hashSha256(baseContent) }),
+    projectedContent: baseContent,
+    firstTouchOrder: projections.size,
+    blocked: false
+  };
+  projections.set(key, projection);
+  return projection;
+}
+
+function evaluateStagedOperation(
+  index: number,
+  operation: StagedEditOperation,
+  projection: PathProjection,
+  dryRun: boolean,
+  policy: PortusPolicyConfig
+): StagedEvaluation {
+  const identity = operationIdentity(index, operation);
+  const expectedSha256 = operation.expectedSha256?.toLowerCase();
+  if (expectedSha256) {
+    if (projection.suppliedBaseHash && projection.suppliedBaseHash !== expectedSha256) {
+      throw new SemanticRejection("conflicting_base_hash", {});
+    }
+    projection.suppliedBaseHash ??= expectedSha256;
+    if (!projection.baseExists || projection.baseSha256 !== expectedSha256) {
+      throw new SemanticRejection("stale_file", {});
+    }
+  }
+
+  if (operation.type === "write") {
+    assertInputChars("limits.fileWrite.maxChars", operation.content, policy.limits.fileWrite.maxChars);
+    const desired = Buffer.from(operation.content, "utf8");
+    if (projection.projectedContent?.equals(desired)) {
+      return { index, operation, projection, result: noChange(identity, { bytes: desired.length }) };
+    }
+    projection.projectedContent = desired;
+    const details = { bytes: desired.length };
+    projection.projectedIsText = true;
+    return {
+      index,
+      operation,
+      projection,
+      change: { plannedDetails: details, appliedDetails: details, canceledDetails: details }
+    };
+  }
+
+  const sourceContent = projection.projectedContent;
+  if (sourceContent === null) throw new Error(`File does not exist: ${operation.relativePath}`);
+  if (projection.projectedIsText === undefined) {
+    projection.projectedIsText = isTextLikely(projection.target);
+  }
+  if (!projection.projectedIsText) throw new Error("binary_file");
+
+  if (operation.type === "replace") {
+    const searchChars = assertInputChars("limits.textEdit.maxSearchOrMarkerChars", operation.search, policy.limits.textEdit.maxSearchOrMarkerChars);
+    const replacementChars = assertInputChars("limits.textEdit.maxOperationChars", operation.replace, policy.limits.textEdit.maxOperationChars);
+    const source = sourceContent.toString("utf8");
+    const scan = scanExactMatches(source, operation.search);
+    const matchDetails = {
+      expectedOccurrences: operation.expectedOccurrences,
+      matchesFound: scan.matchesFound,
+      exactMatchLocations: scan.exactMatchLocations,
+      locationsTruncated: scan.locationsTruncated
+    };
+    if (scan.matchesFound !== operation.expectedOccurrences) {
+      throw new SemanticRejection("occurrence_mismatch", { ...matchDetails, matchesApplied: 0 });
+    }
+    if (operation.search === operation.replace) {
+      return {
+        index,
+        operation,
+        projection,
+        result: noChange(identity, {
+          ...matchDetails,
+          ...(dryRun ? {} : { matchesApplied: 0 })
+        })
+      };
+    }
+    const projectedChars = scan.sourceChars + scan.matchesFound * (replacementChars - searchChars);
+    assertCharCount("limits.fileWrite.maxChars", projectedChars, policy.limits.fileWrite.maxChars);
+    projection.projectedContent = Buffer.from(replaceExactMatches(source, operation.search, operation.replace), "utf8");
+    return {
+      index,
+      operation,
+      projection,
+      change: {
+        plannedDetails: { ...matchDetails, matchesPlanned: scan.matchesFound },
+        appliedDetails: { ...matchDetails, matchesApplied: scan.matchesFound },
+        canceledDetails: { ...matchDetails, matchesPlanned: scan.matchesFound, matchesApplied: 0 }
+      }
+    };
+  }
+
+  if (operation.type === "insert") {
+    assertInputChars("limits.textEdit.maxSearchOrMarkerChars", operation.marker, policy.limits.textEdit.maxSearchOrMarkerChars);
+    const contentChars = assertInputChars("limits.textEdit.maxOperationChars", operation.content, policy.limits.textEdit.maxOperationChars);
+    const source = sourceContent.toString("utf8");
+    const scan = scanExactMatches(source, operation.marker);
+    const matchDetails = {
+      expectedOccurrences: 1,
+      matchesFound: scan.matchesFound,
+      exactMatchLocations: scan.exactMatchLocations,
+      locationsTruncated: scan.locationsTruncated
+    };
+    if (scan.matchesFound !== 1 || scan.firstIndex === null) {
+      throw new SemanticRejection("occurrence_mismatch", { ...matchDetails, matchesApplied: 0 });
+    }
+    if (contentChars === 0) {
+      return {
+        index,
+        operation,
+        projection,
+        result: noChange(identity, {
+          ...matchDetails,
+          ...(dryRun ? {} : { matchesApplied: 0 })
+        })
+      };
+    }
+    assertCharCount("limits.fileWrite.maxChars", scan.sourceChars + contentChars, policy.limits.fileWrite.maxChars);
+    const markerEnd = scan.firstIndex + operation.marker.length;
+    const updated = operation.position === "before"
+      ? `${source.slice(0, scan.firstIndex)}${operation.content}${source.slice(scan.firstIndex)}`
+      : `${source.slice(0, markerEnd)}${operation.content}${source.slice(markerEnd)}`;
+    projection.projectedContent = Buffer.from(updated, "utf8");
+    return {
+      index,
+      operation,
+      projection,
+      change: {
+        plannedDetails: { ...matchDetails, matchesPlanned: 1 },
+        appliedDetails: { ...matchDetails, matchesApplied: 1 },
+        canceledDetails: { ...matchDetails, matchesPlanned: 1, matchesApplied: 0 }
+      }
+    };
+  }
+
+  assertInputChars("limits.textEdit.maxOperationChars", operation.replacement, policy.limits.textEdit.maxOperationChars);
+  const transformation = transformLineRange({
+    source: sourceContent,
+    startLine: operation.startLine,
+    endLine: operation.endLine,
+    replacement: operation.replacement,
+    maxRangeLines: policy.limits.textEdit.maxRangeLines
+  });
+  if (!transformation.ok) {
+    throw new SemanticRejection("invalid_range", {
+      requestedRange: transformation.requestedRange,
+      ...(transformation.availableLines === undefined ? {} : { availableLines: transformation.availableLines }),
+      maxRangeLines: transformation.maxRangeLines
+    });
+  }
+  if (!transformation.wouldChange) {
+    return {
+      index,
+      operation,
+      projection,
+      result: noChange(identity, {
+        oldRange: transformation.oldRange,
+        newRange: transformation.newRange,
+        oldSha256: transformation.oldSha256,
+        newSha256: transformation.newSha256
+      })
+    };
+  }
+  assertCharCount("limits.fileWrite.maxChars", countChars(transformation.updatedContent.toString("utf8")), policy.limits.fileWrite.maxChars);
+  projection.projectedContent = transformation.updatedContent;
+  return {
+    index,
+    operation,
+    projection,
+    change: {
+      plannedDetails: {
+        oldRange: transformation.oldRange,
+        projectedNewRange: transformation.newRange,
+        oldSha256: transformation.oldSha256,
+        projectedSha256: transformation.newSha256
+      },
+      appliedDetails: {
+        oldRange: transformation.oldRange,
+        newRange: transformation.newRange,
+        oldSha256: transformation.oldSha256,
+        newSha256: transformation.newSha256
+      },
+      canceledDetails: {
+        oldRange: transformation.oldRange,
+        projectedNewRange: transformation.newRange,
+        oldSha256: transformation.oldSha256,
+        projectedSha256: transformation.newSha256
+      }
+    }
+  };
+}
+
+function auditStagedResults(projectAlias: string, dryRun: boolean, evaluations: StagedEvaluation[]): void {
+  for (const evaluation of evaluations) {
+    const result = evaluation.result;
+    if (!result?.ok) continue;
+    const event: Record<string, unknown> = {
+      tool: "project_edit",
+      operation: evaluation.operation.type,
+      projectAlias,
+      relativePath: evaluation.operation.relativePath,
+      dryRun
+    };
+    if ("bytes" in result && typeof result.bytes === "number") event.bytes = result.bytes;
+    if ("matchesFound" in result && typeof result.matchesFound === "number") event.occurrences = result.matchesFound;
+    stateStore.audit(event);
+  }
+}
+
+function summarizeProjectEditBatch(input: {
+  projectAlias: string;
+  batchMode: EditBatchMode;
+  dryRun: boolean;
+  results: OperationResult[];
+  repositoryState?: ProjectEditBatchResult["repositoryState"];
+  batchOutcome?: ProjectEditBatchResult["batchOutcome"];
+  batchError?: string;
+}): ProjectEditBatchResult {
+  const successCount = input.results.filter((result) => result.ok).length;
+  const failedCount = input.results.filter((result) => !result.ok && result.outcome === "completed").length;
+  const errorCount = input.results.filter((result) => result.outcome === "failed").length;
+  const appliedCount = input.results.filter((result) => result.operationStatus === "applied").length;
+  const noChangeCount = input.results.filter((result) => result.operationStatus === "no_change").length;
+  const plannedCount = input.results.filter((result) => result.operationStatus === "planned").length;
+  const skippedCount = input.results.filter((result) => result.operationStatus === "skipped").length;
+  const incompleteCount = failedCount + errorCount + skippedCount;
+  const hasUnknownRepositoryState = input.results.some((result) => result.outcome === "failed" && "repositoryState" in result);
+  const repositoryState = input.repositoryState ?? (hasUnknownRepositoryState
+    ? "unknown"
+    : appliedCount > 0 && incompleteCount > 0
+      ? "partially_changed"
+      : appliedCount > 0
+        ? "changed"
+        : "unchanged");
+  const batchOutcome = input.batchOutcome ?? (appliedCount > 0 && incompleteCount > 0
+    ? "partial"
+    : errorCount > 0
+      ? "failed"
+      : failedCount > 0
+        ? "rejected"
+        : input.dryRun
+          ? "planned"
+          : "succeeded");
+  return {
+    projectAlias: input.projectAlias,
+    batchMode: input.batchMode,
+    batchOutcome,
+    repositoryState,
+    dryRun: input.dryRun,
+    requestedCount: input.results.length,
+    successCount,
+    failedCount,
+    errorCount,
+    appliedCount,
+    noChangeCount,
+    plannedCount,
+    skippedCount,
+    ...(input.batchError === undefined ? {} : { batchError: input.batchError }),
+    results: input.results
+  };
+}
+
+function executeStagedProjectEditBatch(input: {
+  projectAlias: string;
+  operations: EditOperation[];
+  dryRun: boolean;
+  policy: PortusPolicyConfig;
+}): ProjectEditBatchResult {
+  const projections = new Map<string, PathProjection>();
+  const blockedRelativePaths = new Set<string>();
+  const evaluations: StagedEvaluation[] = [];
+
+  for (const [index, operation] of input.operations.entries()) {
+    if (
+      operation.type !== "write"
+      && operation.type !== "replace"
+      && operation.type !== "insert"
+      && operation.type !== "replace_range"
+    ) {
+      evaluations.push({
+        index,
+        operation: operation as never,
+        result: rejected(
+          operationIdentity(index, operation),
+          new SemanticRejection("unsupported_batch_mode", { batchMode: "staged" })
+        )
+      });
+      continue;
+    }
+
+    const relativeKey = path.normalize(operation.relativePath);
+    const blockedKey = process.platform === "win32" ? relativeKey.toLowerCase() : relativeKey;
+    if (blockedRelativePaths.has(blockedKey)) {
+      evaluations.push({ index, operation, result: skipped(index, operation) });
+      continue;
+    }
+
+    let projection: PathProjection | undefined;
+    try {
+      projection = captureStagedProjection(input.projectAlias, operation.relativePath, projections, input.policy);
+      if (projection.blocked) {
+        evaluations.push({ index, operation, projection, result: skipped(index, operation) });
+        continue;
+      }
+      evaluations.push(evaluateStagedOperation(index, operation, projection, input.dryRun, input.policy));
+    } catch (error) {
+      const result = error instanceof SemanticRejection
+        ? rejected(operationIdentity(index, operation), error)
+        : failed(operationIdentity(index, operation), error, operation.relativePath, false);
+      if (projection) projection.blocked = true;
+      else blockedRelativePaths.add(blockedKey);
+      evaluations.push({ index, operation, projection, result });
+    }
+  }
+
+  const planningRejected = evaluations.some((evaluation) => evaluation.result && !evaluation.result.ok);
+  if (input.dryRun) {
+    for (const evaluation of evaluations) {
+      if (evaluation.change) {
+        evaluation.result = planned(operationIdentity(evaluation.index, evaluation.operation), evaluation.change.plannedDetails);
+      }
+    }
+    let batchError: string | undefined;
+    try {
+      auditStagedResults(input.projectAlias, true, evaluations);
+    } catch (error) {
+      batchError = safeError(error);
+    }
+    return summarizeProjectEditBatch({
+      projectAlias: input.projectAlias,
+      batchMode: "staged",
+      dryRun: true,
+      results: evaluations.map((evaluation) => evaluation.result!),
+      repositoryState: "unchanged",
+      batchOutcome: batchError ? "failed" : planningRejected ? "rejected" : "planned",
+      ...(batchError ? { batchError } : {})
+    });
+  }
+
+  if (planningRejected) {
+    for (const evaluation of evaluations) {
+      if (evaluation.change) {
+        evaluation.result = skipped(evaluation.index, evaluation.operation, "batch_rejected");
+      }
+    }
+    let batchError: string | undefined;
+    try {
+      auditStagedResults(input.projectAlias, false, evaluations);
+    } catch (error) {
+      batchError = safeError(error);
+    }
+    return summarizeProjectEditBatch({
+      projectAlias: input.projectAlias,
+      batchMode: "staged",
+      dryRun: false,
+      results: evaluations.map((evaluation) => evaluation.result!),
+      repositoryState: "unchanged",
+      batchOutcome: batchError ? "failed" : "rejected",
+      ...(batchError ? { batchError } : {})
+    });
+  }
+
+  const changedProjections = [...projections.values()]
+    .filter((projection) => projection.projectedContent !== null && (
+      !projection.baseExists || !projection.baseContent?.equals(projection.projectedContent)
+    ))
+    .sort((left, right) => left.firstTouchOrder - right.firstTouchOrder);
+  const changedProjectionKeys = new Set(changedProjections.map((projection) => projection.key));
+  for (const evaluation of evaluations) {
+    if (evaluation.change && evaluation.projection && !changedProjectionKeys.has(evaluation.projection.key)) {
+      evaluation.result = noChange(operationIdentity(evaluation.index, evaluation.operation), evaluation.change.canceledDetails);
+    }
+  }
+
+  if (changedProjections.length === 0) {
+    let batchError: string | undefined;
+    try {
+      auditStagedResults(input.projectAlias, false, evaluations);
+    } catch (error) {
+      batchError = safeError(error);
+    }
+    return summarizeProjectEditBatch({
+      projectAlias: input.projectAlias,
+      batchMode: "staged",
+      dryRun: false,
+      results: evaluations.map((evaluation) => evaluation.result!),
+      repositoryState: "unchanged",
+      batchOutcome: batchError ? "failed" : "succeeded",
+      ...(batchError ? { batchError } : {})
+    });
+  }
+
+  try {
+    stateStore.requireAuditWritable();
+  } catch (error) {
+    for (const evaluation of evaluations) {
+      if (evaluation.change && !evaluation.result) {
+        evaluation.result = skipped(evaluation.index, evaluation.operation, "batch_failed");
+      }
+    }
+    return summarizeProjectEditBatch({
+      projectAlias: input.projectAlias,
+      batchMode: "staged",
+      dryRun: false,
+      results: evaluations.map((evaluation) => evaluation.result!),
+      repositoryState: "unchanged",
+      batchOutcome: "failed",
+      batchError: safeError(error)
+    });
+  }
+
+  const staleProjectionKeys = new Set<string>();
+  try {
+    for (const projection of projections.values()) {
+      const target = resolveProjectPath(input.projectAlias, projection.relativePath);
+      if (canonicalProjectionKey(target) !== projection.key || existsSync(target) !== projection.baseExists) {
+        staleProjectionKeys.add(projection.key);
+        continue;
+      }
+      if (!projection.baseExists) continue;
+      assertCanReadProjectPath(input.projectAlias, target, projection.relativePath, undefined, input.policy);
+      if (!statSync(target).isFile() || hashSha256(readFileSync(target)) !== projection.baseSha256) {
+        staleProjectionKeys.add(projection.key);
+      }
+    }
+  } catch (error) {
+    for (const evaluation of evaluations) {
+      if (evaluation.change && !evaluation.result) {
+        evaluation.result = skipped(evaluation.index, evaluation.operation, "batch_failed");
+      }
+    }
+    return summarizeProjectEditBatch({
+      projectAlias: input.projectAlias,
+      batchMode: "staged",
+      dryRun: false,
+      results: evaluations.map((evaluation) => evaluation.result!),
+      repositoryState: "unchanged",
+      batchOutcome: "failed",
+      batchError: safeError(error)
+    });
+  }
+
+  if (staleProjectionKeys.size > 0) {
+    for (const evaluation of evaluations) {
+      if (evaluation.projection && staleProjectionKeys.has(evaluation.projection.key)) {
+        evaluation.result = rejected(operationIdentity(evaluation.index, evaluation.operation), new SemanticRejection("stale_file", {}));
+      } else if (evaluation.change && !evaluation.result) {
+        evaluation.result = skipped(evaluation.index, evaluation.operation, "batch_rejected");
+      }
+    }
+    let batchError: string | undefined;
+    try {
+      auditStagedResults(input.projectAlias, false, evaluations);
+    } catch (error) {
+      batchError = safeError(error);
+    }
+    return summarizeProjectEditBatch({
+      projectAlias: input.projectAlias,
+      batchMode: "staged",
+      dryRun: false,
+      results: evaluations.map((evaluation) => evaluation.result!),
+      repositoryState: "unchanged",
+      batchOutcome: batchError ? "failed" : "rejected",
+      ...(batchError ? { batchError } : {})
+    });
+  }
+
+  const committedProjectionKeys = new Set<string>();
+  const createdDirectories = new Set<string>();
+  let commitError: unknown;
+  let failedProjection: PathProjection | undefined;
+  for (const projection of changedProjections) {
+    const missingParents: string[] = [];
+    let currentParent = path.dirname(projection.target);
+    while (!existsSync(currentParent)) {
+      missingParents.push(currentParent);
+      const parent = path.dirname(currentParent);
+      if (parent === currentParent) break;
+      currentParent = parent;
+    }
+    try {
+      mkdirSync(path.dirname(projection.target), { recursive: true });
+      const target = resolveProjectPath(input.projectAlias, projection.relativePath);
+      if (canonicalProjectionKey(target) !== projection.key) throw new Error(`Target changed before commit: ${projection.relativePath}`);
+      writeFileSync(target, projection.projectedContent!);
+      committedProjectionKeys.add(projection.key);
+    } catch (error) {
+      commitError = error;
+      failedProjection = projection;
+    } finally {
+      for (const createdDirectory of missingParents) {
+        if (existsSync(createdDirectory) && lstatSync(createdDirectory).isDirectory()) {
+          createdDirectories.add(createdDirectory);
+        }
+      }
+    }
+    if (commitError) break;
+  }
+
+  if (commitError) {
+    for (const evaluation of evaluations) {
+      if (!evaluation.change || evaluation.result) continue;
+      evaluation.result = evaluation.projection && committedProjectionKeys.has(evaluation.projection.key)
+        ? applied(operationIdentity(evaluation.index, evaluation.operation), evaluation.change.appliedDetails)
+        : skipped(evaluation.index, evaluation.operation, "batch_failed");
+    }
+
+    let inspectionUnknown = false;
+    let mutationObserved = createdDirectories.size > 0 || committedProjectionKeys.size > 0;
+    for (const projection of changedProjections) {
+      try {
+        const target = resolveProjectPath(input.projectAlias, projection.relativePath);
+        const exists = existsSync(target);
+        if (projection.baseExists) {
+          if (!exists || !statSync(target).isFile()) mutationObserved = true;
+          else if (!readFileSync(target).equals(projection.baseContent!)) mutationObserved = true;
+        } else if (exists) {
+          mutationObserved = true;
+        }
+      } catch {
+        inspectionUnknown = true;
+      }
+    }
+    let auditError: string | undefined;
+    try {
+      auditStagedResults(input.projectAlias, false, evaluations);
+    } catch (error) {
+      auditError = safeError(error);
+    }
+    const repositoryState = inspectionUnknown ? "unknown" : mutationObserved ? "partially_changed" : "unchanged";
+    const batchError = safeError(commitError, failedProjection?.relativePath);
+    return summarizeProjectEditBatch({
+      projectAlias: input.projectAlias,
+      batchMode: "staged",
+      dryRun: false,
+      results: evaluations.map((evaluation) => evaluation.result!),
+      repositoryState,
+      batchOutcome: committedProjectionKeys.size > 0 ? "partial" : "failed",
+      batchError: auditError ? `${batchError}; ${auditError}`.slice(0, 2000) : batchError
+    });
+  }
+
+  for (const evaluation of evaluations) {
+    if (evaluation.change && !evaluation.result) {
+      evaluation.result = applied(operationIdentity(evaluation.index, evaluation.operation), evaluation.change.appliedDetails);
+    }
+  }
+  let auditError: string | undefined;
+  try {
+    auditStagedResults(input.projectAlias, false, evaluations);
+  } catch (error) {
+    auditError = safeError(error);
+  }
+  return summarizeProjectEditBatch({
+    projectAlias: input.projectAlias,
+    batchMode: "staged",
+    dryRun: false,
+    results: evaluations.map((evaluation) => evaluation.result!),
+    repositoryState: "changed",
+    batchOutcome: auditError ? "failed" : "succeeded",
+    ...(auditError ? { batchError: auditError } : {})
+  });
+}
+
+
 export type ProjectEditBatchResult = {
   projectAlias: string;
-  batchMode: "ordered";
+  batchMode: EditBatchMode;
   batchOutcome: "succeeded" | "planned" | "rejected" | "partial" | "failed";
   repositoryState: "unchanged" | "changed" | "partially_changed" | "unknown";
   dryRun: boolean;
@@ -717,10 +1357,11 @@ export type ProjectEditBatchResult = {
   noChangeCount: number;
   plannedCount: number;
   skippedCount: number;
+  batchError?: string;
   results: OperationResult[];
 };
 
-export function executeProjectEditBatch(input: {
+function executeOrderedProjectEditBatch(input: {
   projectAlias: string;
   operations: EditOperation[];
   dryRun: boolean;
@@ -738,46 +1379,27 @@ export function executeProjectEditBatch(input: {
     results.push(result);
     if (!result.ok && !input.continueOnFailure) stop = true;
   }
-  const successCount = results.filter((result) => result.ok).length;
-  const failedCount = results.filter((result) => !result.ok && result.outcome === "completed").length;
-  const errorCount = results.filter((result) => result.outcome === "failed").length;
-  const appliedCount = results.filter((result) => result.operationStatus === "applied").length;
-  const noChangeCount = results.filter((result) => result.operationStatus === "no_change").length;
-  const plannedCount = results.filter((result) => result.operationStatus === "planned").length;
-  const skippedCount = results.filter((result) => result.operationStatus === "skipped").length;
-  const hasUnknownRepositoryState = results.some((result) => result.outcome === "failed" && "repositoryState" in result);
-  const incompleteCount = failedCount + errorCount + skippedCount;
-  const repositoryState = hasUnknownRepositoryState
-    ? "unknown"
-    : appliedCount > 0 && incompleteCount > 0
-      ? "partially_changed"
-      : appliedCount > 0
-        ? "changed"
-        : "unchanged";
-  const batchOutcome = appliedCount > 0 && incompleteCount > 0
-    ? "partial"
-    : errorCount > 0
-      ? "failed"
-      : failedCount > 0
-        ? "rejected"
-        : input.dryRun
-          ? "planned"
-          : "succeeded";
-
-  return {
+  return summarizeProjectEditBatch({
     projectAlias: input.projectAlias,
     batchMode: "ordered",
-    batchOutcome,
-    repositoryState,
     dryRun: input.dryRun,
-    requestedCount: input.operations.length,
-    successCount,
-    failedCount,
-    errorCount,
-    appliedCount,
-    noChangeCount,
-    plannedCount,
-    skippedCount,
     results
-  };
+  });
+}
+
+export function executeProjectEditBatch(input: {
+  projectAlias: string;
+  operations: EditOperation[];
+  batchMode: EditBatchMode;
+  dryRun: boolean;
+  continueOnFailure: boolean;
+  policy: PortusPolicyConfig;
+}): ProjectEditBatchResult {
+  if (input.batchMode === "staged") {
+    if (input.continueOnFailure) {
+      throw new Error("continueOnFailure is only valid when batchMode is ordered");
+    }
+    return executeStagedProjectEditBatch(input);
+  }
+  return executeOrderedProjectEditBatch(input);
 }

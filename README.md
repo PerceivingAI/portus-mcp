@@ -323,7 +323,7 @@ Registration and audit inspection are native `project_policy` actions rather tha
 
 ## Tool Operations
 
-Use `project_read.requests[]` for reads and complete-file hashes, `project_context.include` for status, effective execution capabilities, and metadata, `project_search.requests[]` for batched searches (1-20 requests), `project_patch.mode` for patches, `project_run.requests[]` for batched process execution (1-10 requests), `project_edit.operations[]` for ordered filesystem changes including hash-guarded line-range replacement, and `project_policy` for policy checks or native administrative actions.
+Use `project_read.requests[]` for reads and complete-file hashes, `project_context.include` for status, effective execution capabilities, and metadata, `project_search.requests[]` for batched searches (1-20 requests), `project_patch.mode` for patches, `project_run.requests[]` for batched process execution (1-10 requests), and `project_policy` for policy checks or native administrative actions. `project_edit.operations[]` defaults to staged write/text-edit execution with projected same-path state and pre-commit revalidation; select `batchMode: "ordered"` for filesystem operations or intentional immediate sequencing.
 
 See `docs/TOOLS.md` for the current tool contract and `docs/BROAD_MOBILITY_SURFACE.md` for the architectural decision.
 

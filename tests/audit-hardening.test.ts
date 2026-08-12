@@ -176,8 +176,14 @@ test("strict audit mode blocks selected mutations when audit log is not writable
     assert.equal(writeDenied.results[0].ok, false);
     assert.equal(writeDenied.repositoryState, "unchanged");
     assert.equal((writeDenied.results[0] as Record<string, unknown>).fileChanged, false);
-    assert.equal(writeDenied.results[0].error, "Audit log is not writable: [redacted path]");
+    assert.equal(writeDenied.batchError, "Audit log is not writable: [redacted path]");
     assert.equal(existsSync(path.join(projectRoot, "created.txt")), false);
+    assert.equal(writeDenied.batchMode, "staged");
+    assert.equal(writeDenied.batchOutcome, "failed");
+    assert.equal(writeDenied.errorCount, 0);
+    assert.equal(writeDenied.skippedCount, 1);
+    assert.equal(writeDenied.results[0].outcome, "skipped");
+    assert.equal(writeDenied.results[0].reason, "batch_failed");
 
     const registrationDenied = await client.callTool({
       name: "project_policy",
@@ -207,7 +213,7 @@ test("project_edit reports sanitized filesystem causes", async (t) => {
   assert.equal(operation.fileChanged, false);
   assert.equal("repositoryState" in operation, false);
   assert.equal(writeDenied.repositoryState, "unchanged");
-  assert.match(String(operation.error), /EISDIR|EPERM|EACCES|illegal operation|permission denied/i);
+  assert.match(String(operation.error), /EISDIR|EPERM|EACCES|illegal operation|permission denied|not a file/i);
   assert.equal(String(operation.error).includes(root), false);
 });
 

@@ -137,7 +137,7 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   const readTool = tools.tools.find((tool) => tool.name === "project_read");
   const contextTool = tools.tools.find((tool) => tool.name === "project_context");
   const editTool = tools.tools.find((tool) => tool.name === "project_edit");
-  assert.deepEqual(Object.keys(editTool?.inputSchema.properties ?? {}).sort(), ["continueOnFailure", "dryRun", "operations", "projectAlias"]);
+  assert.deepEqual(Object.keys(editTool?.inputSchema.properties ?? {}).sort(), ["batchMode", "continueOnFailure", "dryRun", "operations", "projectAlias"]);
   assert.match(readTool?.description ?? "", /skill rootAlias returned by project_context/);
   assert.match(contextTool?.description ?? "", /catalog-provided skill rootAlias/);
   const includeProperties = ((contextTool?.inputSchema.properties?.include as { properties?: Record<string, unknown> } | undefined)?.properties) ?? {};
@@ -230,7 +230,7 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
 
   const writes = resultOf(await client.callTool({
     name: "project_edit",
-    arguments: { projectAlias: "mcp", operations: [
+    arguments: { projectAlias: "mcp", batchMode: "ordered", operations: [
       { type: "write", relativePath: "generated.txt", content: "written through MCP\n" },
       { type: "write", relativePath: "unicode.txt", content: "�\n" },
       { type: "copy", sourceRelativePath: "generated.txt", destinationRelativePath: "copy/generated-copy.txt" }
@@ -522,7 +522,7 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
 
   const movedAndDeleted = resultOf(await client.callTool({
     name: "project_edit",
-    arguments: { projectAlias: "mcp", operations: [
+    arguments: { projectAlias: "mcp", batchMode: "ordered", operations: [
       { type: "move", sourceRelativePath: "copy/generated-copy.txt", destinationRelativePath: "copy/generated-moved.txt" },
       { type: "delete", relativePath: "copy/generated-moved.txt", confirm: true }
     ] }

@@ -142,7 +142,7 @@ test("broad project operations use their matching selected-policy permission", a
     { permission: "projectContext", tool: "project_context", arguments: { projectAlias, include: { status: true } } },
     { permission: "projectRead", tool: "project_read", arguments: { projectAlias, requests: [{ relativePath: "README.md", mode: "exists" }] } },
     { permission: "projectSearch", tool: "project_search", arguments: { projectAlias, requests: [{ mode: "files", query: "README" }] } },
-    { permission: "projectEdit", tool: "project_edit", arguments: { projectAlias, operations: [{ type: "mkdir", relativePath: "dry-run" }], dryRun: true } },
+    { permission: "projectEdit", tool: "project_edit", arguments: { projectAlias, batchMode: "ordered", operations: [{ type: "mkdir", relativePath: "dry-run" }], dryRun: true } },
     { permission: "projectPatch", tool: "project_patch", arguments: { projectAlias, mode: "prepare", patch: "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-project fixture\n+project fixture updated\n" } },
     { permission: "projectRun", tool: "project_run", arguments: { projectAlias, requests: [{ type: "command", command: "git", args: ["status", "--short"] }] } },
     { permission: "projectPolicy", tool: "project_policy", arguments: { checks: [{ type: "permissions", projectAlias, operation: "project_read" }] } }
@@ -312,6 +312,7 @@ test("canonical project boundary permits internal links and rejects external jun
     name: "project_edit",
     arguments: {
       projectAlias,
+      batchMode: "ordered",
       continueOnFailure: true,
       operations: [
         { type: "write", relativePath: "outside-link/created.txt", content: "must not escape\n" },
@@ -372,6 +373,7 @@ test("MCP denies gitignored-file reads and excludes traversal patterns", async (
     name: "project_edit",
     arguments: {
       projectAlias: "sec",
+      batchMode: "ordered",
       dryRun: true,
       operations: [{ type: "copy", sourceRelativePath: "ignored.txt", destinationRelativePath: "copy.txt" }]
     }
@@ -529,7 +531,7 @@ test("MCP mutation tools cannot operate on existing gitignored files when ignore
   ];
   const edits = resultOf(await client.callTool({
     name: "project_edit",
-    arguments: { projectAlias, operations, dryRun: true, continueOnFailure: true }
+    arguments: { projectAlias, batchMode: "ordered", operations, dryRun: true, continueOnFailure: true }
   }));
   for (const denied of edits.results) {
     assert.equal(denied.ok, false);

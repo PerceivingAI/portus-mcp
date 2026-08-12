@@ -17,7 +17,7 @@ import { countChars, limitText } from "../runtime/outputLimits.js";
 import { runProjectCheck, runProjectScript } from "../runtime/checks.js";
 import { runProjectCommand } from "../runtime/commands.js";
 import { registerStrictProjectTool, safeError, safeRelativePath } from "./projectToolUtils.js";
-import { editOperationSchema, executeProjectEditBatch } from "./projectEdit.js";
+import { editBatchModeSchema, editOperationSchema, executeProjectEditBatch } from "./projectEdit.js";
 import type { SkillRegistrySnapshot } from "../skills/SkillRegistry.js";
 import {
   assertCanReadProjectPath,
@@ -832,13 +832,14 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     };
   });
 
-  registerStrictProjectTool(server, "project_edit", "Apply an ordered, policy-checked project edit batch, including hash-guarded inclusive line-range replacement. Stops after the first rejected or failed operation unless continueOnFailure=true; dry runs report planned mutations without changing files.", {
+  registerStrictProjectTool(server, "project_edit", "Apply a policy-checked edit batch. Staged execution is the default for write and text edits: it evaluates projected same-path state, revalidates every base before commit, and writes each changed path once. Use batchMode=ordered for filesystem sequencing or continueOnFailure.", {
     projectAlias: z.string().min(1),
     operations: z.array(editOperationSchema).min(1).max(50),
+    batchMode: editBatchModeSchema,
     dryRun: z.boolean().default(false),
     continueOnFailure: z.boolean().default(false)
-  }, mutateAnnotations, async ({ projectAlias, operations, dryRun, continueOnFailure }) => {
+  }, mutateAnnotations, async ({ projectAlias, operations, batchMode, dryRun, continueOnFailure }) => {
     assertMainAgentPermission("projectEdit", policy);
-    return executeProjectEditBatch({ projectAlias, operations, dryRun, continueOnFailure, policy });
+    return executeProjectEditBatch({ projectAlias, operations, batchMode, dryRun, continueOnFailure, policy });
   });
 }
