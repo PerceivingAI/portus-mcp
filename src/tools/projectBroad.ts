@@ -42,6 +42,56 @@ const execFileAsync = promisify(execFile);
 const readAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;
 const mutateAnnotations = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } as const;
 
+type EnabledToolCapability = {
+  enabled: true;
+  allowedCommands?: string[];
+};
+
+type EnabledFeature = {
+  enabled: true;
+};
+
+type ProjectContextCapabilities = {
+  complete: true;
+  availableTools: Record<string, EnabledToolCapability>;
+  features: Record<string, EnabledFeature>;
+};
+
+function projectContextCapabilities(policy: PortusPolicyConfig): ProjectContextCapabilities {
+  const permissions = policyPermissions(policy).main_agent;
+  const availableTools: Record<string, EnabledToolCapability> = {};
+  if (permissions.projectContext) availableTools.project_context = { enabled: true };
+  if (permissions.projectRead) availableTools.project_read = { enabled: true };
+  if (permissions.projectSearch) availableTools.project_search = { enabled: true };
+  if (permissions.projectEdit) availableTools.project_edit = { enabled: true };
+  if (permissions.projectPatch) availableTools.project_patch = { enabled: true };
+  if (permissions.projectRun) {
+    availableTools.project_run = {
+      enabled: true,
+      allowedCommands: [...permissions.allowedCommands]
+    };
+  }
+  if (permissions.projectPolicy) availableTools.project_policy = { enabled: true };
+  if (permissions.subagentTask) availableTools.subagent_task = { enabled: true };
+  availableTools.subagent_context = { enabled: true };
+
+  const features: Record<string, EnabledFeature> = {};
+  if (permissions.projectRun && permissions.allowShell) features.shell = { enabled: true };
+  if (permissions.readGitIgnoredFiles) features.readGitIgnoredFiles = { enabled: true };
+  if (
+    permissions.requireConfirmation
+    && (permissions.projectEdit || permissions.projectPatch || permissions.projectRun)
+  ) {
+    features.protectedOperationsRequireConfirmation = { enabled: true };
+  }
+
+  return {
+    complete: true,
+    availableTools,
+    features
+  };
+}
+
 function assertInputChars(name: string, value: string, limit: number): void {
   const chars = countChars(value);
   if (chars > limit) throw new Error(`Input exceeds ${name}: ${chars} > ${limit} chars`);
@@ -384,16 +434,16 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
   registerProjectReadTool(server, registry, policy);
 
   const treeSchema = z.object({ relativePath: z.string().min(1).optional(), maxDepth: z.number().int().positive().max(20).optional(), includeFiles: z.boolean().optional(), includeDirs: z.boolean().optional(), maxEntries: z.number().int().positive().max(20000).optional(), format: z.enum(["tree", "json", "flat"]).optional() }).strict();
-  registerStrictProjectTool(server, "project_context", "Discover registered projects and available read-only skills, or inspect effective execution capabilities, bounded trees, file listings, and path metadata using either a registered project alias or a catalog-provided skill rootAlias. Project status, execution capabilities, and package scripts are available only for registered projects.", {
-    projectAlias: z.string().min(1).optional().describe("Registered project alias, or a skill rootAlias returned by include.skills for tree, files, and paths."), include: z.object({ projects: z.boolean().optional(), skills: z.boolean().optional(), status: z.boolean().optional(), execution: z.boolean().optional(), tree: treeSchema.optional(), files: z.object({ relativePath: z.string().min(1).optional(), maxEntries: z.number().int().positive().max(10000).optional() }).strict().optional(), paths: z.array(z.object({ relativePath: z.string().min(1), includeHash: z.boolean().optional() }).strict()).max(100).optional(), scripts: z.boolean().optional() }).strict().optional()
+  registerStrictProjectTool(server, "project_context", "Discover registered projects and available read-only skills, or inspect the complete effective capability allowlist, bounded trees, file listings, and path metadata using either a registered project alias or a catalog-provided skill rootAlias. The registered MCP catalog may contain tools unavailable under policy; capabilities.availableTools is the complete allowlist, and absent tools must not be invoked. Project status, capabilities, and package scripts are available only for registered projects.", {
+    projectAlias: z.string().min(1).optional().describe("Registered project alias, or a skill rootAlias returned by include.skills for tree, files, and paths."), include: z.object({ projects: z.boolean().optional(), skills: z.boolean().optional(), status: z.boolean().optional(), capabilities: z.boolean().optional(), tree: treeSchema.optional(), files: z.object({ relativePath: z.string().min(1).optional(), maxEntries: z.number().int().positive().max(10000).optional() }).strict().optional(), paths: z.array(z.object({ relativePath: z.string().min(1), includeHash: z.boolean().optional() }).strict()).max(100).optional(), scripts: z.boolean().optional() }).strict().optional()
   }, readAnnotations, async ({ projectAlias, include }) => {
-    const requested = include ?? { status: true, execution: true, tree: { maxDepth: 2, maxEntries: 200 }, scripts: true };
-    const hasScopedRequest = requested.status === true || requested.execution === true || requested.tree !== undefined || requested.files !== undefined || requested.paths !== undefined || requested.scripts === true;
+    const requested = include ?? { status: true, capabilities: true, tree: { maxDepth: 2, maxEntries: 200 }, scripts: true };
+    const hasScopedRequest = requested.status === true || requested.capabilities === true || requested.tree !== undefined || requested.files !== undefined || requested.paths !== undefined || requested.scripts === true;
     const hasDiscoveryRequest = requested.projects === true || requested.skills === true;
     const isSkillRoot = projectAlias !== undefined && registry.connected.byAlias.has(projectAlias);
     if (hasScopedRequest && !projectAlias) throw new Error("projectAlias is required for project-scoped context sections");
     if (!hasScopedRequest && !hasDiscoveryRequest) throw new Error("Request at least one context section");
-    if (isSkillRoot && (requested.status === true || requested.execution === true || requested.scripts === true)) {
+    if (isSkillRoot && (requested.status === true || requested.capabilities === true || requested.scripts === true)) {
       throw new Error("Skill rootAlias supports only tree, files, and paths context sections.");
     }
     if (hasDiscoveryRequest) assertMainAgentPermission("projectContext", policy);
@@ -420,15 +470,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
         }
       };
     });
-    if (requested.execution) await isolate("execution", () => {
-      const permissions = policyPermissions(policy).main_agent;
-      return {
-        enabled: permissions.projectRun,
-        allowedCommands: permissions.allowedCommands,
-        allowShell: permissions.allowShell,
-        requireConfirmation: permissions.requireConfirmation
-      };
-    });
+    if (requested.capabilities) await isolate("capabilities", () => projectContextCapabilities(policy));
     if (requested.tree) await isolate("tree", () => treeSection(projectAlias!, requested.tree ?? {}, registry));
     if (requested.files) await isolate("files", () => filesSection(projectAlias!, requested.files ?? {}, registry));
     if (requested.paths) await isolate("paths", () => requested.paths?.map((item) => { try { return { ok: true, ...pathMetadata(projectAlias!, item.relativePath, item.includeHash ?? false, registry) }; } catch (error) { return { ok: false, relativePath: safeRelativePath(item.relativePath), error: safeError(error, item.relativePath) }; } }) ?? []);

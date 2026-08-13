@@ -24,7 +24,7 @@ The adapters divide work by intent:
 
 | Adapter | Responsibility |
 |---|---|
-| `project_context` | Alias-only discovery with `include.projects=true` and no `projectAlias`; with an alias, effective execution capabilities plus bounded status, tree, file-list, path metadata/existence, and package-script context. The default scoped response includes execution; project-scoped sections require `projectAlias`. |
+| `project_context` | Alias-only discovery with `include.projects=true` and no `projectAlias`; with an alias, the complete positive capability allowlist plus bounded status, tree, file-list, path metadata/existence, and package-script context. The default scoped response includes `capabilities`; project-scoped sections require `projectAlias`. |
 | `project_read` | Ordered, bounded content, range, metadata, and existence requests; text reads return a complete raw-file SHA-256 even when content is bounded or truncated. |
 | `project_search` | File, text, symbol, or combined search; ignored paths are excluded unless one request explicitly opts in and the selected policy authorizes that scope. |
 | `project_edit` | Staged write and text edits by default: capture bases once, evaluate projected same-path state, revalidate before commit, and write each changed path once. Explicit ordered mode retains copy, move, delete, mkdir, and rmdir sequencing with deterministic stop/continue behavior. Unified outcomes distinguish applied, no-change, planned, rejected, failed, and skipped operations; counts obey one shared invariant. Staged cross-file commit is journaled but not atomic. Operation and batch audit records expose only safe status, relative-path, and count metadata. |
@@ -34,7 +34,9 @@ The adapters divide work by intent:
 | `subagent_task` | Subagent lifecycle management using discriminated action union (`start`, `stop`, `cleanup`). |
 | `subagent_context` | Batch read subagent status, events, stdout/stderr logs, and collected results. |
 
-Broad schemas group related behavior without moving authority into the tool layer. `project_policy` requires exactly one of `checks` or `action`; `action` is a nested object selected by its inner `type` discriminator, as in `{ "action": { "type": "list_audit" } }`, not a flat string. Its native actions (`register_project`, `list_audit`, `read_audit`) require `projectPolicy`; no MCP action accepts permission changes. The read-only `config` check safely reports operator-policy provenance, shipped-versus-configured selection, effective permissions, and redacted path/traversal patterns. `subagent_task` and `subagent_context` require `subagentTask`. Canonical paths, confirmation, safe projections, strict schemas, and redacted audit behavior remain authoritative; registration audit records use `tool=project_policy` and `operation=register_project`.
+Broad schemas group related behavior without moving authority into the tool layer. `project_policy` requires exactly one of `checks` or `action`; `action` is a nested object selected by its inner `type` discriminator, as in `{ "action": { "type": "list_audit" } }`, not a flat string. Its native actions (`register_project`, `list_audit`, `read_audit`) require `projectPolicy`; no MCP action accepts permission changes. The read-only `config` check safely reports operator-policy provenance, shipped-versus-configured selection, effective permissions, and redacted path/traversal patterns. `subagent_task` requires `subagentTask`; `subagent_context` retains its existing ungated read behavior. Canonical paths, confirmation, safe projections, strict schemas, and redacted audit behavior remain authoritative.
+
+The registered catalog and effective authority are intentionally separate. MCP discovery remains the fixed nine-tool product surface. Scoped `project_context.capabilities.availableTools` is the complete policy-derived allowlist for the current connection: enabled exact tool names are present, disabled names are absent, and no entry uses `enabled: false`. Dependent features are likewise published only when usable. This planning projection does not replace runtime permission enforcement.
 
 ## Subagent & Policy Unification
 
@@ -60,7 +62,7 @@ Read, search, context, policy inspection, and patch preparation are unaudited. M
 
 ## Cold-Start Discovery
 
-A client with no prior alias knowledge calls `project_context` with `include.projects=true` and omits `projectAlias`. The response contains registered aliases only, never absolute roots, registry metadata, or command policy. The client selects an alias and calls scoped `project_context`; the default response includes effective `enabled`, `allowedCommands`, `allowShell`, and `requireConfirmation` execution values before the client uses `project_run`. Effective execution discovery requires `projectContext`, not administrative `projectPolicy`. Any request that includes another project-scoped context section still requires `projectAlias`.
+A client with no prior alias knowledge calls `project_context` with `include.projects=true` and omits `projectAlias`. The response contains registered aliases only, never absolute roots, registry metadata, or command policy. The client selects an alias and calls scoped `project_context`; the default response includes `capabilities`, status, tree, and scripts. The client treats `capabilities.availableTools` as its effective authority, cross-references exact registered tool names, and uses `project_run.allowedCommands` only when that tool is present. Capability discovery requires `projectContext`, not administrative `projectPolicy`. Any request that includes another project-scoped context section still requires `projectAlias`.
 
 
 ## Subagent and Skill Boundaries

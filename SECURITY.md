@@ -53,7 +53,7 @@ projectRun
 projectPolicy
 ```
 
-Each tool checks its corresponding permission once at entry (`subagent_task` requires `subagentTask`, `project_read` requires `projectRead`, etc.). `project_policy` requires `projectPolicy` for all checks and native actions (`register_project`, `update_permissions`, `list_audit`, `read_audit`). `readGitIgnoredFiles` remains an internal constraint. Scoped `project_context` safely projects the effective direct-agent command boundary so clients with `projectContext` can discover `projectRun`, `allowedCommands`, `allowShell`, and confirmation behavior without administrative policy access.
+Each gated tool checks its corresponding permission at entry (`subagent_task` requires `subagentTask`, `project_read` requires `projectRead`, etc.); `subagent_context` retains its existing ungated read behavior. `project_policy` requires `projectPolicy` for checks and native actions (`register_project`, `list_audit`, `read_audit`). `readGitIgnoredFiles` remains an internal constraint. Scoped `project_context.capabilities` is planning information: it positively lists effective tool authority and usable dependent features, while disabled entries are absent. The fixed registered catalog may therefore contain tools absent from `capabilities.availableTools`. This projection is not a security boundary; runtime permission, path, command, confirmation, and validation gates remain authoritative.
 
 Spawned-agent permissions include:
 

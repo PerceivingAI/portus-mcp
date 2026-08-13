@@ -83,9 +83,11 @@ After the client discovers the nine MCP tools, use this sequence:
 
 1. Call `project_context` with `include.projects=true` and omit `projectAlias`.
 2. Choose one alias from the alias-only response. The response must not contain an absolute root or internal registry metadata.
-3. Call scoped `project_context` with that `projectAlias`. The default response reports the selected operator policy's execution capabilities plus status, tree, and scripts; inspect `execution.enabled` and `execution.allowedCommands` before using `project_run`.
-4. Reuse the alias with the other allowed project tools and invoke only the device commands reported in that scoped context.
+3. Call scoped `project_context` with that `projectAlias`. The default response reports the selected operator policy's complete positive `capabilities` allowlist plus status, tree, and scripts.
+4. Treat `capabilities.availableTools` as the effective planning authority. Invoke only listed exact tool names; for `project_run`, use only its nested `allowedCommands`. Registered tools absent from the allowlist remain visible through MCP discovery but must not be invoked.
 
 Any project-scoped `project_context` section requires `projectAlias`; only alias discovery can omit it. The alias selects project context, not a different permission policy. Registration and audit inspection—when permitted to the model—are native `project_policy` actions. Policy inspection is read-only, and no MCP action can change permissions. Operator policy editing, environment pre-registration, and direct state administration remain operator-only.
+
+Every returned capability entry is enabled. Disabled tools and features are omitted rather than returned as `enabled: false`; `complete: true` makes absence unambiguous. This report improves planning but is not a security boundary—runtime permission and request-specific checks remain authoritative.
 
 The client should show exactly nine tools. No management profile, obsolete project/admin tool name, deprecated registration, or compatibility path should appear.

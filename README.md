@@ -317,13 +317,13 @@ Spawned subagents are command-capable processes bounded by Flue workspace isolat
 
 ## Project Cold Start
 
-A client that does not yet know a project alias calls `project_context` with `include.projects=true` and no `projectAlias`. The result contains registered aliases only. It then selects an alias and calls scoped `project_context`; the default response includes effective execution capabilities such as `allowedCommands` before the client uses `project_run`. Any project-scoped context section still requires `projectAlias`.
+A client that does not yet know a project alias calls `project_context` with `include.projects=true` and no `projectAlias`. The result contains registered aliases only. It then selects an alias and calls scoped `project_context`; the default response includes `capabilities`, status, tree, and scripts. `capabilities.availableTools` is the complete effective allowlist for planning: every entry is enabled, and a registered MCP tool absent from the allowlist must not be invoked. `project_run.allowedCommands` appears only when `project_run` is available. Any project-scoped context section still requires `projectAlias`.
 
 Registration and audit inspection are native `project_policy` actions rather than separate management tools. Its safe policy checks are read-only; no MCP action can change permissions. See `docs/TOOLS.md` for the exact boundaries.
 
 ## Tool Operations
 
-Use `project_read.requests[]` for reads and complete-file hashes, `project_context.include` for status, effective execution capabilities, and metadata, `project_search.requests[]` for batched searches (1-20 requests), `project_patch.mode` for patches, `project_run.requests[]` for batched process execution (1-10 requests), and `project_policy` for policy checks or native administrative actions. `project_edit.operations[]` defaults to staged write/text-edit execution with projected same-path state, base-hash guards, and pre-commit revalidation; select `batchMode: "ordered"` for filesystem operations or intentional immediate sequencing. Edit results distinguish applied, no-change, planned, rejected, failed, and skipped operations.
+Use `project_read.requests[]` for reads and complete-file hashes, `project_context.include` for status, the positive capability allowlist, and metadata, `project_search.requests[]` for batched searches (1-20 requests), `project_patch.mode` for patches, `project_run.requests[]` for batched process execution (1-10 requests), and `project_policy` for policy checks or native administrative actions. `project_edit.operations[]` defaults to staged write/text-edit execution with projected same-path state, base-hash guards, and pre-commit revalidation; select `batchMode: "ordered"` for filesystem operations or intentional immediate sequencing. Edit results distinguish applied, no-change, planned, rejected, failed, and skipped operations.
 
 See `docs/TOOLS.md` for the current tool contract and `docs/BROAD_MOBILITY_SURFACE.md` for the architectural decision.
 

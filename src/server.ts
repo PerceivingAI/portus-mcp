@@ -13,7 +13,7 @@ import { readSessionEvents } from "./state/SessionEvents.js";
 import { connectedSkillInstructions, loadSkillRegistry } from "./skills/SkillRegistry.js";
 import type { SkillRegistrySnapshot } from "./skills/SkillRegistry.js";
 
-const PROJECT_DISCOVERY_INSTRUCTIONS = "Discover registered projects with project_context using include.projects=true. After selecting a project alias, call scoped project_context; its execution section reports the device commands permitted through project_run.";
+const PROJECT_DISCOVERY_INSTRUCTIONS = "Discover registered projects with project_context using include.projects=true. After selecting a project alias, call scoped project_context; capabilities.availableTools is the complete effective tool allowlist, and registered tools absent from it must not be invoked.";
 
 export type PolicyProvider = () => PortusPolicyConfig;
 

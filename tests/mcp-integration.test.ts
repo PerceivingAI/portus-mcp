@@ -98,6 +98,23 @@ const { loadSkillRegistry, parseSkillFrontmatter } = await import("../src/skills
 const { upsertProject } = await import("../src/state/ProjectRegistry.js");
 const { getSession, upsertSession } = await import("../src/state/SessionRegistry.js");
 const selectedPolicy = loadPolicyConfig();
+const expectedCapabilities = {
+  complete: true,
+  availableTools: {
+    project_context: { enabled: true },
+    project_read: { enabled: true },
+    project_search: { enabled: true },
+    project_edit: { enabled: true },
+    project_patch: { enabled: true },
+    project_run: { enabled: true, allowedCommands: connectedAllowedCommands },
+    project_policy: { enabled: true },
+    subagent_task: { enabled: true },
+    subagent_context: { enabled: true }
+  },
+  features: {
+    protectedOperationsRequireConfirmation: { enabled: true }
+  }
+};
 
 
 function resultOf(response: any): any {
@@ -173,9 +190,10 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   }
   const includeProperties = ((contextTool?.inputSchema.properties?.include as { properties?: Record<string, unknown> } | undefined)?.properties) ?? {};
   assert.equal("skills" in includeProperties, true);
-  assert.equal("execution" in includeProperties, true);
+  assert.equal("capabilities" in includeProperties, true);
+  assert.equal("execution" in includeProperties, false);
   const serverInstructions = client.getInstructions() ?? "";
-  assert.match(serverInstructions, /execution section reports the device commands permitted through project_run/);
+  assert.match(serverInstructions, /capabilities\.availableTools is the complete effective tool allowlist/);
   assert.match(serverInstructions, /root-alias="skill\/sample"/);
   assert.match(serverInstructions, /Sample skill for integration tests/);
   assert.equal(serverInstructions.includes("# Sample Skill"), false);
@@ -224,17 +242,19 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     name: "project_context",
     arguments: { projectAlias: "mcp" }
   }));
-  assert.deepEqual(defaultContext.sections.execution.value, {
-    enabled: true,
-    allowedCommands: connectedAllowedCommands,
-    allowShell: false,
-    requireConfirmation: true
+  assert.deepEqual(defaultContext.sections.capabilities.value, expectedCapabilities);
+  assert.equal("execution" in defaultContext.sections, false);
+  assert.equal(JSON.stringify(defaultContext.sections.capabilities).includes("\"enabled\":false"), false);
+  const removedExecutionContext = await client.callTool({
+    name: "project_context",
+    arguments: { projectAlias: "mcp", include: { execution: true } }
   });
+  assert.equal(removedExecutionContext.isError, true);
   assert.equal(JSON.stringify(defaultContext).includes(projectRoot), false);
 
   const context = resultOf(await client.callTool({
     name: "project_context",
-    arguments: { projectAlias: "mcp", include: { status: true, execution: true, files: { maxEntries: 50 }, tree: { maxDepth: 3, format: "json" } } }
+    arguments: { projectAlias: "mcp", include: { status: true, capabilities: true, files: { maxEntries: 50 }, tree: { maxDepth: 3, format: "json" } } }
   }));
   assert(context.sections.files.value.files.some((file: any) => file.relativePath === "README.md"));
   assert.equal(context.sections.tree.value.format, "json");
@@ -242,12 +262,7 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.equal(context.sections.status.value.project.projectAlias, "mcp");
   assert.equal("rootPath" in context.sections.status.value.project, false);
   assert.equal(JSON.stringify(context).includes(projectRoot), false);
-  assert.deepEqual(context.sections.execution.value, {
-    enabled: true,
-    allowedCommands: connectedAllowedCommands,
-    allowShell: false,
-    requireConfirmation: true
-  });
+  assert.deepEqual(context.sections.capabilities.value, expectedCapabilities);
 
 
   const read = resultOf(await client.callTool({
@@ -615,12 +630,12 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.equal(invalidSkillContext.isError, true);
   assert.match(JSON.stringify(invalidSkillContext.structuredContent), /only tree, files, and paths/);
 
-  const invalidSkillExecution = await client.callTool({
+  const invalidSkillCapabilities = await client.callTool({
     name: "project_context",
-    arguments: { projectAlias: "skill/sample", include: { execution: true } }
+    arguments: { projectAlias: "skill/sample", include: { capabilities: true } }
   });
-  assert.equal(invalidSkillExecution.isError, true);
-  assert.match(JSON.stringify(invalidSkillExecution.structuredContent), /only tree, files, and paths/);
+  assert.equal(invalidSkillCapabilities.isError, true);
+  assert.match(JSON.stringify(invalidSkillCapabilities.structuredContent), /only tree, files, and paths/);
 
   const skillEntrypoint = resultOf(await client.callTool({
     name: "project_read",
