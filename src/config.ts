@@ -10,6 +10,7 @@ export type { AgentProvider, AgentProviderConfig, AgentProviderDefinition } from
 
 export type MainAgentPermissionConfig = {
   subagentTask: boolean;
+  subagentContext: boolean;
   projectContext: boolean;
   projectRead: boolean;
   projectSearch: boolean;

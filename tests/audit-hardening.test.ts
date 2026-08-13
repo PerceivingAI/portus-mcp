@@ -40,6 +40,7 @@ function writePolicy(strictMode: boolean): void {
     main_agent: {
       permissions: {
         subagentTask: true,
+        subagentContext: true,
         projectContext: true,
         projectRead: true,
         projectSearch: true,

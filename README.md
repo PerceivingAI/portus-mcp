@@ -57,7 +57,7 @@ Portus ships with `portus-mcp.policy.json` as its default complete operator poli
 PORTUS_MCP_POLICY_PATH=./portus-mcp.policy.local.json
 ```
 
-The selected file is a strict replacement, not an overlay: shipped and private policies are never merged. A missing file, invalid JSON, unknown key, or invalid value fails startup. Runtime files under `.portus-mcp/` cannot override permissions, and no MCP tool can mutate them.
+The selected file is a strict replacement, not an overlay: shipped and private policies are never merged. A missing file, invalid JSON, unknown key, or invalid value fails startup. Policies created before the `subagentContext` permission was introduced must add that required Boolean explicitly; there is no fallback to `subagentTask`. Runtime files under `.portus-mcp/` cannot override permissions, and no MCP tool can mutate them.
 
 Portus ships with only `git` in `main_agent.permissions.allowedCommands`. Add executable basenames to that field in the selected complete policy, not arguments or shell command strings; omit Windows `.exe`, `.cmd`, and `.bat` suffixes. Grant only commands you intend the connected main agent to control: allowlisting Bash, PowerShell, Python, Node.js, or another interpreter gives it the broad authority that executable has under the Portus OS account. Direct main-agent commands use `main_agent.permissions.allowedCommands`; spawned subagents use the separate `subagents.permissions.allowedCommands`. Restart Portus after changing `.env` or the selected policy.
 
@@ -313,7 +313,7 @@ Broad tools remain bounded by layered enforcement:
 
 Callers cannot raise server maxima or override path, permission, confirmation, or audit policy. Search excludes ignored paths by default; explicit ignored-path inclusion is confined to one request and requires selected-policy authorization. Read, context, search, policy inspection, and patch preparation remain unaudited; mutation, execution, and registration retain audit behavior. Errors and safe policy projections do not expose absolute roots, selected policy paths, secrets, command environments, or file contents.
 
-Spawned subagents are command-capable processes bounded by Flue workspace isolation in `.portus-mcp/flue-workspaces/<sessionId>` and `subagentTask` permission policy.
+Spawned subagents are command-capable processes bounded by Flue workspace isolation in `.portus-mcp/flue-workspaces/<sessionId>`. `main_agent.permissions.subagentTask` independently controls lifecycle actions; `main_agent.permissions.subagentContext` controls session listings, status, outputs, events, and capability inspection.
 
 ## Project Cold Start
 

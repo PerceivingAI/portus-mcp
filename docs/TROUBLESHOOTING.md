@@ -70,7 +70,7 @@ Inspect policy state and diagnostic checks with `project_policy`:
 }
 ```
 
-Or check subagent capabilities via `subagent_context`:
+When `subagentContext` is enabled, check configured subagent capabilities via `subagent_context`:
 
 ```json
 {
@@ -82,6 +82,7 @@ Common causes:
 
 ```text
 main_agent.permissions.subagentTask=false
+main_agent.permissions.subagentContext=false
 main_agent.permissions.projectRun=false
 main_agent.permissions.projectEdit=false
 subagents.concurrency.maxConcurrent=0

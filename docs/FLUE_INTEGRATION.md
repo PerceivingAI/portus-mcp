@@ -18,7 +18,7 @@ Apache-2.0
 
 ## What Uses Flue
 
-Spawned subagent operations use `subagent_task` (`action: "start"`, `"stop"`, `"cleanup"`) and `subagent_context`:
+Spawned subagent operations use `subagent_task` (`action: "start"`, `"stop"`, `"cleanup"`) and `subagent_context`. The selected policy gates them independently through `main_agent.permissions.subagentTask` and `main_agent.permissions.subagentContext`:
 
 ```text
 subagent_task
@@ -78,7 +78,7 @@ The subagent template is located at `subagents/ephemeral-project-subagent.ts`. T
 
 ## Session Artifacts & Inspection
 
-Subagent status, stdout/stderr logs, execution events, and result artifacts are read using `subagent_context`. Session stop and artifact cleanup are performed using `subagent_task`.
+Subagent status, stdout/stderr logs, execution events, result artifacts, and capability inspection are read using `subagent_context` and require `subagentContext`. Session start, stop, and artifact cleanup use `subagent_task` and require `subagentTask`.
 
 Retry policy lives in:
 

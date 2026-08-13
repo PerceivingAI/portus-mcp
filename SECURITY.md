@@ -44,6 +44,7 @@ Main agent permissions are:
 
 ```text
 subagentTask
+subagentContext
 projectContext
 projectRead
 projectSearch
@@ -53,7 +54,7 @@ projectRun
 projectPolicy
 ```
 
-Each gated tool checks its corresponding permission at entry (`subagent_task` requires `subagentTask`, `project_read` requires `projectRead`, etc.); `subagent_context` retains its existing ungated read behavior. `project_policy` requires `projectPolicy` for checks and native actions (`register_project`, `list_audit`, `read_audit`). `readGitIgnoredFiles` remains an internal constraint. Scoped `project_context.capabilities` is planning information: it positively lists effective tool authority and usable dependent features, while disabled entries are absent. The fixed registered catalog may therefore contain tools absent from `capabilities.availableTools`. This projection is not a security boundary; runtime permission, path, command, confirmation, and validation gates remain authoritative.
+Every MCP tool checks its corresponding permission at entry: `subagent_task` requires `subagentTask`, `subagent_context` requires `subagentContext`, `project_read` requires `projectRead`, and so on. `project_policy` requires `projectPolicy` for checks and native actions (`register_project`, `list_audit`, `read_audit`). `readGitIgnoredFiles` remains an internal constraint. Scoped `project_context.capabilities` is planning information: it positively lists effective tool authority and usable dependent features, while disabled entries are absent. The fixed registered catalog may therefore contain tools absent from `capabilities.availableTools`. This projection is not a security boundary; runtime permission, path, command, confirmation, and validation gates remain authoritative.
 
 Spawned-agent permissions include:
 
@@ -73,7 +74,7 @@ Spawned agents use Flue and run as local processes with cwd set to the registere
 
 They are useful for delegated work, but they are not a hard filesystem sandbox. If a spawned agent receives command access, it may be able to read files allowed by OS permissions and granted commands.
 
-You can disable spawned agents by setting `main_agent.permissions.subagentTask=false`, `subagents.concurrency.maxConcurrent=0`, or `subagents.concurrency.maxConcurrentPerProject=0`.
+Disable subagent lifecycle actions with `main_agent.permissions.subagentTask=false`, `subagents.concurrency.maxConcurrent=0`, or `subagents.concurrency.maxConcurrentPerProject=0`. Independently disable session listings, status, stdout/stderr, results, events, and capability inspection with `main_agent.permissions.subagentContext=false`.
 
 ## Provider Credentials
 

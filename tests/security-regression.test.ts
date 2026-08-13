@@ -121,7 +121,7 @@ test("permission gates cover every selected-policy permission", () => {
   for (const permission of ["readGitIgnoredFiles", "allowShell"] as const) {
     assert.throws(() => assertMainAgentPermission(permission, selectedPolicy), /Permission denied/);
   }
-  for (const permission of ["subagentTask", "projectContext", "projectRead", "projectSearch", "projectEdit", "projectPatch", "projectRun", "projectPolicy", "requireConfirmation"] as const) {
+  for (const permission of ["subagentTask", "subagentContext", "projectContext", "projectRead", "projectSearch", "projectEdit", "projectPatch", "projectRun", "projectPolicy", "requireConfirmation"] as const) {
     assert.doesNotThrow(() => assertMainAgentPermission(permission, selectedPolicy));
   }
 
@@ -133,7 +133,7 @@ test("permission gates cover every selected-policy permission", () => {
   assert.equal(effective.subagents.network, false);
 });
 
-test("broad project operations use their matching selected-policy permission", async (t) => {
+test("MCP tools use their matching selected-policy permission", async (t) => {
   let activePolicy = selectedPolicy;
   const client = await withClient(t, () => activePolicy);
   const projectAlias = "broad-gates";
@@ -145,7 +145,8 @@ test("broad project operations use their matching selected-policy permission", a
     { permission: "projectEdit", tool: "project_edit", arguments: { projectAlias, batchMode: "ordered", operations: [{ type: "mkdir", relativePath: "dry-run" }], dryRun: true } },
     { permission: "projectPatch", tool: "project_patch", arguments: { projectAlias, mode: "prepare", patch: "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-project fixture\n+project fixture updated\n" } },
     { permission: "projectRun", tool: "project_run", arguments: { projectAlias, requests: [{ type: "command", command: "git", args: ["status", "--short"] }] } },
-    { permission: "projectPolicy", tool: "project_policy", arguments: { checks: [{ type: "permissions", projectAlias, operation: "project_read" }] } }
+    { permission: "projectPolicy", tool: "project_policy", arguments: { checks: [{ type: "permissions", projectAlias, operation: "project_read" }] } },
+    { permission: "subagentContext", tool: "subagent_context", arguments: { requests: [{ type: "capabilities" }] } }
   ] as const;
 
   for (const entry of cases) {

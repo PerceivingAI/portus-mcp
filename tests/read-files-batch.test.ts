@@ -37,7 +37,7 @@ const basePolicy = {
     lifecycle: { queuedTaskTtlSecs: 300, projectLockTimeoutSecs: 1800, maxRuntimeSecs: 900, startupWatchdogMs: 15000, forcedCloseGraceMs: 8000, killEscalationDelayMs: 1200, queueDrainDelayMs: 50 },
     permissions: { networkAccess: true, allowedCommands: ["git"] }
   },
-  main_agent: { permissions: { subagentTask: false, projectContext: true, projectRead: true, projectSearch: true, projectEdit: false, projectPatch: false, projectRun: false, projectPolicy: true, readGitIgnoredFiles: false, requireConfirmation: false, allowShell: false, allowedCommands: ["git"] } },
+  main_agent: { permissions: { subagentTask: false, subagentContext: false, projectContext: true, projectRead: true, projectSearch: true, projectEdit: false, projectPatch: false, projectRun: false, projectPolicy: true, readGitIgnoredFiles: false, requireConfirmation: false, allowShell: false, allowedCommands: ["git"] } },
   pathPolicy: { blockedPatterns: [".env"] },
   limits: {
     fileRead: { maxChars: 500000 }, fileWrite: { maxChars: 1000000 }, patch: { maxChars: 1000000 },

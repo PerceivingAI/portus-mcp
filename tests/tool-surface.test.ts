@@ -71,6 +71,7 @@ function withPermissions(
 
 const permissivePolicy = withPermissions({
   subagentTask: true,
+  subagentContext: true,
   projectContext: true,
   projectRead: true,
   projectSearch: true,
@@ -86,6 +87,7 @@ const permissivePolicy = withPermissions({
 
 const restrictivePolicy = withPermissions({
   subagentTask: false,
+  subagentContext: false,
   projectContext: true,
   projectRead: true,
   projectSearch: false,
@@ -97,6 +99,16 @@ const restrictivePolicy = withPermissions({
   requireConfirmation: true,
   allowShell: true,
   allowedCommands: ["git"]
+});
+
+const contextOnlyPolicy = withPermissions({
+  ...restrictivePolicy.main_agent.permissions,
+  subagentContext: true
+});
+
+const taskOnlyPolicy = withPermissions({
+  ...restrictivePolicy.main_agent.permissions,
+  subagentTask: true
 });
 
 const expectedNames = [
@@ -189,8 +201,7 @@ test("fixed tool discovery and positive capabilities follow effective permission
       complete: true,
       availableTools: {
         project_context: { enabled: true },
-        project_read: { enabled: true },
-        subagent_context: { enabled: true }
+        project_read: { enabled: true }
       },
       features: {}
     });
@@ -205,6 +216,52 @@ test("fixed tool discovery and positive capabilities follow effective permission
     });
     assert.equal(deniedRun.isError, true);
     assert.match(JSON.stringify(deniedRun.structuredContent), /main_agent\.projectRun/);
+
+    const deniedContext = await client.callTool({
+      name: "subagent_context",
+      arguments: { requests: [{ type: "capabilities" }] }
+    });
+    assert.equal(deniedContext.isError, true);
+    assert.match(JSON.stringify(deniedContext.structuredContent), /main_agent\.subagentContext/);
+  });
+
+  await withClient(() => contextOnlyPolicy, async (client) => {
+    assert.deepEqual(
+      (await client.listTools()).tools.map((tool) => tool.name).sort(),
+      expectedNames
+    );
+    const capabilities = capabilitiesOf(await client.callTool({
+      name: "project_context",
+      arguments: { projectAlias: "surface", include: { capabilities: true } }
+    }));
+    assert.equal("subagent_task" in capabilities.availableTools, false);
+    assert.deepEqual(capabilities.availableTools.subagent_context, { enabled: true });
+
+    const allowedContext = await client.callTool({
+      name: "subagent_context",
+      arguments: { requests: [{ type: "capabilities" }] }
+    });
+    assert.equal(allowedContext.isError, undefined, JSON.stringify(allowedContext.structuredContent));
+  });
+
+  await withClient(() => taskOnlyPolicy, async (client) => {
+    assert.deepEqual(
+      (await client.listTools()).tools.map((tool) => tool.name).sort(),
+      expectedNames
+    );
+    const capabilities = capabilitiesOf(await client.callTool({
+      name: "project_context",
+      arguments: { projectAlias: "surface", include: { capabilities: true } }
+    }));
+    assert.deepEqual(capabilities.availableTools.subagent_task, { enabled: true });
+    assert.equal("subagent_context" in capabilities.availableTools, false);
+
+    const deniedContext = await client.callTool({
+      name: "subagent_context",
+      arguments: { requests: [{ type: "capabilities" }] }
+    });
+    assert.equal(deniedContext.isError, true);
+    assert.match(JSON.stringify(deniedContext.structuredContent), /main_agent\.subagentContext/);
   });
 
   await withClient(() => permissivePolicy, async (client) => {
@@ -247,6 +304,7 @@ test("project_context uses the policy selected by PORTUS_MCP_POLICY_PATH", async
     projectRun: false,
     projectPolicy: false,
     subagentTask: false,
+    subagentContext: true,
     readGitIgnoredFiles: true,
     requireConfirmation: false,
     allowShell: false

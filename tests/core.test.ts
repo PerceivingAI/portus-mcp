@@ -99,6 +99,15 @@ test("permission policy evaluates complete immutable policy objects", () => {
 test("complete policy validation rejects every formerly defaulted field when omitted", () => {
   const incompletePolicies: Array<{ path: string; value: unknown }> = [
     {
+      path: "main_agent.permissions.subagentContext",
+      value: {
+        ...selectedPolicy,
+        main_agent: {
+          permissions: withoutKey(selectedPolicy.main_agent.permissions, "subagentContext")
+        }
+      }
+    },
+    {
       path: "main_agent.permissions.requireConfirmation",
       value: {
         ...selectedPolicy,

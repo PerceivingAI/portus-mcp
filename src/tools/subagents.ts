@@ -212,6 +212,7 @@ export function registerSubagentTools(server: McpServer, registry: SkillRegistry
     },
     { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async ({ requests }) => {
+      assertMainAgentPermission("subagentContext", policy);
       const results: Array<Record<string, unknown>> = [];
       for (const [index, request] of requests.entries()) {
         try {

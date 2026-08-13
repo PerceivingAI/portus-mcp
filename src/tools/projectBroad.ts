@@ -73,7 +73,7 @@ function projectContextCapabilities(policy: PortusPolicyConfig): ProjectContextC
   }
   if (permissions.projectPolicy) availableTools.project_policy = { enabled: true };
   if (permissions.subagentTask) availableTools.subagent_task = { enabled: true };
-  availableTools.subagent_context = { enabled: true };
+  if (permissions.subagentContext) availableTools.subagent_context = { enabled: true };
 
   const features: Record<string, EnabledFeature> = {};
   if (permissions.projectRun && permissions.allowShell) features.shell = { enabled: true };

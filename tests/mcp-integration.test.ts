@@ -562,6 +562,7 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     arguments: { checks: [{ type: "config", projectAlias: "mcp" }] }
   })).results[0];
   assert.equal(effectiveConfig.permissions.main_agent.projectRead, true);
+  assert.equal(effectiveConfig.permissions.main_agent.subagentContext, true);
   assert.deepEqual(effectiveConfig.pathPolicy.blockedPatterns, selectedPolicy.pathPolicy.blockedPatterns);
   assert.deepEqual(effectiveConfig.traversal.excludedPatterns, [".git", "node_modules", "dist", ".portus-mcp", ".flue", "coverage", ".next", ".cache"]);
 

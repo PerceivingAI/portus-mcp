@@ -38,6 +38,7 @@ const policySchema = z.object({
   main_agent: z.object({
     permissions: z.object({
       subagentTask: z.boolean(),
+      subagentContext: z.boolean(),
       projectContext: z.boolean(),
       projectRead: z.boolean(),
       projectSearch: z.boolean(),

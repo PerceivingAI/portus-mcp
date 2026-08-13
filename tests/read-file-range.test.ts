@@ -47,6 +47,7 @@ const basePolicy = {
   main_agent: {
     permissions: {
       subagentTask: false,
+      subagentContext: false,
       projectContext: true,
       projectRead: true,
       projectSearch: true,
