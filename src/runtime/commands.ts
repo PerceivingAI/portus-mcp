@@ -3,7 +3,7 @@ import { EventEmitter, once } from "node:events";
 import { StringDecoder } from "node:string_decoder";
 import { loadPolicyConfig, policyPermissions, type PortusPolicyConfig } from "../policy/policyConfig.js";
 import { limitText } from "./outputLimits.js";
-import { terminateProcessTree, type ProcessTreeTerminationResult } from "./processTermination.js";
+import { terminateProcessTree, type ProcessTreeTerminationResult, type ProcessLifecycle } from "./processTermination.js";
 
 const PROJECT_RUN_ESCALATION_DELAY_MS = 1200;
 const PROJECT_RUN_FORCED_CLOSE_GRACE_MS = 8000;
@@ -22,7 +22,7 @@ export type ProcessResult = {
   stdoutTruncated: boolean;
   stderrTruncated: boolean;
   truncated: boolean;
-  termination?: ProcessTreeTerminationResult;
+  lifecycle: ProcessLifecycle;
 };
 
 export type ProjectCommandResult = ProcessResult & {
@@ -41,7 +41,7 @@ type RawProcessResult = {
   stderrRaw: string;
   stdoutCaptureTruncated: boolean;
   stderrCaptureTruncated: boolean;
-  termination?: ProcessTreeTerminationResult;
+  lifecycle: ProcessLifecycle;
 };
 
 type CapturedProcessOptions = {
@@ -94,7 +94,7 @@ function limitProcessOutput(raw: RawProcessResult, policy: PortusPolicyConfig): 
     stdoutTruncated,
     stderrTruncated,
     truncated: stdoutTruncated || stderrTruncated,
-    ...(raw.termination ? { termination: raw.termination } : {})
+    lifecycle: raw.lifecycle
   };
 }
 
@@ -125,7 +125,15 @@ export async function runCapturedProcess(options: CapturedProcessOptions): Promi
       stdoutRaw: "",
       stderrRaw: "",
       stdoutCaptureTruncated: false,
-      stderrCaptureTruncated: false
+      stderrCaptureTruncated: false,
+      lifecycle: {
+        processStarted: false,
+        processExited: false,
+        killAttempted: false,
+        killSucceeded: false,
+        waitAttempted: false,
+        reaped: false
+      }
     }, policy);
   }
 
@@ -269,6 +277,25 @@ export async function runCapturedProcess(options: CapturedProcessOptions): Promi
   if (termination && !termination.confirmed && termination.error) {
     executionError = `${executionError ?? "Process execution failed"}; process-tree termination was not confirmed: ${termination.error}`;
   }
+  const killAttempted = terminalCause !== null;
+  const killSucceeded = termination ? termination.confirmed : false;
+  const processExited = terminalCause === null && childError === undefined && closeSignal === null && closeCode !== null;
+  const waitAttempted = true;
+  const reaped = closeObserved && (!killAttempted || killSucceeded);
+
+  const lifecycle: ProcessLifecycle = {
+    processStarted: true,
+    processExited,
+    killAttempted,
+    killSucceeded,
+    waitAttempted,
+    reaped,
+    ...(termination ? {
+      scope: termination.scope,
+      method: termination.method,
+      ...(termination.error ? { error: termination.error } : {})
+    } : {})
+  };
 
   return limitProcessOutput({
     outcome,
@@ -281,7 +308,7 @@ export async function runCapturedProcess(options: CapturedProcessOptions): Promi
     stderrRaw: stderrCapture.chunks.join(""),
     stdoutCaptureTruncated: stdoutCapture.captureTruncated,
     stderrCaptureTruncated: stderrCapture.captureTruncated,
-    ...(termination ? { termination } : {})
+    lifecycle
   }, policy);
 }
 

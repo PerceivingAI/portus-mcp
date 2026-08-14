@@ -13,6 +13,18 @@ export type ProcessTreeTerminationResult = {
   error?: string;
 };
 
+export type ProcessLifecycle = {
+  processStarted: boolean;
+  processExited: boolean;
+  killAttempted: boolean;
+  killSucceeded: boolean;
+  waitAttempted: boolean;
+  reaped: boolean;
+  scope?: "process_tree" | "direct_child";
+  method?: ProcessTerminationMethod;
+  error?: string;
+};
+
 export type ProcessTreeTerminationOptions = {
   escalationDelayMs: number;
   forcedCloseGraceMs: number;
@@ -112,7 +124,13 @@ async function performProcessTreeTermination(
 
   try {
     if (process.platform === "win32") {
-      if (!hasChildClosed(child)) await runTaskkill(pid);
+      if (!hasChildClosed(child)) {
+        try {
+          await runTaskkill(pid);
+        } catch (taskkillError) {
+          if (!hasChildExited(child)) throw taskkillError;
+        }
+      }
       const childCloseObserved = await waitForChildClose(child, options.forcedCloseGraceMs);
       if (!childCloseObserved) throw new Error(`Process ${pid} did not close after taskkill`);
       return {

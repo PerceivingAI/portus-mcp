@@ -770,7 +770,15 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
           ...(req.type === "command" ? { command: req.command, args: req.args ?? [] } : {}),
           status: "skipped",
           reason: "batch_timeout",
-          error: "Batch timeout deadline expired before process start"
+          error: "Batch timeout deadline expired before process start",
+          lifecycle: {
+            processStarted: false,
+            processExited: false,
+            killAttempted: false,
+            killSucceeded: false,
+            waitAttempted: false,
+            reaped: false
+          }
         });
         continue;
       }
@@ -813,7 +821,15 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
           ...(req.type === "script" ? { name: req.name, args: req.args ?? [] } : {}),
           ...(req.type === "command" ? { command: req.command, args: req.args ?? [] } : {}),
           status: "executed",
-          error: safeError(error)
+          error: safeError(error),
+          lifecycle: {
+            processStarted: false,
+            processExited: false,
+            killAttempted: false,
+            killSucceeded: false,
+            waitAttempted: false,
+            reaped: false
+          }
         };
       }
       if (typeof itemResult.effectiveTimeoutMs === "number") {
@@ -862,7 +878,15 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
             index: restIdx,
             type: restReq.type,
             status: "skipped",
-            reason: "stop_on_failure"
+            reason: "stop_on_failure",
+            lifecycle: {
+              processStarted: false,
+              processExited: false,
+              killAttempted: false,
+              killSucceeded: false,
+              waitAttempted: false,
+              reaped: false
+            }
           });
         }
         break;

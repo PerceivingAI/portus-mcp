@@ -316,9 +316,13 @@ test("Process outcome contract: Execution deadline preserves partial stdout and 
   assert.equal(result.elapsedMs < 10000, true);
   assert.equal(result.stdoutTruncated, false);
   assert.equal(result.stderrTruncated, false);
-  assert.equal(result.termination?.attempted, true);
-  assert.equal(result.termination?.confirmed, true);
-  assert.equal(result.termination?.childCloseObserved, true);
+  assert.equal(result.lifecycle.processStarted, true);
+  assert.equal(result.lifecycle.processExited, false);
+  assert.equal(result.lifecycle.killAttempted, true);
+  assert.equal(result.lifecycle.killSucceeded, true);
+  assert.equal(result.lifecycle.waitAttempted, true);
+  assert.equal(result.lifecycle.reaped, true);
+  assert.equal(result.lifecycle.scope, "process_tree");
 });
 
 test("optionalEnv returns fallback when environment variable is missing, empty, or whitespace", () => {
@@ -363,8 +367,12 @@ test("Process exceeding maxBuffer returns output_limit outcome", async () => {
   assert.equal(result.stdoutTruncated, true);
   assert.equal(result.stderrTruncated, false);
   assert.equal(result.truncated, true);
-  assert.equal(result.termination?.attempted, true);
-  assert.equal(result.termination?.childCloseObserved, true);
+  assert.equal(result.lifecycle.processStarted, true);
+  assert.equal(result.lifecycle.processExited, false);
+  assert.equal(result.lifecycle.killAttempted, true);
+  assert.equal(result.lifecycle.killSucceeded, true);
+  assert.equal(result.lifecycle.waitAttempted, true);
+  assert.equal(result.lifecycle.reaped, true);
 });
 
 test("toPublicAuditEvent preserves safe edit metadata and drops sensitive fields", () => {

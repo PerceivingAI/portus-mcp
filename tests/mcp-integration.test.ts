@@ -680,6 +680,12 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   })).results[0];
   assert.equal(check.outcome, "exited");
   assert.equal(check.exitCode, 0);
+  assert.equal(check.lifecycle.processStarted, true);
+  assert.equal(check.lifecycle.processExited, true);
+  assert.equal(check.lifecycle.killAttempted, false);
+  assert.equal(check.lifecycle.killSucceeded, false);
+  assert.equal(check.lifecycle.waitAttempted, true);
+  assert.equal(check.lifecycle.reaped, true);
   assert.match(check.stdout, /check-ok/);
 
   const scripts = resultOf(await client.callTool({
@@ -716,8 +722,13 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.equal(timeoutResult.elapsedMs >= 4500, true);
   assert.equal(timeoutResult.stdoutTruncated, false);
   assert.equal(timeoutResult.stderrTruncated, false);
-  assert.equal(timeoutResult.termination.confirmed, true);
-  assert.equal(timeoutResult.termination.childCloseObserved, true);
+  assert.equal(timeoutResult.lifecycle.processStarted, true);
+  assert.equal(timeoutResult.lifecycle.processExited, false);
+  assert.equal(timeoutResult.lifecycle.killAttempted, true);
+  assert.equal(timeoutResult.lifecycle.killSucceeded, true);
+  assert.equal(timeoutResult.lifecycle.waitAttempted, true);
+  assert.equal(timeoutResult.lifecycle.reaped, true);
+  assert.equal(timeoutResult.lifecycle.scope, "process_tree");
   assert.equal(timeoutBatch.requestedCount, timeoutBatch.successCount + timeoutBatch.failedCount + timeoutBatch.errorCount + timeoutBatch.skippedCount);
 
   const batchDeadline = resultOf(await client.callTool({
@@ -743,7 +754,11 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     }
   })).results[0];
   assert.equal(timeoutTree.outcome, "timed_out");
-  assert.equal(timeoutTree.termination.confirmed, true);
+  assert.equal(timeoutTree.lifecycle.processStarted, true);
+  assert.equal(timeoutTree.lifecycle.processExited, false);
+  assert.equal(timeoutTree.lifecycle.killAttempted, true);
+  assert.equal(timeoutTree.lifecycle.killSucceeded, true);
+  assert.equal(timeoutTree.lifecycle.reaped, true);
   const descendantMatch = timeoutTree.stdout.match(/descendant-pid=(\d+)/);
   assert.notEqual(descendantMatch, null, timeoutTree.stdout);
   assert.equal(isProcessAlive(Number(descendantMatch?.[1])), false);
@@ -838,6 +853,12 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.equal(stopOnFailureTrue.results[0].status, "executed");
   assert.equal(stopOnFailureTrue.results[1].status, "skipped");
   assert.equal(stopOnFailureTrue.results[1].index, 1);
+  assert.equal(stopOnFailureTrue.results[1].lifecycle.processStarted, false);
+  assert.equal(stopOnFailureTrue.results[1].lifecycle.processExited, false);
+  assert.equal(stopOnFailureTrue.results[1].lifecycle.killAttempted, false);
+  assert.equal(stopOnFailureTrue.results[1].lifecycle.killSucceeded, false);
+  assert.equal(stopOnFailureTrue.results[1].lifecycle.waitAttempted, false);
+  assert.equal(stopOnFailureTrue.results[1].lifecycle.reaped, false);
 
   const stopOnFailureFalse = resultOf(await client.callTool({
     name: "project_run",
