@@ -325,3 +325,203 @@ test("prepare rejects blocked, escaping, ignored existing, and over-cap paths wi
     assert.equal(error.includes(projectRoot), false, `${label} error leaked project root: ${error}`);
   }
 });
+
+test("project_patch supports structured hunks in prepare and apply modes", async (t) => {
+  const client = await withClient(t);
+
+  // 1. Prepare with structured patch
+  const prepareRes = resultOf(await client.callTool({
+    name: "project_patch",
+    arguments: {
+      projectAlias: "patch",
+      mode: "prepare",
+      patch: {
+        files: [
+          {
+            relativePath: "existing.txt",
+            hunks: [{ old: "updated", new: "structured-updated" }]
+          }
+        ]
+      }
+    }
+  }), preparedSchema);
+
+  assert.equal(prepareRes.readyForApply, true);
+  assert.deepEqual(prepareRes.changedFiles, ["existing.txt"]);
+  assert.equal(prepareRes.expectedFiles.length, 1);
+  assert.equal(prepareRes.expectedFiles[0]?.relativePath, "existing.txt");
+  // 2. Apply dry run with direct unmapped prepareRes.expectedFiles (seamless piping)
+  const dryRunRes = resultOf(await client.callTool({
+    name: "project_patch",
+    arguments: {
+      projectAlias: "patch",
+      mode: "apply",
+      dryRun: true,
+      patch: {
+        files: [
+          {
+            relativePath: "existing.txt",
+            hunks: [{ old: "updated", new: "structured-updated" }]
+          }
+        ]
+      },
+      expectedFiles: prepareRes.expectedFiles
+    }
+  }), appliedSchema);
+
+  assert.equal(dryRunRes.applied, false);
+  assert.equal(dryRunRes.dryRun, true);
+
+  // 3. Apply real modification
+  const applyRes = resultOf(await client.callTool({
+    name: "project_patch",
+    arguments: {
+      projectAlias: "patch",
+      mode: "apply",
+      dryRun: false,
+      patch: {
+        files: [
+          {
+            relativePath: "existing.txt",
+            hunks: [{ old: "updated", new: "structured-updated" }]
+          }
+        ]
+      },
+      expectedFiles: prepareRes.expectedFiles
+    }
+  }), appliedSchema);
+
+  assert.equal(applyRes.applied, true);
+  assert.equal(applyRes.dryRun, false);
+  assert.deepEqual(applyRes.changedFiles, ["existing.txt"]);
+
+  // 4. Multi-file structured changeset with creation and deletion
+  const multiPrep = resultOf(await client.callTool({
+    name: "project_patch",
+    arguments: {
+      projectAlias: "patch",
+      mode: "prepare",
+      patch: {
+        files: [
+          {
+            relativePath: "created-structured.txt",
+            newFile: true,
+            content: "hello structured creation\n"
+          },
+          {
+            relativePath: "structured-updated.txt",
+            newFile: true,
+            content: "another new file\n"
+          }
+        ]
+      }
+    }
+  }), preparedSchema);
+
+  assert.equal(multiPrep.readyForApply, true);
+  assert.deepEqual(multiPrep.changedFiles, ["created-structured.txt", "structured-updated.txt"]);
+  const multiApply = resultOf(await client.callTool({
+    name: "project_patch",
+    arguments: {
+      projectAlias: "patch",
+      mode: "apply",
+      patch: {
+        files: [
+          {
+            relativePath: "created-structured.txt",
+            newFile: true,
+            content: "hello structured creation\n"
+          },
+          {
+            relativePath: "structured-updated.txt",
+            newFile: true,
+            content: "another new file\n"
+          }
+        ]
+      },
+      expectedFiles: multiPrep.expectedFiles
+    }
+  }), appliedSchema);
+
+  assert.equal(multiApply.applied, true);
+  assert.deepEqual(multiApply.changedFiles, ["created-structured.txt", "structured-updated.txt"]);
+  assert.deepEqual(multiApply.deletedFiles, []);
+
+  // 5. One-shot direct apply with files[].expectedSha256 and no top-level expectedFiles
+  const directSha = prepareRes.expectedFiles[0]?.sha256;
+  // Note: existing.txt was modified to "structured-updated\n", so compute current hash or read
+  const currentExistingMeta = resultOf(await client.callTool({
+    name: "project_patch",
+    arguments: {
+      projectAlias: "patch",
+      mode: "prepare",
+      patch: {
+        files: [{ relativePath: "existing.txt", hunks: [{ old: "structured-updated", new: "one-shot-updated" }] }]
+      }
+    }
+  }), preparedSchema);
+
+  const oneShotApply = resultOf(await client.callTool({
+    name: "project_patch",
+    arguments: {
+      projectAlias: "patch",
+      mode: "apply",
+      patch: {
+        files: [
+          {
+            relativePath: "existing.txt",
+            expectedSha256: currentExistingMeta.expectedFiles[0]?.sha256,
+            hunks: [{ old: "structured-updated", new: "one-shot-updated" }]
+          }
+        ]
+      }
+    }
+  }), appliedSchema);
+
+  assert.equal(oneShotApply.applied, true);
+  assert.deepEqual(oneShotApply.changedFiles, ["existing.txt"]);
+
+  // 6. One-shot direct apply with stale expectedSha256 is rejected
+  const staleOneShot = await client.callTool({
+    name: "project_patch",
+    arguments: {
+      projectAlias: "patch",
+      mode: "apply",
+      patch: {
+        files: [
+          {
+            relativePath: "existing.txt",
+            expectedSha256: "0000000000000000000000000000000000000000000000000000000000000000",
+            hunks: [{ old: "one-shot-updated", new: "should-fail" }]
+          }
+        ]
+      }
+    }
+  });
+  assert.equal(staleOneShot.isError, true);
+  assert.match(JSON.stringify(staleOneShot.structuredContent), /stale_file:existing\.txt/);
+
+});
+
+test("project_patch rejects missing and ambiguous structured hunks", async (t) => {
+  const client = await withClient(t);
+
+  // Missing hunk
+  const missingHunk = await client.callTool({
+    name: "project_patch",
+    arguments: {
+      projectAlias: "patch",
+      mode: "prepare",
+      patch: {
+        files: [
+          {
+            relativePath: "existing.txt",
+            hunks: [{ old: "non-existent-content", new: "replacement" }]
+          }
+        ]
+      }
+    }
+  });
+  assert.equal(missingHunk.isError, true);
+  assert.match(JSON.stringify(missingHunk.structuredContent), /Hunk not found in existing.txt/);
+});

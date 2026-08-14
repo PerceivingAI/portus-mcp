@@ -18,6 +18,7 @@ import { runProjectCheck, runProjectScript } from "../runtime/checks.js";
 import { runProjectCommand } from "../runtime/commands.js";
 import { registerStrictProjectTool, safeError, safeRelativePath } from "./projectToolUtils.js";
 import { editBatchModeSchema, editOperationSchema, executeProjectEditBatch } from "./projectEdit.js";
+import { patchInputSchema, synthesizeUnifiedDiff } from "./patchSynthesizer.js";
 import type { SkillRegistrySnapshot } from "../skills/SkillRegistry.js";
 import {
   assertCanReadProjectPath,
@@ -399,7 +400,17 @@ async function textSearch(
   };
 }
 
-const expectedFileSchema = z.object({ relativePath: z.string().min(1), sha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(), sizeBytes: z.number().int().nonnegative().optional(), modifiedAt: z.string().optional() }).strict();
+const expectedFileSchema = z.object({
+  relativePath: z.string().min(1),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
+  sizeBytes: z.number().int().nonnegative().optional(),
+  bytes: z.number().int().nonnegative().optional(),
+  modifiedAt: z.string().optional(),
+  exists: z.boolean().optional(),
+  isFile: z.boolean().optional(),
+  isDirectory: z.boolean().optional(),
+  isTextLikely: z.boolean().optional()
+}).strict();
 
 export function registerProjectReadTool(server: McpServer, registry: SkillRegistrySnapshot, policy: PortusPolicyConfig = loadPolicyConfig()): void {
   registerStrictProjectTool(server, "project_read", "Read content or metadata from registered project paths and configured read-only skill paths. Text content results include the complete raw-file SHA-256, including for bounded or truncated reads. Use a project alias or a skill rootAlias returned by project_context; skill entrypoints and supporting files use their catalog-provided relative paths. Supports 1–50 batched content, binary, metadata, or existence requests with ordered per-item results.", {
@@ -615,20 +626,41 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     };
   });
 
-  registerStrictProjectTool(server, "project_patch", "Prepare patch metadata or safely apply a unified diff inside a registered project.", {
-    projectAlias: z.string().min(1), mode: z.enum(["prepare", "apply"]), patch: z.string().min(1), includeHash: z.boolean().optional(), expectedFiles: z.array(expectedFileSchema).optional(), dryRun: z.boolean().optional(), confirm: z.boolean().optional()
+  registerStrictProjectTool(server, "project_patch", "Prepare patch metadata or safely apply a unified diff or structured patch inside a registered project.", {
+    projectAlias: z.string().min(1), mode: z.enum(["prepare", "apply"]), patch: patchInputSchema, includeHash: z.boolean().optional(), expectedFiles: z.array(expectedFileSchema).optional(), dryRun: z.boolean().optional(), confirm: z.boolean().optional()
   }, mutateAnnotations, async ({ projectAlias, mode, patch, includeHash, expectedFiles, dryRun, confirm }) => {
     assertMainAgentPermission("projectPatch", policy);
-    assertInputChars("limits.patch.maxChars", patch, policy.limits.patch.maxChars);
-    const parsed = parsePatchPaths(patch);
     getProject(projectAlias);
+    let unifiedDiff: string;
+    let parsed: { files: string[]; deleted: Set<string> };
+    if (typeof patch === "string") {
+      assertInputChars("limits.patch.maxChars", patch, policy.limits.patch.maxChars);
+      parsed = parsePatchPaths(patch);
+      unifiedDiff = patch;
+    } else {
+      const synthesized = synthesizeUnifiedDiff(projectAlias, patch);
+      unifiedDiff = synthesized.unifiedDiff;
+      assertInputChars("limits.patch.maxChars", unifiedDiff, policy.limits.patch.maxChars);
+      parsed = { files: synthesized.files, deleted: synthesized.deleted };
+    }
     if (mode === "prepare") {
       if (expectedFiles !== undefined || dryRun !== undefined || confirm !== undefined) throw new Error("Apply-only fields are not valid in prepare mode");
       return { projectAlias, mode, changedFiles: parsed.files, deletedFiles: [...parsed.deleted], expectedFiles: parsed.files.map((relativePath) => pathMetadata(projectAlias, relativePath, includeHash ?? true)), readyForApply: true };
     }
     if (includeHash !== undefined) throw new Error("includeHash is only valid in prepare mode");
-    const metadata = expectedFiles ?? [];
+    const metadata = [...(expectedFiles ?? [])];
     const byPath = new Map(metadata.map((item) => [item.relativePath, item]));
+    if (typeof patch !== "string") {
+      const fileList = Array.isArray(patch) ? patch : patch.files;
+      for (const f of fileList) {
+        const normPath = path.posix.normalize(f.relativePath.replace(/\\/g, "/"));
+        if (!byPath.has(normPath) && f.expectedSha256) {
+          const hydrated = { relativePath: normPath, sha256: f.expectedSha256 };
+          metadata.push(hydrated);
+          byPath.set(normPath, hydrated);
+        }
+      }
+    }
     for (const file of parsed.files) {
       const target = resolveProjectPath(projectAlias, file);
       if (existsSync(target)) {
@@ -644,12 +676,13 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
       if (!existsSync(target)) continue;
       assertCanReadProjectPath(projectAlias, target, expected.relativePath);
       const info = statSync(target);
-      if (expected.sizeBytes !== undefined && expected.sizeBytes !== info.size) throw new Error(`stale_file:${expected.relativePath}`);
+      const expectedSize = expected.sizeBytes ?? expected.bytes;
+      if (expectedSize !== undefined && expectedSize !== info.size) throw new Error(`stale_file:${expected.relativePath}`);
       if (expected.modifiedAt && expected.modifiedAt !== info.mtime.toISOString()) throw new Error(`stale_file:${expected.relativePath}`);
       ensureExpectedHash(projectAlias, expected.sha256, expected.relativePath);
     }
     const patchPath = path.join(os.tmpdir(), `portus-mcp-${Date.now()}-${Math.random().toString(36).slice(2)}.patch`);
-    writeFileSync(patchPath, patch, "utf8");
+    writeFileSync(patchPath, unifiedDiff, "utf8");
     try {
       for (const file of parsed.files) resolveProjectPath(projectAlias, file);
       const projectRoot = resolveProjectPath(projectAlias, ".");
