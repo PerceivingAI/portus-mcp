@@ -137,13 +137,42 @@ process.env.AGENT_SKILL_PATHS = "";
 process.env.SUBAGENTS_SKILL_PATHS = "";
 
 // Environment-backed state paths must be installed before loading stateful server modules.
-const { listProjects, upsertProject } = await import("../src/state/ProjectRegistry.js");
+const { listProjects, upsertProject, listPreRegisteredProjects } = await import("../src/state/ProjectRegistry.js");
 const { createHttpServer } = await import("../src/server.js");
 
 test("pre-registered projects env is loaded into project registry list", () => {
   const projects = listProjects();
   assert.equal(projects.some((item) => item.projectAlias === "pre"), true);
   assert.equal(projects.some((item) => item.projectAlias === "second"), true);
+});
+
+test("listPreRegisteredProjects parses multiline and pipe-delimited configurations", () => {
+  const saved = process.env.PORTUS_MCP_PROJECTS;
+  try {
+    // Multiline with indentation and comments
+    process.env.PORTUS_MCP_PROJECTS = `
+      # Primary development projects
+      dev_app = ${projectRoot}
+      docs_repo = ${secondProjectRoot}
+
+      # Third project
+      third_app = ${projectRoot}
+    `;
+    const multiline = listPreRegisteredProjects();
+    assert.equal(multiline.length, 3);
+    assert.equal(multiline[0]?.projectAlias, "dev_app");
+    assert.equal(multiline[1]?.projectAlias, "docs_repo");
+    assert.equal(multiline[2]?.projectAlias, "third_app");
+
+    // Pipe delimited
+    process.env.PORTUS_MCP_PROJECTS = `p1=${projectRoot} | p2=${secondProjectRoot}`;
+    const piped = listPreRegisteredProjects();
+    assert.equal(piped.length, 2);
+    assert.equal(piped[0]?.projectAlias, "p1");
+    assert.equal(piped[1]?.projectAlias, "p2");
+  } finally {
+    process.env.PORTUS_MCP_PROJECTS = saved;
+  }
 });
 
 test("project_context safely discovers persisted and environment aliases before scoped use", async (t) => {

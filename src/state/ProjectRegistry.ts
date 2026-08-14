@@ -81,11 +81,15 @@ export function listPreRegisteredProjects(): ProjectRecord[] {
   const raw = optionalEnv("PORTUS_MCP_PROJECTS", "").trim();
   if (!raw) return [];
   const now = new Date().toISOString();
-  return raw.split(";").map((entry) => {
-    const trimmed = entry.trim();
+  const entries = raw
+    .split(/[\r\n;|]+/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0 && !entry.startsWith("#"));
+
+  return entries.map((trimmed) => {
     const separator = trimmed.indexOf("=");
     if (separator <= 0 || separator === trimmed.length - 1) {
-      throw new Error("Invalid PORTUS_MCP_PROJECTS entry. Use alias=/absolute/path;other=/absolute/path.");
+      throw new Error("Invalid PORTUS_MCP_PROJECTS entry. Use alias=/absolute/path.");
     }
     const projectAlias = trimmed.slice(0, separator).trim();
     assertProjectAlias(projectAlias);

@@ -39,16 +39,33 @@ CI uses Node.js 20 with npm 10. Use npm 10 semantics when updating dependencies 
 
 Copy `.env.example` to `.env`. At minimum, register a project:
 
-```text
+On Windows:
+```env
 PORTUS_MCP_PROJECTS=app=C:/path/to/project
 ```
 
-Separate several projects with semicolons:
-
-```text
-PORTUS_MCP_PROJECTS=app=C:/path/to/app;api=C:/path/to/api
+On Linux:
+```env
+PORTUS_MCP_PROJECTS=app=/home/user/projects/app
 ```
 
+List multiple projects on separate lines inside quotes (or separate with newlines/pipes/semicolons):
+
+On Windows:
+```env
+PORTUS_MCP_PROJECTS="
+  app=C:\path\to\app
+  api=C:\path\to\api
+"
+```
+
+On Linux:
+```env
+PORTUS_MCP_PROJECTS="
+  app=/home/user/projects/app
+  api=/home/user/projects/api
+"
+```
 ### Allow device commands
 
 Portus ships with `portus-mcp.policy.json` as its default complete operator policy. If `PORTUS_MCP_POLICY_PATH` is unset, that shipped file is selected. To maintain a private policy, copy the complete shipped file to the Git-ignored `portus-mcp.policy.local.json`, edit it, and select it in `.env`:

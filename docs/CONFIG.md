@@ -68,10 +68,22 @@ PORTUS_TUNNEL_PROFILE=portus-local
 
 The host defaults to `127.0.0.1`, the port defaults to `8789`, the MCP route defaults to `/mcp`, and an empty bearer token disables static bearer authentication. `PORTUS_TUNNEL_CLIENT_PATH` and `PORTUS_TUNNEL_PROFILE` tune single-command launcher orchestration (`npm run start:tunnel`).
 
-Pre-register projects with semicolon-separated `alias=absolute/path` entries:
+Pre-register projects with `alias=absolute/path` entries, written on separate lines inside quotes or separated by newlines, pipes, or semicolons:
 
-```text
-PORTUS_MCP_PROJECTS=app=C:/path/to/app;api=C:/path/to/api
+On Windows:
+```env
+PORTUS_MCP_PROJECTS="
+  app=C:\path\to\app
+  api=C:\path\to\api
+"
+```
+
+On Linux:
+```env
+PORTUS_MCP_PROJECTS="
+  app=/home/user/projects/app
+  api=/home/user/projects/api
+"
 ```
 
 Malformed entries and reserved `skill/` aliases fail with actionable errors. (`src/state/ProjectRegistry.ts:35-40`, `src/state/ProjectRegistry.ts:80-103`)
