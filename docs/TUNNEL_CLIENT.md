@@ -253,22 +253,22 @@ At minimum, set your project list:
 PORTUS_MCP_PROJECTS=app=C:/path/to/project
 ```
 
-For several projects, list them on separate lines inside quotes (or separate with newlines/pipes/semicolons):
+For several projects, list them on separate lines inside single quotes (or separate with newlines/pipes/semicolons):
 
 On Windows:
 ```env
-PORTUS_MCP_PROJECTS="
+PORTUS_MCP_PROJECTS='
   app=C:\path\to\app
   api=C:\path\to\api
-"
+'
 ```
 
 On Linux:
 ```env
-PORTUS_MCP_PROJECTS="
+PORTUS_MCP_PROJECTS='
   app=/home/user/projects/app
   api=/home/user/projects/api
-"
+'
 ```
 `PORTUS_MCP_BEARER_TOKEN` is optional Portus MCP configuration for direct clients that support bearer auth. It is not used as the `tunnel-client` API key.
 

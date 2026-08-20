@@ -49,22 +49,22 @@ On Linux:
 PORTUS_MCP_PROJECTS=app=/home/user/projects/app
 ```
 
-List multiple projects on separate lines inside quotes (or separate with newlines/pipes/semicolons):
+List multiple projects on separate lines inside single quotes (or separate with newlines/pipes/semicolons):
 
 On Windows:
 ```env
-PORTUS_MCP_PROJECTS="
+PORTUS_MCP_PROJECTS='
   app=C:\path\to\app
   api=C:\path\to\api
-"
+'
 ```
 
 On Linux:
 ```env
-PORTUS_MCP_PROJECTS="
+PORTUS_MCP_PROJECTS='
   app=/home/user/projects/app
   api=/home/user/projects/api
-"
+'
 ```
 ### Allow device commands
 
