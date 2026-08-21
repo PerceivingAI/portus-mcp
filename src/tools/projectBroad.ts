@@ -16,6 +16,12 @@ import { loadPolicyConfig, policyPermissions, type PortusPolicyConfig } from "..
 import { countChars, limitText } from "../runtime/outputLimits.js";
 import { runProjectCheck, runProjectScript } from "../runtime/checks.js";
 import { runProjectCommand } from "../runtime/commands.js";
+import {
+  startExecutionSession,
+  pollExecutionSession,
+  terminateExecutionSession,
+  listExecutionSessions
+} from "../runtime/executionSessions.js";
 import { registerStrictProjectTool, safeError, safeRelativePath } from "./projectToolUtils.js";
 import { editBatchModeSchema, editOperationSchema, executeProjectEditBatch } from "./projectEdit.js";
 import { patchInputSchema, synthesizeUnifiedDiff } from "./patchSynthesizer.js";
@@ -741,18 +747,111 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     }
     return [0];
   }
-  registerStrictProjectTool(server, "project_run", "Run an approved check, package script, or allowlisted command with bounded timeout and output.", {
+  const sessionActionSchema = z.discriminatedUnion("type", [
+    z.object({
+      type: z.literal("start"),
+      command: z.string().min(1),
+      args: z.array(z.string()).optional(),
+      timeoutSecs: z.number().int().positive().max(3600).optional(),
+      shell: z.boolean().optional(),
+      confirm: z.boolean().optional()
+    }).strict(),
+    z.object({
+      type: z.literal("poll"),
+      sessionId: z.string().min(1),
+      cursor: z.number().int().nonnegative().optional(),
+      maxChars: z.number().int().positive().max(65536).optional(),
+      stream: z.enum(["stdout", "stderr", "both"]).optional()
+    }).strict(),
+    z.object({
+      type: z.literal("terminate"),
+      sessionId: z.string().min(1)
+    }).strict(),
+    z.object({
+      type: z.literal("list")
+    }).strict()
+  ]);
+
+  registerStrictProjectTool(server, "project_run", "Run an approved check, package script, or allowlisted command with bounded timeout and output, or manage observable execution sessions.", {
     projectAlias: z.string().min(1),
     batchTimeoutSecs: z.number().int().positive().max(3600).optional(),
     stopOnFailure: z.boolean().default(false),
-    requests: z.array(runRequestSchema).min(1).max(10)
-  }, mutateAnnotations, async ({ projectAlias, batchTimeoutSecs, stopOnFailure, requests }) => {
+    requests: z.array(runRequestSchema).min(1).max(10).optional(),
+    sessionAction: sessionActionSchema.optional()
+  }, mutateAnnotations, async ({ projectAlias, batchTimeoutSecs, stopOnFailure, requests, sessionAction }) => {
     assertMainAgentPermission("projectRun", policy);
+
+    if (!requests && !sessionAction) {
+      throw new Error("project_run requires either 'requests' array or 'sessionAction' object");
+    }
+    if (requests && sessionAction) {
+      throw new Error("project_run cannot accept both 'requests' and 'sessionAction' in the same call");
+    }
 
     const permissions = policyPermissions(policy).main_agent;
     const projectRoot = resolveProjectPath(projectAlias, ".");
 
-    for (const req of requests) {
+    if (sessionAction) {
+      stateStore.requireAuditWritable();
+      if (sessionAction.type === "start") {
+        assertMainAgentCommandAllowed(sessionAction.command, policy);
+        assertProjectCommandStaysInProject(sessionAction.command, sessionAction.args ?? []);
+        const reqShell = sessionAction.shell ?? false;
+        if (reqShell && !permissions.allowShell) {
+          throw new Error(`Shell execution is disabled for project alias '${projectAlias}'`);
+        }
+        if (!reqShell && (sessionAction.command.endsWith(".cmd") || sessionAction.command.endsWith(".bat"))) {
+          throw new Error("Direct execution of Windows batch scripts is not allowed without shell=true");
+        }
+        const requiresConfirmation = permissions.requireConfirmation && commandRequiresConfirmation(sessionAction.command, sessionAction.args ?? []);
+        if (requiresConfirmation && !sessionAction.confirm) {
+          throw new Error("Confirmation required: set confirm=true");
+        }
+        const session = await startExecutionSession({
+          projectAlias,
+          rootPath: projectRoot,
+          command: sessionAction.command,
+          args: sessionAction.args,
+          timeoutSecs: sessionAction.timeoutSecs,
+          shell: reqShell,
+          policy
+        });
+        return {
+          projectAlias,
+          sessionAction: "start",
+          session
+        };
+      } else if (sessionAction.type === "poll") {
+        const pollResult = pollExecutionSession({
+          sessionId: sessionAction.sessionId,
+          cursor: sessionAction.cursor,
+          maxChars: sessionAction.maxChars,
+          stream: sessionAction.stream
+        });
+        return {
+          projectAlias,
+          sessionAction: "poll",
+          ...pollResult
+        };
+      } else if (sessionAction.type === "terminate") {
+        const session = await terminateExecutionSession(sessionAction.sessionId);
+        return {
+          projectAlias,
+          sessionAction: "terminate",
+          session
+        };
+      } else {
+        const sessions = listExecutionSessions(projectAlias);
+        return {
+          projectAlias,
+          sessionAction: "list",
+          sessions
+        };
+      }
+    }
+
+    const batchRequests = requests!;
+    for (const req of batchRequests) {
       if (req.type === "check") {
         assertCanReadProjectPath(projectAlias, resolveProjectPath(projectAlias, "package.json"), "package.json");
       } else if (req.type === "script") {
@@ -787,7 +886,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
 
     const results: Array<Record<string, unknown>> = [];
 
-    for (const [index, req] of requests.entries()) {
+    for (const [index, req] of batchRequests.entries()) {
       const now = Date.now();
       const remainingMs = deadlineAt - now;
 
@@ -810,7 +909,10 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
             killAttempted: false,
             killSucceeded: false,
             waitAttempted: false,
-            reaped: false
+            reaped: false,
+            processTreeKillAttempted: false,
+            processTreeKillSucceeded: false,
+            descendantsRemaining: 0
           }
         });
         continue;
@@ -861,7 +963,10 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
             killAttempted: false,
             killSucceeded: false,
             waitAttempted: false,
-            reaped: false
+            reaped: false,
+            processTreeKillAttempted: false,
+            processTreeKillSucceeded: false,
+            descendantsRemaining: 0
           }
         };
       }

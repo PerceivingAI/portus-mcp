@@ -74,6 +74,7 @@ export type PublicAuditEvent = {
   operation?: string;
   projectAlias?: string | null;
   sessionId?: string;
+  sessionAction?: string;
   status?: string;
   relativePath?: string;
   sourceRelativePath?: string;
@@ -132,6 +133,7 @@ export function toPublicAuditEvent(event: Record<string, unknown>): PublicAuditE
   if (typeof event.operation === "string") output.operation = event.operation;
   if (typeof event.projectAlias === "string" || event.projectAlias === null) output.projectAlias = event.projectAlias;
   if (typeof event.sessionId === "string") output.sessionId = event.sessionId;
+  if (typeof event.sessionAction === "string") output.sessionAction = event.sessionAction;
   if (typeof event.status === "string") output.status = event.status;
   if (typeof event.relativePath === "string") output.relativePath = event.relativePath;
   if (typeof event.sourceRelativePath === "string") output.sourceRelativePath = event.sourceRelativePath;

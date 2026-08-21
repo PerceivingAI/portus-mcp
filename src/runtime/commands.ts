@@ -132,7 +132,10 @@ export async function runCapturedProcess(options: CapturedProcessOptions): Promi
         killAttempted: false,
         killSucceeded: false,
         waitAttempted: false,
-        reaped: false
+        reaped: false,
+        processTreeKillAttempted: false,
+        processTreeKillSucceeded: false,
+        descendantsRemaining: 0
       }
     }, policy);
   }
@@ -290,6 +293,11 @@ export async function runCapturedProcess(options: CapturedProcessOptions): Promi
     killSucceeded,
     waitAttempted,
     reaped,
+    ...(killAttempted ? {
+      processTreeKillAttempted: true,
+      processTreeKillSucceeded: killSucceeded,
+      descendantsRemaining: termination?.descendantsRemaining ?? (killSucceeded ? 0 : 1)
+    } : {}),
     ...(termination ? {
       scope: termination.scope,
       method: termination.method,

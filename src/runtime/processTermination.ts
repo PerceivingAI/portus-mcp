@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 
-export type ProcessTerminationMethod = "process_group" | "taskkill_tree";
+export type ProcessTerminationMethod = "process_group" | "taskkill_tree" | "win32_job_object" | "descendant_fallback";
 
 export type ProcessTreeTerminationResult = {
   attempted: true;
@@ -10,6 +10,7 @@ export type ProcessTreeTerminationResult = {
   method: ProcessTerminationMethod;
   confirmed: boolean;
   childCloseObserved: boolean;
+  descendantsRemaining?: number;
   error?: string;
 };
 
@@ -20,6 +21,9 @@ export type ProcessLifecycle = {
   killSucceeded: boolean;
   waitAttempted: boolean;
   reaped: boolean;
+  processTreeKillAttempted?: boolean;
+  processTreeKillSucceeded?: boolean;
+  descendantsRemaining?: number;
   scope?: "process_tree" | "direct_child";
   method?: ProcessTerminationMethod;
   error?: string;
@@ -87,6 +91,129 @@ async function waitForProcessGroupExit(pid: number, timeoutMs: number): Promise<
   return hasProcessGroupExited(pid);
 }
 
+export function isProcessAlive(pid: number): boolean {
+  if (pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "EPERM";
+  }
+}
+
+const WIN_PROCESS_TREE_CSHARP = `
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+public static class PortusWinProcessTree {
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    private static extern IntPtr CreateToolhelp32Snapshot(uint dwFlags, uint th32ProcessID);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    private static extern bool Process32First(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    private static extern bool Process32Next(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    private struct PROCESSENTRY32 {
+        public uint dwSize;
+        public uint cntUsage;
+        public uint th32ProcessID;
+        public IntPtr th32DefaultHeapID;
+        public uint th32ModuleID;
+        public uint cntThreads;
+        public uint th32ParentProcessID;
+        public int pcPriClassBase;
+        public uint dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string szExeFile;
+    }
+
+    public static string GetDescendants(uint rootPid) {
+        IntPtr snap = CreateToolhelp32Snapshot(2, 0);
+        if (snap == IntPtr.Zero || snap == (IntPtr)(-1)) return "[]";
+        var parentMap = new Dictionary<uint, List<uint>>();
+        PROCESSENTRY32 pe = new PROCESSENTRY32();
+        pe.dwSize = (uint)Marshal.SizeOf(typeof(PROCESSENTRY32));
+        if (Process32First(snap, ref pe)) {
+            do {
+                uint pid = pe.th32ProcessID;
+                uint ppid = pe.th32ParentProcessID;
+                if (!parentMap.ContainsKey(ppid)) {
+                    parentMap[ppid] = new List<uint>();
+                }
+                parentMap[ppid].Add(pid);
+            } while (Process32Next(snap, ref pe));
+        }
+        CloseHandle(snap);
+        var descendants = new List<uint>();
+        if (rootPid > 0) {
+            var queue = new Queue<uint>();
+            queue.Enqueue(rootPid);
+            while (queue.Count > 0) {
+                uint current = queue.Dequeue();
+                if (parentMap.ContainsKey(current)) {
+                    foreach (uint child in parentMap[current]) {
+                        descendants.Add(child);
+                        queue.Enqueue(child);
+                    }
+                }
+            }
+        }
+        return "[" + string.Join(",", descendants) + "]";
+    }
+}
+`;
+
+export async function getWindowsDescendants(rootPid: number): Promise<number[]> {
+  if (process.platform !== "win32" || rootPid <= 0) return [];
+  try {
+    const psCmd = `Add-Type -TypeDefinition @'\n${WIN_PROCESS_TREE_CSHARP}\n'@ -Language CSharp\n[PortusWinProcessTree]::GetDescendants(${rootPid})`;
+    const ps = spawn("powershell.exe", ["-NoProfile", "-Command", psCmd], {
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true
+    });
+    const chunks: Buffer[] = [];
+    ps.stdout?.on("data", (chunk: Buffer) => chunks.push(chunk));
+    const [code] = (await once(ps, "close", { signal: AbortSignal.timeout(3000) })) as [number | null, NodeJS.Signals | null];
+    if (code === 0) {
+      const text = Buffer.concat(chunks).toString("utf8").trim();
+      if (text.startsWith("[") && text.endsWith("]")) {
+        return JSON.parse(text) as number[];
+      }
+    }
+  } catch {
+    // Fallback if PowerShell snapshot is unavailable
+  }
+  return [];
+}
+
+export async function forceKillPid(pid: number): Promise<void> {
+  if (!isProcessAlive(pid)) return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // ignore
+  }
+  if (process.platform === "win32" && isProcessAlive(pid)) {
+    try {
+      const killer = spawn("taskkill", ["/PID", String(pid), "/F"], {
+        stdio: "ignore",
+        windowsHide: true
+      });
+      await once(killer, "close");
+    } catch {
+      // ignore
+    }
+  }
+}
+
 async function runTaskkill(pid: number): Promise<void> {
   const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
     stdio: "ignore",
@@ -104,6 +231,7 @@ function forceTrackedChild(child: ChildProcess): void {
     if (code !== "ESRCH" && code !== "ERR_INVALID_HANDLE") throw error;
   }
 }
+
 
 async function performProcessTreeTermination(
   child: ChildProcess,
@@ -124,21 +252,46 @@ async function performProcessTreeTermination(
 
   try {
     if (process.platform === "win32") {
+      let taskkillError: Error | undefined;
+      let taskkillSucceeded = false;
       if (!hasChildClosed(child)) {
         try {
           await runTaskkill(pid);
-        } catch (taskkillError) {
+          taskkillSucceeded = true;
+        } catch (err) {
+          taskkillError = err instanceof Error ? err : new Error(String(err));
           if (!hasChildExited(child)) throw taskkillError;
         }
       }
+
+      let descendantPids: number[] = [];
+      if (!taskkillSucceeded) {
+        descendantPids = await getWindowsDescendants(pid);
+        for (const dPid of descendantPids) {
+          if (isProcessAlive(dPid)) {
+            await forceKillPid(dPid);
+          }
+        }
+      }
+
       const childCloseObserved = await waitForChildClose(child, options.forcedCloseGraceMs);
-      if (!childCloseObserved) throw new Error(`Process ${pid} did not close after taskkill`);
+      const remainingDescendants = descendantPids.filter(isProcessAlive);
+      const isRootAlive = isProcessAlive(pid);
+      const totalRemaining = remainingDescendants.length + (isRootAlive ? 1 : 0);
+
+      if (!childCloseObserved && !hasChildClosed(child)) {
+        throw new Error(taskkillError?.message ?? `Process ${pid} did not close after taskkill`);
+      }
+      if (totalRemaining > 0) {
+        throw new Error(`Process tree ${pid} has ${totalRemaining} surviving descendant process(es): [${remainingDescendants.join(", ")}]`);
+      }
       return {
         attempted: true,
         scope: "process_tree",
         method,
         confirmed: true,
-        childCloseObserved: true
+        childCloseObserved: true,
+        descendantsRemaining: 0
       };
     }
 
@@ -161,7 +314,8 @@ async function performProcessTreeTermination(
       scope: "process_tree",
       method,
       confirmed: true,
-      childCloseObserved: true
+      childCloseObserved: true,
+      descendantsRemaining: 0
     };
   } catch (error) {
     let fallbackError: string | undefined;
@@ -174,6 +328,7 @@ async function performProcessTreeTermination(
       }
       childCloseObserved = await waitForChildClose(child, options.forcedCloseGraceMs);
     }
+    const isRootAlive = pid ? isProcessAlive(pid) : false;
     const primaryError = processErrorMessage(error);
     return {
       attempted: true,
@@ -181,6 +336,7 @@ async function performProcessTreeTermination(
       method,
       confirmed: false,
       childCloseObserved,
+      descendantsRemaining: isRootAlive ? 1 : 0,
       error: fallbackError ? `${primaryError}; fallback kill failed: ${fallbackError}` : primaryError
     };
   }

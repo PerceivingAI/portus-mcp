@@ -906,6 +906,92 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   });
   assert.equal(deniedShellExecution.isError, true);
   assert.match(JSON.stringify(deniedShellExecution), /Shell execution is disabled|main_agent\.allowShell/);
+
+  // project_run observable execution sessions: start -> poll -> list -> terminate
+  const sessionStartRes = resultOf(await client.callTool({
+    name: "project_run",
+    arguments: {
+      projectAlias: "mcp",
+      sessionAction: {
+        type: "start",
+        command: "git",
+        args: ["status", "--short"]
+      }
+    }
+  }));
+  assert.equal(sessionStartRes.sessionAction, "start");
+  assert.equal(typeof sessionStartRes.session.sessionId, "string");
+  const createdSessionId = sessionStartRes.session.sessionId;
+
+  const sessionPollRes = resultOf(await client.callTool({
+    name: "project_run",
+    arguments: {
+      projectAlias: "mcp",
+      sessionAction: {
+        type: "poll",
+        sessionId: createdSessionId,
+        cursor: 0
+      }
+    }
+  }));
+  assert.equal(sessionPollRes.sessionAction, "poll");
+  assert.equal(sessionPollRes.sessionId, createdSessionId);
+  assert.equal(typeof sessionPollRes.status, "string");
+  assert.equal(typeof sessionPollRes.stdoutChunk, "string");
+
+  const sessionListRes = resultOf(await client.callTool({
+    name: "project_run",
+    arguments: {
+      projectAlias: "mcp",
+      sessionAction: {
+        type: "list"
+      }
+    }
+  }));
+  assert.equal(sessionListRes.sessionAction, "list");
+  assert.equal(Array.isArray(sessionListRes.sessions), true);
+  assert.equal(sessionListRes.sessions.some((s: { sessionId: string }) => s.sessionId === createdSessionId), true);
+
+  const sessionTermRes = resultOf(await client.callTool({
+    name: "project_run",
+    arguments: {
+      projectAlias: "mcp",
+      sessionAction: {
+        type: "terminate",
+        sessionId: createdSessionId
+      }
+    }
+  }));
+  assert.equal(sessionTermRes.sessionAction, "terminate");
+  assert.equal(sessionTermRes.session.sessionId, createdSessionId);
+
+  // project_run rejects both requests and sessionAction
+  const invalidBoth = await client.callTool({
+    name: "project_run",
+    arguments: {
+      projectAlias: "mcp",
+      requests: [{ type: "command", command: "git", args: ["status"] }],
+      sessionAction: { type: "list" }
+    }
+  });
+  assert.equal(invalidBoth.isError, true);
+  assert.match(JSON.stringify(invalidBoth.structuredContent), /cannot accept both/);
+
+  // project_run sessionAction enforces command allowlist
+  const sessionDeniedCmd = await client.callTool({
+    name: "project_run",
+    arguments: {
+      projectAlias: "mcp",
+      sessionAction: {
+        type: "start",
+        command: "node",
+        args: ["--version"]
+      }
+    }
+  });
+  assert.equal(sessionDeniedCmd.isError, true);
+  assert.match(JSON.stringify(sessionDeniedCmd.structuredContent), /allowedCommands/);
+
   // Search request with failed section sets ok=false and increments errorCount
   const search05Result = resultOf(await client.callTool({
     name: "project_search",

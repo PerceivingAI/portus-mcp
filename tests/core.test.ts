@@ -320,9 +320,41 @@ test("Process outcome contract: Execution deadline preserves partial stdout and 
   assert.equal(result.lifecycle.processExited, false);
   assert.equal(result.lifecycle.killAttempted, true);
   assert.equal(result.lifecycle.killSucceeded, true);
+  assert.equal(result.lifecycle.processTreeKillAttempted, true);
+  assert.equal(result.lifecycle.processTreeKillSucceeded, true);
+  assert.equal(result.lifecycle.descendantsRemaining, 0);
   assert.equal(result.lifecycle.waitAttempted, true);
   assert.equal(result.lifecycle.reaped, true);
   assert.equal(result.lifecycle.scope, "process_tree");
+});
+
+test("Process tree termination reaps spawned descendant processes on timeout and confirms descendantsRemaining === 0", async () => {
+  const script = "const { spawn } = require('child_process'); const c = spawn('node', ['-e', 'setInterval(() => {}, 1000)'], { detached: true }); console.log('CHILD_PID:' + c.pid); setInterval(() => {}, 1000);";
+  const result = await runProjectCommand(
+    projectRoot,
+    "node",
+    ["-e", script],
+    1200
+  );
+  assert.equal(result.outcome, "timed_out");
+  assert.equal(result.lifecycle.killAttempted, true);
+  assert.equal(result.lifecycle.killSucceeded, true);
+  assert.equal(result.lifecycle.processTreeKillAttempted, true);
+  assert.equal(result.lifecycle.processTreeKillSucceeded, true);
+  assert.equal(result.lifecycle.descendantsRemaining, 0);
+  assert.match(result.stdout, /CHILD_PID:\d+/);
+  const match = result.stdout.match(/CHILD_PID:(\d+)/);
+  if (match) {
+    const childPid = parseInt(match[1], 10);
+    let childAlive = false;
+    try {
+      process.kill(childPid, 0);
+      childAlive = true;
+    } catch {
+      childAlive = false;
+    }
+    assert.equal(childAlive, false, `Descendant PID ${childPid} should have been reaped`);
+  }
 });
 
 test("optionalEnv returns fallback when environment variable is missing, empty, or whitespace", () => {
