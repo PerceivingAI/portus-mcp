@@ -828,8 +828,9 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
           maxChars: sessionAction.maxChars,
           stream: sessionAction.stream
         });
+        // pollExecutionSession returns the authoritative record alias; do not
+        // duplicate projectAlias here or the spread would silently overwrite it.
         return {
-          projectAlias,
           sessionAction: "poll",
           ...pollResult
         };
@@ -1008,8 +1009,8 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
       results.push(itemResult);
 
       if (stopOnFailure && !itemResult.ok) {
-        for (let restIdx = index + 1; restIdx < requests.length; restIdx++) {
-          const restReq = requests[restIdx];
+        for (let restIdx = index + 1; restIdx < batchRequests.length; restIdx++) {
+          const restReq = batchRequests[restIdx];
           skippedCount++;
           results.push({
             ok: false,
@@ -1037,7 +1038,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
 
     return {
       projectAlias,
-      requestedCount: requests.length,
+      requestedCount: batchRequests.length,
       executedCount,
       skippedCount,
       successCount,

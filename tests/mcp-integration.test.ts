@@ -936,6 +936,9 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   }));
   assert.equal(sessionPollRes.sessionAction, "poll");
   assert.equal(sessionPollRes.sessionId, createdSessionId);
+  // Regression guard (Phase 0): the poll result must surface the session
+  // record's authoritative projectAlias exactly once.
+  assert.equal(sessionPollRes.projectAlias, "mcp");
   assert.equal(typeof sessionPollRes.status, "string");
   assert.equal(typeof sessionPollRes.stdoutChunk, "string");
 

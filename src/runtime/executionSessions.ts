@@ -4,7 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { loadPolicyConfig, policyPermissions, type PortusPolicyConfig } from "../policy/policyConfig.js";
 import { stateStore } from "../state/StateStore.js";
-import { terminateProcessTree, type ProcessLifecycle, isProcessAlive } from "./processTermination.js";
+import { terminateProcessTree, type ProcessLifecycle } from "./processTermination.js";
 
 const DEFAULT_SESSION_TIMEOUT_MS = 3600 * 1000;
 const SESSIONS_FILE = "execution_sessions.json";
