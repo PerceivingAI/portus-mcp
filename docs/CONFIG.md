@@ -55,7 +55,7 @@ Example `portus-mcp.config.json`:
 
 ## Environment Variables
 
-Server and authentication variables:
+Server, authentication, and combined-launcher variables:
 
 ```text
 PORTUS_MCP_HOST=127.0.0.1
@@ -64,9 +64,10 @@ PORTUS_MCP_PATH=/mcp
 PORTUS_MCP_BEARER_TOKEN=
 PORTUS_TUNNEL_CLIENT_PATH=
 PORTUS_TUNNEL_PROFILE=portus-local
+PORTUS_MCP_FORWARD_EXTERNAL_LOGS=false
 ```
 
-The host defaults to `127.0.0.1`, the port defaults to `8789`, the MCP route defaults to `/mcp`, and an empty bearer token disables static bearer authentication. `PORTUS_TUNNEL_CLIENT_PATH` and `PORTUS_TUNNEL_PROFILE` tune single-command launcher orchestration (`npm run start:tunnel`).
+The host defaults to `127.0.0.1`, the port defaults to `8789`, the MCP route defaults to `/mcp`, and an empty bearer token disables static bearer authentication. `PORTUS_TUNNEL_CLIENT_PATH` and `PORTUS_TUNNEL_PROFILE` tune single-command launcher orchestration (`npm run start:tunnel`). `PORTUS_MCP_FORWARD_EXTERNAL_LOGS` controls whether the combined tunnel, funnel, and serve launchers copy external-service stdout and stderr to the terminal. It defaults to `false`; `1`, `true`, `yes`, and `on` enable forwarding without hiding the Portus or orchestrator lifecycle messages. (`scripts/start-all.mjs:8-18`, `scripts/start-all.mjs:104-115`, `scripts/start-all.mjs:253-270`)
 
 Pre-register projects with `alias=absolute/path` entries, written on separate lines inside single quotes (or separated by newlines, pipes, or semicolons):
 

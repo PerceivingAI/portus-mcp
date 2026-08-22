@@ -5,11 +5,17 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 
+export function shouldForwardExternalLogs(env = process.env) {
+  const value = env.PORTUS_MCP_FORWARD_EXTERNAL_LOGS;
+  return value !== undefined && ["1", "true", "yes", "on"].includes(value.toLowerCase());
+}
+
 const mode = process.argv.find((arg) => arg.startsWith("--"))?.slice(2) || "tunnel";
 const host = process.env.PORTUS_MCP_HOST || "127.0.0.1";
 const port = process.env.PORTUS_MCP_PORT || "8789";
 const mcpPath = process.env.PORTUS_MCP_PATH || "/mcp";
 const profile = process.env.PORTUS_TUNNEL_PROFILE || "portus-local";
+const forwardExternalLogs = shouldForwardExternalLogs();
 
 function resolveTunnelClientPath() {
   if (process.env.PORTUS_TUNNEL_CLIENT_PATH && existsSync(process.env.PORTUS_TUNNEL_CLIENT_PATH)) {
@@ -95,12 +101,18 @@ function log(prefix, colorCode, data) {
   }
 }
 
-function startProcess(name, colorCode, command, args, customEnv = process.env) {
-  const proc = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env: customEnv });
+export function startProcess(name, colorCode, command, args, {
+  env = process.env,
+  forwardOutput = true
+} = {}) {
+  const output = forwardOutput ? "pipe" : "ignore";
+  const proc = spawn(command, args, { stdio: ["ignore", output, output], env });
   children.push(proc);
 
-  proc.stdout.on("data", (data) => log(name, colorCode, data));
-  proc.stderr.on("data", (data) => log(name, colorCode, data));
+  if (forwardOutput) {
+    proc.stdout.on("data", (data) => log(name, colorCode, data));
+    proc.stderr.on("data", (data) => log(name, colorCode, data));
+  }
 
   proc.on("error", (err) => {
     log(name, "31", `Failed to start: ${err.message}`);
@@ -242,13 +254,20 @@ async function main() {
     const tunnelBin = resolveTunnelClientPath();
     const profileDir = resolveProfileDir();
     const env = { ...process.env, TUNNEL_CLIENT_PROFILE_DIR: profileDir };
-    startProcess("tunnel", "32", tunnelBin, ["run", "--profile", profile], env);
+    startProcess("tunnel", "32", tunnelBin, ["run", "--profile", profile], {
+      env,
+      forwardOutput: forwardExternalLogs
+    });
   } else if (mode === "funnel") {
     const tailscaleBin = resolveTailscalePath();
-    startProcess("funnel", "33", tailscaleBin, ["funnel", port]);
+    startProcess("funnel", "33", tailscaleBin, ["funnel", port], {
+      forwardOutput: forwardExternalLogs
+    });
   } else if (mode === "serve") {
     const tailscaleBin = resolveTailscalePath();
-    startProcess("serve", "34", tailscaleBin, ["serve", port]);
+    startProcess("serve", "34", tailscaleBin, ["serve", port], {
+      forwardOutput: forwardExternalLogs
+    });
   }
 }
 

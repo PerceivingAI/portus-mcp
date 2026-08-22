@@ -1,8 +1,32 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { createServer, type RequestListener } from "node:http";
+import { shouldForwardExternalLogs, startProcess, waitForMcpReady } from "../scripts/start-all.mjs";
 
-const { waitForMcpReady } = await import("../scripts/start-all.mjs");
+test("external service log forwarding is opt-in", () => {
+  assert.equal(shouldForwardExternalLogs({}), false);
+  assert.equal(shouldForwardExternalLogs({ PORTUS_MCP_FORWARD_EXTERNAL_LOGS: "false" }), false);
+  for (const value of ["1", "true", "TRUE", "yes", "on"]) {
+    assert.equal(shouldForwardExternalLogs({ PORTUS_MCP_FORWARD_EXTERNAL_LOGS: value }), true);
+  }
+});
+
+test("managed processes ignore output only when forwarding is disabled", async () => {
+  const silent = startProcess("silent-test", "0", process.execPath, ["-e", ""], {
+    forwardOutput: false
+  });
+  const silentExit = once(silent, "exit");
+  assert.equal(silent.stdout, null);
+  assert.equal(silent.stderr, null);
+  assert.equal((await silentExit)[0], 0);
+
+  const forwarded = startProcess("forwarded-test", "0", process.execPath, ["-e", ""]);
+  const forwardedExit = once(forwarded, "exit");
+  assert.notEqual(forwarded.stdout, null);
+  assert.notEqual(forwarded.stderr, null);
+  assert.equal((await forwardedExit)[0], 0);
+});
 
 async function listen(handler: RequestListener) {
   const server = createServer(handler);
