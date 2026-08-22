@@ -1,6 +1,6 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import path from "node:path";
 import {
@@ -71,6 +71,34 @@ test("Execution sessions: start, poll incremental chunks with cursor, and comple
   // List sessions
   const list = listExecutionSessions("test");
   assert.equal(list.some((s) => s.sessionId === session.sessionId), true);
+});
+
+test("Execution sessions flush short-lived output before finalization", async () => {
+  const testPolicy = withMainAgentPermissions({
+    allowedCommands: ["node"]
+  });
+  const expectedBytes = 512 * 1024;
+  const session = await startExecutionSession({
+    projectAlias: "test",
+    rootPath: root,
+    command: "node",
+    args: ["-e", `process.stdout.write("x".repeat(${expectedBytes}))`],
+    timeoutSecs: 60,
+    policy: testPolicy
+  });
+
+  const deadline = Date.now() + 5000;
+  let current = getExecutionSession(session.sessionId);
+  while (current.status === "running" && Date.now() < deadline) {
+    await delay(20);
+    current = getExecutionSession(session.sessionId);
+  }
+
+  assert.equal(current.status, "completed");
+  assert.equal(current.stdoutBytes, expectedBytes);
+  const output = readFileSync(current.stdoutPath);
+  assert.equal(output.length, expectedBytes);
+  assert.equal(output.every((byte) => byte === 0x78), true);
 });
 
 test("Execution sessions: terminate reaps background process tree", async () => {

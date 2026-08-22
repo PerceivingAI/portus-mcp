@@ -1,5 +1,7 @@
 import { ChildProcess, spawn } from "node:child_process";
 import { closeSync, createWriteStream, existsSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
+import type { WriteStream } from "node:fs";
+import { once } from "node:events";
 import path from "node:path";
 import crypto from "node:crypto";
 import { loadPolicyConfig, policyPermissions, type PortusPolicyConfig } from "../policy/policyConfig.js";
@@ -88,8 +90,9 @@ type ActiveProcessEntry = {
   child: ChildProcess;
   timeoutHandle: NodeJS.Timeout;
   startedAtMs: number;
-  stdoutFd: number;
-  stderrFd: number;
+  stdoutStream: WriteStream;
+  stderrStream: WriteStream;
+  outputClosePromise?: Promise<void>;
   record: ExecutionSessionRecord;
 };
 
@@ -156,6 +159,24 @@ function getExecutionDirectory(sessionId: string): string {
   return dir;
 }
 
+function closeOutputStream(stream: WriteStream): Promise<void> {
+  if (stream.closed) return Promise.resolve();
+  const closePromise = once(stream, "close").then(
+    () => undefined,
+    () => undefined
+  );
+  if (!stream.writableEnded && !stream.destroyed) stream.end();
+  return closePromise;
+}
+
+function closeExecutionOutput(entry: ActiveProcessEntry): Promise<void> {
+  entry.outputClosePromise ??= Promise.all([
+    closeOutputStream(entry.stdoutStream),
+    closeOutputStream(entry.stderrStream)
+  ]).then(() => undefined);
+  return entry.outputClosePromise;
+}
+
 export async function startExecutionSession(options: StartExecutionSessionOptions): Promise<PublicExecutionSession> {
   const policy = options.policy ?? loadPolicyConfig();
   const allowShell = policyPermissions(policy).main_agent.allowShell;
@@ -173,9 +194,6 @@ export async function startExecutionSession(options: StartExecutionSessionOption
   const execDir = getExecutionDirectory(sessionId);
   const stdoutPath = path.join(execDir, "stdout.log");
   const stderrPath = path.join(execDir, "stderr.log");
-
-  const stdoutFd = openSync(stdoutPath, "a");
-  const stderrFd = openSync(stderrPath, "a");
 
   const env = { ...process.env };
   delete env.GIT_DIR;
@@ -208,8 +226,6 @@ export async function startExecutionSession(options: StartExecutionSessionOption
       stdio: ["ignore", "pipe", "pipe"]
     });
   } catch (error) {
-    closeSync(stdoutFd);
-    closeSync(stderrFd);
     const errMessage = error instanceof Error ? error.message : String(error);
     const failedRecord: ExecutionSessionRecord = {
       sessionId,
@@ -271,6 +287,15 @@ export async function startExecutionSession(options: StartExecutionSessionOption
     }
   };
 
+  const stdoutStream = createWriteStream(stdoutPath, { flags: "a" });
+  const stderrStream = createWriteStream(stderrPath, { flags: "a" });
+  stdoutStream.on("error", (error) => {
+    record.executionError ??= `Unable to write execution stdout: ${error.message}`;
+  });
+  stderrStream.on("error", (error) => {
+    record.executionError ??= `Unable to write execution stderr: ${error.message}`;
+  });
+
   const timeoutHandle = setTimeout(() => {
     void handleSessionTimeout(sessionId);
   }, timeoutMs);
@@ -279,8 +304,8 @@ export async function startExecutionSession(options: StartExecutionSessionOption
     child,
     timeoutHandle,
     startedAtMs,
-    stdoutFd,
-    stderrFd,
+    stdoutStream,
+    stderrStream,
     record
   };
   activeProcesses.set(sessionId, entry);
@@ -296,21 +321,18 @@ export async function startExecutionSession(options: StartExecutionSessionOption
     pid: child.pid
   });
 
-  const stdoutStream = createWriteStream("", { fd: stdoutFd, autoClose: false });
-  const stderrStream = createWriteStream("", { fd: stderrFd, autoClose: false });
-
   child.stdout?.on("data", (chunk: Buffer) => {
-    stdoutStream.write(chunk);
+    if (!stdoutStream.destroyed && !stdoutStream.writableEnded) stdoutStream.write(chunk);
     record.stdoutBytes += chunk.length;
   });
 
   child.stderr?.on("data", (chunk: Buffer) => {
-    stderrStream.write(chunk);
+    if (!stderrStream.destroyed && !stderrStream.writableEnded) stderrStream.write(chunk);
     record.stderrBytes += chunk.length;
   });
 
   child.once("close", (code, signal) => {
-    handleProcessClosed(sessionId, code, signal);
+    void handleProcessClosed(sessionId, code, signal);
   });
 
   child.once("error", (err) => {
@@ -320,19 +342,13 @@ export async function startExecutionSession(options: StartExecutionSessionOption
   return toPublicExecutionSession(record);
 }
 
-function handleProcessClosed(sessionId: string, exitCode: number | null, signal: NodeJS.Signals | null): void {
+async function handleProcessClosed(sessionId: string, exitCode: number | null, signal: NodeJS.Signals | null): Promise<void> {
   const entry = activeProcesses.get(sessionId);
   if (!entry) return;
 
   clearTimeout(entry.timeoutHandle);
   activeProcesses.delete(sessionId);
-
-  try {
-    closeSync(entry.stdoutFd);
-    closeSync(entry.stderrFd);
-  } catch {
-    // ignore
-  }
+  await closeExecutionOutput(entry);
 
   const rec = entry.record;
   rec.completedAt = new Date().toISOString();
@@ -364,6 +380,9 @@ async function handleSessionTimeout(sessionId: string): Promise<void> {
   const entry = activeProcesses.get(sessionId);
   if (!entry) return;
 
+  clearTimeout(entry.timeoutHandle);
+  activeProcesses.delete(sessionId);
+
   const rec = entry.record;
   rec.status = "timed_out";
   rec.executionError = `Execution session timed out after ${rec.timeoutMs} ms`;
@@ -372,6 +391,8 @@ async function handleSessionTimeout(sessionId: string): Promise<void> {
     escalationDelayMs: ESCALATION_DELAY_MS,
     forcedCloseGraceMs: FORCED_CLOSE_GRACE_MS
   });
+
+  if (termination.childCloseObserved) await closeExecutionOutput(entry);
 
   rec.completedAt = new Date().toISOString();
   rec.lifecycle = {
@@ -421,12 +442,7 @@ export async function terminateExecutionSession(sessionId: string): Promise<Publ
     forcedCloseGraceMs: FORCED_CLOSE_GRACE_MS
   });
 
-  try {
-    closeSync(entry.stdoutFd);
-    closeSync(entry.stderrFd);
-  } catch {
-    // ignore
-  }
+  if (termination.childCloseObserved) await closeExecutionOutput(entry);
 
   rec.lifecycle = {
     ...rec.lifecycle,

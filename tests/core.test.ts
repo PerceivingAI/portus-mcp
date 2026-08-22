@@ -1,5 +1,6 @@
 import { optionalEnv } from "../src/env.js";
 import { runProjectCommand } from "../src/runtime/commands.js";
+import { collectDescendantPids } from "../src/runtime/processTermination.js";
 import { assertProjectCommandStaysInProject, commandRequiresConfirmation } from "../src/tools/projects.js";
 import { toPublicAuditEvent, type PublicAuditEvent } from "../src/tools/config.js";
 import test, { after } from "node:test";
@@ -326,6 +327,15 @@ test("Process outcome contract: Execution deadline preserves partial stdout and 
   assert.equal(result.lifecycle.waitAttempted, true);
   assert.equal(result.lifecycle.reaped, true);
   assert.equal(result.lifecycle.scope, "process_tree");
+});
+
+test("Process snapshots retain detached descendants by parent ancestry", () => {
+  assert.deepEqual(collectDescendantPids([
+    { pid: 101, parentPid: 100 },
+    { pid: 102, parentPid: 101 },
+    { pid: 103, parentPid: 102 },
+    { pid: 200, parentPid: 1 }
+  ], 100), [101, 102, 103]);
 });
 
 test("Process tree termination reaps spawned descendant processes on timeout and confirms descendantsRemaining === 0", async () => {

@@ -82,13 +82,103 @@ function signalProcessGroup(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
-async function waitForProcessGroupExit(pid: number, timeoutMs: number): Promise<boolean> {
+const POSIX_PROCESS_SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024;
+
+export type PosixProcessRow = {
+  pid: number;
+  parentPid: number;
+};
+
+export function collectDescendantPids(rows: readonly PosixProcessRow[], rootPid: number): number[] {
+  const childrenByParent = new Map<number, number[]>();
+  for (const row of rows) {
+    const children = childrenByParent.get(row.parentPid);
+    if (children) children.push(row.pid);
+    else childrenByParent.set(row.parentPid, [row.pid]);
+  }
+
+  const descendants: number[] = [];
+  const queue = [rootPid];
+  for (let index = 0; index < queue.length; index += 1) {
+    const children = childrenByParent.get(queue[index]) ?? [];
+    for (const childPid of children) {
+      descendants.push(childPid);
+      queue.push(childPid);
+    }
+  }
+  return descendants;
+}
+
+export async function getPosixDescendants(rootPid: number): Promise<number[]> {
+  if (process.platform === "win32" || rootPid <= 0) return [];
+  const ps = spawn("ps", ["-e", "-o", "pid=,ppid="], {
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  const stdoutChunks: Buffer[] = [];
+  const stderrChunks: Buffer[] = [];
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  let outputExceeded = false;
+  const append = (chunks: Buffer[], chunk: Buffer, stream: "stdout" | "stderr") => {
+    if (outputExceeded) return;
+    if (stream === "stdout") stdoutBytes += chunk.length;
+    else stderrBytes += chunk.length;
+    if (stdoutBytes + stderrBytes > POSIX_PROCESS_SNAPSHOT_MAX_BYTES) {
+      outputExceeded = true;
+      ps.kill("SIGKILL");
+      return;
+    }
+    chunks.push(chunk);
+  };
+  ps.stdout?.on("data", (chunk: Buffer) => append(stdoutChunks, chunk, "stdout"));
+  ps.stderr?.on("data", (chunk: Buffer) => append(stderrChunks, chunk, "stderr"));
+
+  let snapshotTimedOut = false;
+  const snapshotTimeout = setTimeout(() => {
+    snapshotTimedOut = true;
+    ps.kill("SIGKILL");
+  }, 3000);
+  let code: number | null;
+  try {
+    [code] = (await once(ps, "close")) as [number | null, NodeJS.Signals | null];
+  } finally {
+    clearTimeout(snapshotTimeout);
+  }
+  if (snapshotTimedOut) throw new Error("POSIX process snapshot timed out");
+  if (outputExceeded) throw new Error("POSIX process snapshot exceeded the output limit");
+  if (code !== 0) {
+    const detail = Buffer.concat(stderrChunks).toString("utf8").replace(/[\r\n\t]+/g, " ").trim().slice(0, 500);
+    throw new Error(`Unable to inspect POSIX process descendants${detail ? `: ${detail}` : ""}`);
+  }
+
+  const rows: PosixProcessRow[] = [];
+  for (const line of Buffer.concat(stdoutChunks).toString("utf8").split(/\r?\n/)) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)$/);
+    if (!match) continue;
+    rows.push({ pid: Number(match[1]), parentPid: Number(match[2]) });
+  }
+  return collectDescendantPids(rows, rootPid);
+}
+
+function signalProcess(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(pid, signal);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+}
+
+function remainingProcesses(pids: readonly number[]): number[] {
+  return pids.filter(isProcessAlive);
+}
+
+async function waitForPosixTreeExit(rootPid: number, descendantPids: readonly number[], timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   do {
-    if (hasProcessGroupExited(pid)) return true;
+    if (hasProcessGroupExited(rootPid) && remainingProcesses(descendantPids).length === 0) return true;
     await delay(20);
   } while (Date.now() < deadline);
-  return hasProcessGroupExited(pid);
+  return hasProcessGroupExited(rootPid) && remainingProcesses(descendantPids).length === 0;
 }
 
 export function isProcessAlive(pid: number): boolean {
@@ -249,6 +339,7 @@ async function performProcessTreeTermination(
       error: "Cannot terminate process tree without a process id"
     };
   }
+  let knownPosixDescendants: number[] = [];
 
   try {
     if (process.platform === "win32") {
@@ -295,18 +386,32 @@ async function performProcessTreeTermination(
       };
     }
 
-    if (!hasProcessGroupExited(pid)) {
-      signalProcessGroup(pid, "SIGTERM");
-      const exitedDuringGrace = await waitForProcessGroupExit(pid, options.escalationDelayMs);
-      if (!exitedDuringGrace) signalProcessGroup(pid, "SIGKILL");
+    knownPosixDescendants = await getPosixDescendants(pid);
+    for (const descendantPid of [...knownPosixDescendants].reverse()) {
+      signalProcess(descendantPid, "SIGTERM");
     }
-    const childCloseObserved = await waitForChildClose(child, options.forcedCloseGraceMs);
-    const groupExited = await waitForProcessGroupExit(pid, options.forcedCloseGraceMs);
-    if (!childCloseObserved || !groupExited) {
+    if (!hasProcessGroupExited(pid)) signalProcessGroup(pid, "SIGTERM");
+
+    const exitedDuringGrace = await waitForPosixTreeExit(pid, knownPosixDescendants, options.escalationDelayMs);
+    if (!exitedDuringGrace) {
+      for (const descendantPid of remainingProcesses(knownPosixDescendants).reverse()) {
+        signalProcess(descendantPid, "SIGKILL");
+      }
+      if (!hasProcessGroupExited(pid)) signalProcessGroup(pid, "SIGKILL");
+    }
+
+    const [childCloseObserved, treeExited] = await Promise.all([
+      waitForChildClose(child, options.forcedCloseGraceMs),
+      waitForPosixTreeExit(pid, knownPosixDescendants, options.forcedCloseGraceMs)
+    ]);
+    const survivingDescendants = remainingProcesses(knownPosixDescendants);
+    if (!childCloseObserved || !treeExited) {
       throw new Error(
-        !groupExited
-          ? `Process group ${pid} remained alive after termination`
-          : `Process ${pid} did not close after process-group termination`
+        survivingDescendants.length > 0
+          ? `Process tree ${pid} has ${survivingDescendants.length} surviving descendant process(es): [${survivingDescendants.join(", ")}]`
+          : !hasProcessGroupExited(pid)
+            ? `Process group ${pid} remained alive after termination`
+            : `Process ${pid} did not close after process-tree termination`
       );
     }
     return {
@@ -329,6 +434,7 @@ async function performProcessTreeTermination(
       childCloseObserved = await waitForChildClose(child, options.forcedCloseGraceMs);
     }
     const isRootAlive = pid ? isProcessAlive(pid) : false;
+    const survivingDescendants = remainingProcesses(knownPosixDescendants);
     const primaryError = processErrorMessage(error);
     return {
       attempted: true,
@@ -336,7 +442,7 @@ async function performProcessTreeTermination(
       method,
       confirmed: false,
       childCloseObserved,
-      descendantsRemaining: isRootAlive ? 1 : 0,
+      descendantsRemaining: survivingDescendants.length + (isRootAlive ? 1 : 0),
       error: fallbackError ? `${primaryError}; fallback kill failed: ${fallbackError}` : primaryError
     };
   }
