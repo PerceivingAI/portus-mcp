@@ -62,12 +62,11 @@ process.env.PORTUS_MCP_POLICY_PATH = policyPath;
 process.env.PORTUS_MCP_STATE_DIR = stateDir;
 process.env.AGENT_SKILL_PATHS = "";
 process.env.SUBAGENTS_SKILL_PATHS = "";
+process.env.PORTUS_MCP_PROJECTS = `batch=${projectRoot}`;
 
 // Configuration reads environment variables at module initialization, so this test intentionally imports after fixture setup.
 const { createHttpServer } = await import("../src/server.js");
-const { upsertProject } = await import("../src/state/ProjectRegistry.js");
 const { stateStore } = await import("../src/state/StateStore.js");
-
 const requestedSchema = z.object({ startLine: z.number().int().positive(), endLine: z.number().int().positive() }).strict();
 const actualSchema = z.object({ startLine: z.number().int().positive().nullable(), endLine: z.number().int().positive().nullable(), lineCount: z.number().int().nonnegative() }).strict();
 const successSchema = z.object({
@@ -141,7 +140,6 @@ test("project_read exposes and enforces its complete MCP batch contract", async 
   for (const forbidden of ["maxChars", "limit", "maxBytes", "maxFiles", "includeHash", "includeBinary", "ignorePolicy"]) assert.equal(published.includes(`\"${forbidden}\"`), false, `published forbidden input name: ${forbidden}`);
   assert.equal(listed.tools.some((candidate) => candidate.name === "project_read_files"), false);
 
-  upsertProject({ projectAlias: "batch", rootPath: projectRoot });
 
   const explanation = await client.callTool({ name: "project_policy", arguments: { checks: [{ type: "permissions", projectAlias: "batch", operation: "project_read" }] } });
   assertNoRoots(explanation);

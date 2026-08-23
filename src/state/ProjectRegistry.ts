@@ -1,6 +1,5 @@
 import path from "node:path";
 import { lstatSync, realpathSync } from "node:fs";
-import { stateStore } from "./StateStore.js";
 import { optionalEnv } from "../env.js";
 
 export type ProjectRecord = {
@@ -8,10 +7,6 @@ export type ProjectRecord = {
   rootPath: string;
   createdAt: string;
   updatedAt: string;
-};
-
-type ProjectState = {
-  projects: ProjectRecord[];
 };
 
 function normalizeProjectRoot(rootPath: string): string {
@@ -31,8 +26,7 @@ function normalizeProjectRoot(rootPath: string): string {
   return canonical;
 }
 
-const FILE = "projects.json";
-function assertProjectAlias(projectAlias: string): void {
+export function assertProjectAlias(projectAlias: string): void {
   if (projectAlias.trim() === "") throw new Error("Project alias is required.");
   if (projectAlias.startsWith("skill/")) {
     throw new Error("Project aliases beginning with skill/ are reserved for configured read-only skills.");
@@ -40,44 +34,6 @@ function assertProjectAlias(projectAlias: string): void {
 }
 
 export function listProjects(): ProjectRecord[] {
-  const stateProjects = stateStore.readJson<ProjectState>(FILE, { projects: [] }).projects;
-  const preRegistered = listPreRegisteredProjects();
-  const byAlias = new Map<string, ProjectRecord>();
-  for (const project of preRegistered) {
-    assertProjectAlias(project.projectAlias);
-    byAlias.set(project.projectAlias, project);
-  }
-  for (const project of stateProjects) {
-    assertProjectAlias(project.projectAlias);
-    byAlias.set(project.projectAlias, project);
-  }
-  return Array.from(byAlias.values());
-}
-
-export function getProject(projectAlias: string): ProjectRecord {
-  const project = listProjects().find((item) => item.projectAlias === projectAlias);
-  if (!project) throw new Error(`Unknown project alias: ${projectAlias}`);
-  return project;
-}
-
-export function upsertProject(input: Omit<ProjectRecord, "createdAt" | "updatedAt">): ProjectRecord {
-  assertProjectAlias(input.projectAlias);
-  const state = stateStore.readJson<ProjectState>(FILE, { projects: [] });
-  const existing = state.projects.find((item) => item.projectAlias === input.projectAlias);
-  const now = new Date().toISOString();
-  const record: ProjectRecord = {
-    ...input,
-    rootPath: normalizeProjectRoot(input.rootPath),
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now
-  };
-  state.projects = state.projects.filter((item) => item.projectAlias !== input.projectAlias);
-  state.projects.push(record);
-  stateStore.writeJson(FILE, state);
-  return record;
-}
-
-export function listPreRegisteredProjects(): ProjectRecord[] {
   const raw = optionalEnv("PORTUS_MCP_PROJECTS", "").trim();
   if (!raw) return [];
   const now = new Date().toISOString();
@@ -86,7 +42,8 @@ export function listPreRegisteredProjects(): ProjectRecord[] {
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0 && !entry.startsWith("#"));
 
-  return entries.map((trimmed) => {
+  const byAlias = new Map<string, ProjectRecord>();
+  for (const trimmed of entries) {
     const separator = trimmed.indexOf("=");
     if (separator <= 0 || separator === trimmed.length - 1) {
       throw new Error("Invalid PORTUS_MCP_PROJECTS entry. Use alias=/absolute/path.");
@@ -97,12 +54,23 @@ export function listPreRegisteredProjects(): ProjectRecord[] {
     if (!projectAlias || !rootPath) {
       throw new Error("Invalid PORTUS_MCP_PROJECTS entry. Project alias and path are required.");
     }
-    return {
+    byAlias.set(projectAlias, {
       projectAlias,
       rootPath: normalizeProjectRoot(rootPath),
       createdAt: now,
       updatedAt: now
-    };
-  });
+    });
+  }
+  return Array.from(byAlias.values());
+}
+
+export function getProject(projectAlias: string): ProjectRecord {
+  const project = listProjects().find((item) => item.projectAlias === projectAlias);
+  if (!project) throw new Error(`Unknown project alias: ${projectAlias}`);
+  return project;
+}
+
+export function listPreRegisteredProjects(): ProjectRecord[] {
+  return listProjects();
 }
 

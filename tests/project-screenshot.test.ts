@@ -21,20 +21,17 @@ writeFileSync(path.join(root, "policy.json"), readFileSync(path.resolve("portus-
 after(() => rmSync(root, { recursive: true, force: true }));
 
 // Stateful modules are imported only after the isolated environment paths are installed.
-const { upsertProject } = await import("../src/state/ProjectRegistry.js");
+const projectRoot = path.join(root, "project");
+mkdirSync(projectRoot, { recursive: true });
+const otherRoot = path.join(root, "other");
+mkdirSync(otherRoot, { recursive: true });
+process.env.PORTUS_MCP_PROJECTS = `shots=${projectRoot};other=${otherRoot}`;
+
 const { upsertExecutionSession, getExecutionSession } = await import("../src/runtime/executionSessions.js");
 const { stateStore } = await import("../src/state/StateStore.js");
 const screenshot = await import("../src/runtime/screenshotSystem.js");
 const screenshotTool = await import("../src/tools/projectScreenshot.js");
 const toolUtils = await import("../src/tools/projectToolUtils.js");
-
-const projectRoot = path.join(root, "project");
-mkdirSync(projectRoot, { recursive: true });
-upsertProject({ projectAlias: "shots", rootPath: projectRoot });
-const otherRoot = path.join(root, "other");
-mkdirSync(otherRoot, { recursive: true });
-upsertProject({ projectAlias: "other", rootPath: otherRoot });
-
 let sessionCounter = 0;
 function addSession(overrides: Record<string, unknown> = {}): string {
   sessionCounter += 1;

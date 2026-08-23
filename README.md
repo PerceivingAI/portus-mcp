@@ -328,7 +328,7 @@ Broad tools remain bounded by layered enforcement:
 - operating-system permissions; and
 - strict schemas and safe, project-relative errors.
 
-Callers cannot raise server maxima or override path, permission, confirmation, or audit policy. Search excludes ignored paths by default; explicit ignored-path inclusion is confined to one request and requires selected-policy authorization. Read, context, search, policy inspection, and patch preparation remain unaudited; mutation, execution, and registration retain audit behavior. Errors and safe policy projections do not expose absolute roots, selected policy paths, secrets, command environments, or file contents.
+Callers cannot raise server maxima or override path, permission, confirmation, or audit policy. Search excludes ignored paths by default; explicit ignored-path inclusion is confined to one request and requires selected-policy authorization. Read, context, search, policy inspection, and patch preparation remain unaudited; mutation and execution retain audit behavior. Errors and safe policy projections do not expose absolute roots, selected policy paths, secrets, command environments, or file contents.
 
 Spawned subagents are command-capable processes bounded by Flue workspace isolation in `.portus-mcp/flue-workspaces/<sessionId>`. `main_agent.permissions.subagentTask` independently controls lifecycle actions; `main_agent.permissions.subagentContext` controls session listings, status, outputs, events, and capability inspection.
 
@@ -336,7 +336,7 @@ Spawned subagents are command-capable processes bounded by Flue workspace isolat
 
 A client that does not yet know a project alias calls `project_context` with `include.projects=true` and no `projectAlias`. The result contains registered aliases only. It then selects an alias and calls scoped `project_context`; the default response includes `capabilities`, status, tree, and scripts. `capabilities.availableTools` is the complete effective allowlist for planning: every entry is enabled, and a registered MCP tool absent from the allowlist must not be invoked. `project_run.allowedCommands` appears only when `project_run` is available. Any project-scoped context section still requires `projectAlias`.
 
-Registration and audit inspection are native `project_policy` actions rather than separate management tools. Its safe policy checks are read-only; no MCP action can change permissions. See `docs/TOOLS.md` for the exact boundaries.
+Audit inspection and policy checks are native `project_policy` operations rather than separate management tools. Project registration is configured exclusively through the environment (`PORTUS_MCP_PROJECTS`). Its safe policy checks are read-only; no MCP action can change permissions. See `docs/TOOLS.md` for the exact boundaries.
 
 ## Tool Operations
 

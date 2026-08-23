@@ -3,7 +3,6 @@ import path from "node:path";
 import { z } from "zod";
 import { loadConfig } from "../config.js";
 import { loadPolicyConfig, policyPermissions, policySelection, type PortusPolicyConfig } from "../policy/policyConfig.js";
-import { upsertProject } from "../state/ProjectRegistry.js";
 import { resolveProjectPath } from "../policy/pathPolicy.js";
 import { stateStore } from "../state/StateStore.js";
 import { assertMainAgentPermission } from "../policy/permissionPolicy.js";
@@ -49,11 +48,6 @@ const policyCheckSchema = z.discriminatedUnion("type", [
 ]);
 
 const policyActionSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("register_project"),
-    projectAlias: z.string().min(1),
-    rootPath: z.string().min(1)
-  }).strict(),
   z.object({
     type: z.literal("list_audit"),
     projectAlias: z.string().min(1).optional(),
@@ -208,13 +202,6 @@ export function registerBroadPolicyTools(server: McpServer, policy: PortusPolicy
       };
     }
     if (!action) throw new Error("Missing project_policy action");
-    if (action.type === "register_project") {
-      assertMainAgentPermission("projectPolicy", policy);
-      stateStore.requireAuditWritable();
-      const record = upsertProject({ projectAlias: action.projectAlias, rootPath: action.rootPath });
-      stateStore.audit({ tool: "project_policy", operation: "register_project", projectAlias: action.projectAlias });
-      return { action: action.type, project: { projectAlias: record.projectAlias, createdAt: record.createdAt, updatedAt: record.updatedAt } };
-    }
     if (action.type === "list_audit") {
       assertMainAgentPermission("projectPolicy", policy);
       const limit = policy.limits.audit.maxEvents;

@@ -55,7 +55,7 @@ projectPolicy
 projectScreenshot
 ```
 
-Every MCP tool checks its corresponding permission at entry: `subagent_task` requires `subagentTask`, `subagent_context` requires `subagentContext`, `project_read` requires `projectRead`, `project_screenshot` requires `projectScreenshot`, and so on. Screenshot authority is independent from project execution, reading, and editing. `project_policy` requires `projectPolicy` for checks and native actions (`register_project`, `list_audit`, `read_audit`). `readGitIgnoredFiles` remains an internal constraint. Scoped `project_context.capabilities` is planning information; runtime permission, path, ownership, confirmation, and validation gates remain authoritative.
+Every MCP tool checks its corresponding permission at entry: `subagent_task` requires `subagentTask`, `subagent_context` requires `subagentContext`, `project_read` requires `projectRead`, `project_screenshot` requires `projectScreenshot`, and so on. Screenshot authority is independent from project execution, reading, and editing. `project_policy` requires `projectPolicy` for checks and native actions (`list_audit`, `read_audit`). `readGitIgnoredFiles` remains an internal constraint. Scoped `project_context.capabilities` is planning information; runtime permission, path, ownership, confirmation, and validation gates remain authoritative.
 
 Spawned-agent permissions include:
 

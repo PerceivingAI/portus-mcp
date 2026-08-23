@@ -138,7 +138,7 @@ projectPolicy
 projectScreenshot
 ```
 
-Each tool maps 1:1 to its permission flag: `subagent_task` requires `subagentTask`, `subagent_context` requires `subagentContext`, `project_read` requires `projectRead`, `project_screenshot` requires `projectScreenshot`, and so on. The two subagent permissions are independent, allowing lifecycle control and read-only session inspection to be granted separately. `projectScreenshot` independently gates `targets`, `capture`, `read`, `list`, and `delete`; it is never inferred from `projectRun`, `projectRead`, or `projectEdit`. `project_policy` requires `projectPolicy` for checks and its native actions (`register_project`, `list_audit`, and `read_audit`). (`src/policy/policyConfig.ts:46-129`, `src/tools/projectScreenshot.ts:104-216`)
+Each tool maps 1:1 to its permission flag: `subagent_task` requires `subagentTask`, `subagent_context` requires `subagentContext`, `project_read` requires `projectRead`, `project_screenshot` requires `projectScreenshot`, and so on. The two subagent permissions are independent, allowing lifecycle control and read-only session inspection to be granted separately. `projectScreenshot` independently gates `targets`, `capture`, `read`, `list`, and `delete`; it is never inferred from `projectRun`, `projectRead`, or `projectEdit`. `project_policy` requires `projectPolicy` for checks and its native actions (`list_audit` and `read_audit`). (`src/policy/policyConfig.ts:46-129`, `src/tools/projectScreenshot.ts:104-216`)
 
 Portus ships with only `git` in `main_agent.permissions.allowedCommands`. Add direct connected-agent executables under that field; spawned subagents use the separate `subagents.permissions.allowedCommands`. Command entries are executable names containing only letters, digits, `.`, `_`, and `-`; arguments and shell command strings do not belong in the allowlist. On Windows, an invocation ending in `.exe`, `.cmd`, or `.bat` can match its configured basename. (`portus-mcp.policy.json:18-37`, `src/policy/policyConfig.ts:15-53`, `src/policy/permissionPolicy.ts:13-18`)
 
@@ -178,15 +178,15 @@ Filesystem authorization uses the canonical registered project root, not lexical
 
 ## Security and Audit Semantics
 
-All project access remains confined to registered roots and subject to blocked-path and Git-ignore policy. Destructive or protected operations retain confirmation. Mutation, execution, and registration retain durable, redacted audit behavior; reads, context, search, policy checks, audit reads, and patch preparation are unaudited. Safe projections and errors must not disclose absolute roots, policy-file paths, bearer tokens, provider credentials, environment details, file contents, or command environments. (`src/config.ts:13-24`, `src/tools/config.ts:95-120`, `src/tools/config.ts:170-192`)
+All project access remains confined to registered roots and subject to blocked-path and Git-ignore policy. Destructive or protected operations retain confirmation. Mutation and execution retain durable, redacted audit behavior; reads, context, search, policy checks, audit reads, and patch preparation are unaudited. Safe projections and errors must not disclose absolute roots, policy-file paths, bearer tokens, provider credentials, environment details, file contents, or command environments. (`src/config.ts:13-24`, `src/tools/config.ts:95-120`, `src/tools/config.ts:170-192`)
 
-MCP callers can inspect safe effective-policy projections but cannot mutate permissions. Runtime state remains limited to operational records such as projects, sessions, audit, and workspaces and is not a permission authority. Skill-specific MCP tools do not exist: connected agents use catalog metadata plus `project_read`, while spawned subagents receive an audience-specific catalog and read-only skill mounts. (`src/tools/config.ts:123-192`, `src/state/StateStore.ts:6-31`, `src/skills/SkillRegistry.ts:274-307`)
+MCP callers can inspect safe effective-policy projections but cannot mutate permissions. Runtime state remains limited to operational records such as sessions, audit, and workspaces and is not a permission authority. Skill-specific MCP tools do not exist: connected agents use catalog metadata plus `project_read`, while spawned subagents receive an audience-specific catalog and read-only skill mounts. (`src/tools/config.ts:123-192`, `src/state/StateStore.ts:6-31`, `src/skills/SkillRegistry.ts:274-307`)
 
 ## Defaults and Resolution
 1. `PORTUS_MCP_CONFIG_PATH` selects application JSON; otherwise `./portus-mcp.config.json` is used.
 2. Specifying a retired `toolSurface` key fails closed.
 3. `PORTUS_MCP_POLICY_PATH` selects one complete strict policy; when unset, `./portus-mcp.policy.json` is used. No merge or runtime override layer exists.
-4. `PORTUS_MCP_PROJECTS` adds pre-registered project roots; aliases beginning with `skill/` are reserved.
+4. `PORTUS_MCP_PROJECTS` defines registered project roots; aliases beginning with `skill/` are reserved.
 5. Unset `AGENT_SKILL_PATHS` and `SUBAGENTS_SKILL_PATHS` independently default to an existing `./skills` catalog; an explicitly empty value disables that audience.
 6. Skill source entries resolve relative to the application configuration directory, and invalid paths or duplicate names fail startup.
 7. `PORTUS_MCP_STATE_DIR` selects durable local state; otherwise `.portus-mcp` is used.

@@ -108,12 +108,11 @@ process.env.PORTUS_MCP_POLICY_PATH = policyPath;
 process.env.PORTUS_MCP_STATE_DIR = stateDir;
 process.env.AGENT_SKILL_PATHS = "";
 process.env.SUBAGENTS_SKILL_PATHS = "";
+process.env.PORTUS_MCP_PROJECTS = `range=${projectRoot}`;
 
 // Configuration modules read environment variables during module initialization, so these imports must follow fixture setup.
 const { createHttpServer } = await import("../src/server.js");
-const { upsertProject } = await import("../src/state/ProjectRegistry.js");
 const { stateStore } = await import("../src/state/StateStore.js");
-
 const rangeResultSchema = z.object({
   projectAlias: z.string(),
   relativePath: z.string(),
@@ -224,7 +223,6 @@ test("project_read range operation exposes and enforces its complete MCP contrac
     assert.equal(listed.tools.some((candidate) => candidate.name === "project_read_file_range"), false);
   });
 
-  upsertProject({ projectAlias: "range", rootPath: projectRoot });
 
   await t.test("reads explicit and default ranges with EOF lookahead semantics", async () => {
     const basic = resultOf(await callRange(client, {

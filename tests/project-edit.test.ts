@@ -85,13 +85,12 @@ process.env.PORTUS_MCP_POLICY_PATH = policyPath;
 process.env.PORTUS_MCP_STATE_DIR = stateDir;
 process.env.AGENT_SKILL_PATHS = "";
 process.env.SUBAGENTS_SKILL_PATHS = "";
+process.env.PORTUS_MCP_PROJECTS = `edit=${projectRoot}`;
 
 after(() => rmSync(root, { recursive: true, force: true }));
 
 // The server reads these environment-selected paths during module initialization.
 const { createHttpServer } = await import("../src/server.js");
-const { upsertProject } = await import("../src/state/ProjectRegistry.js");
-upsertProject({ projectAlias: "edit", rootPath: projectRoot });
 const { stateStore } = await import("../src/state/StateStore.js");
 
 function resultOf(response: CallToolResult): Record<string, any> {

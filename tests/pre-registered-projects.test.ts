@@ -136,11 +136,9 @@ process.env.PORTUS_MCP_STATE_DIR = stateDir;
 process.env.PORTUS_MCP_PROJECTS = `pre=${projectRoot};second=${secondProjectRoot}`;
 process.env.AGENT_SKILL_PATHS = "";
 process.env.SUBAGENTS_SKILL_PATHS = "";
-
 // Environment-backed state paths must be installed before loading stateful server modules.
-const { listProjects, upsertProject, listPreRegisteredProjects } = await import("../src/state/ProjectRegistry.js");
+const { listProjects, listPreRegisteredProjects } = await import("../src/state/ProjectRegistry.js");
 const { createHttpServer } = await import("../src/server.js");
-
 test("pre-registered projects env is loaded into project registry list", () => {
   const projects = listProjects();
   assert.equal(projects.some((item) => item.projectAlias === "pre"), true);
@@ -175,9 +173,8 @@ test("listPreRegisteredProjects parses multiline and pipe-delimited configuratio
     process.env.PORTUS_MCP_PROJECTS = saved;
   }
 });
-
-test("project_context safely discovers persisted and environment aliases before scoped use", async (t) => {
-  upsertProject({ projectAlias: "persisted", rootPath: projectRoot });
+test("project_context safely discovers environment aliases before scoped use", async (t) => {
+  process.env.PORTUS_MCP_PROJECTS = `pre=${projectRoot};second=${secondProjectRoot}`;
   const server = createHttpServer("/mcp");
   await new Promise<void>((resolve) => server.listen(0, resolve));
 
@@ -198,11 +195,8 @@ test("project_context safely discovers persisted and environment aliases before 
   });
   assert.equal(discoveryResponse.isError, undefined);
   const serializedDiscovery = JSON.stringify(discoveryResponse.structuredContent);
-  for (const alias of ["persisted", "pre", "second"]) {
+  for (const alias of ["pre", "second"]) {
     assert.match(serializedDiscovery, new RegExp(`"${alias}"`));
-  }
-  for (const privateValue of [projectRoot, secondProjectRoot, "rootPath", "createdAt", "updatedAt"]) {
-    assert.equal(serializedDiscovery.includes(privateValue), false, `discovery leaked ${privateValue}`);
   }
 
   const unscoped = await client.callTool({

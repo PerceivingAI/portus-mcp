@@ -96,13 +96,14 @@ process.env.PORTUS_MCP_CEREBRAS_MODEL = "llama3.1-8b";
 process.env.AGENT_SKILL_PATHS = skillsDir;
 process.env.SUBAGENTS_SKILL_PATHS = skillsDir;
 process.env.CEREBRAS_API_KEY = "test-key";
+process.env.PORTUS_MCP_PROJECTS = `mcp=${projectRoot}`;
 process.env.npm_execpath ??= path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
 
 // Environment-backed paths must be installed before loading stateful server modules.
 const { createHttpServer } = await import("../src/server.js");
 const { loadPolicyConfig } = await import("../src/policy/policyConfig.js");
 const { loadSkillRegistry, parseSkillFrontmatter } = await import("../src/skills/SkillRegistry.js");
-const { upsertProject } = await import("../src/state/ProjectRegistry.js");
+const { assertProjectAlias } = await import("../src/state/ProjectRegistry.js");
 const { getSession, upsertSession } = await import("../src/state/SessionRegistry.js");
 const selectedPolicy = loadPolicyConfig();
 const expectedCapabilities = {
@@ -214,10 +215,9 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   }
 
   assert.throws(
-    () => upsertProject({ projectAlias: "skill/collision", rootPath: projectRoot }),
+    () => assertProjectAlias("skill/collision"),
     /reserved for configured read-only skills/
   );
-  upsertProject({ projectAlias: "mcp", rootPath: projectRoot });
   const discovery = resultOf(await client.callTool({
     name: "project_context",
     arguments: { include: { projects: true, skills: true } }
@@ -240,12 +240,11 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   });
   assert.equal(missingAliasContext.isError, true);
   assert.match(JSON.stringify(missingAliasContext.structuredContent), /projectAlias/i);
-  const registered = resultOf(await client.callTool({
+  const registrationAttempt = await client.callTool({
     name: "project_policy",
     arguments: { action: { type: "register_project", projectAlias: "policy-registered", rootPath: projectRoot } }
-  }));
-  assert.equal(registered.action, "register_project");
-  assert.equal(registered.project.projectAlias, "policy-registered");
+  });
+  assert.equal(registrationAttempt.isError, true);
   const defaultContext = resultOf(await client.callTool({
     name: "project_context",
     arguments: { projectAlias: "mcp" }
@@ -1359,8 +1358,7 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   }));
   assert.equal(Array.isArray(audit.events), true);
   const auditJson = JSON.stringify(audit.events);
-  assert.match(auditJson, /"tool":"project_policy"/);
-  assert.match(auditJson, /"operation":"register_project"/);
+  assert.match(auditJson, /"tool":"project_edit"/);
   assert.equal(auditJson.includes(projectRoot), false);
   assert.equal(auditJson.includes("rootPath"), false);
   assert.equal(auditJson.includes("args"), false);

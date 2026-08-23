@@ -203,14 +203,13 @@ process.env.PORTUS_MCP_DEFAULT_PROVIDER = "cerebras";
 process.env.PORTUS_MCP_CEREBRAS_MODEL = "llama3.1-8b";
 process.env.PORTUS_MCP_FLUE_CLI_PATH = fakeFluePath;
 process.env.CEREBRAS_API_KEY = "test-key";
+process.env.PORTUS_MCP_PROJECTS = `agent=${projectRoot}`;
 
-const { upsertProject } = await import("../src/state/ProjectRegistry.js");
 const { getSubagentLimits, runFlueTask, stopFlueTask } = await import("../src/flue/runTask.js");
 const { getSession } = await import("../src/state/SessionRegistry.js");
 const { readSessionEvents } = await import("../src/state/SessionEvents.js");
 const { collectFlueResult } = await import("../src/flue/collectResult.js");
 
-upsertProject({ projectAlias: "agent", rootPath: projectRoot });
 
 async function waitForSession(sessionId: string, expected: "completed" | "failed" | "stopped") {
   const deadline = Date.now() + 5000;

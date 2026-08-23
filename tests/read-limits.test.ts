@@ -138,11 +138,9 @@ process.env.SUBAGENTS_SKILL_PATHS = "";
 process.env.PORTUS_MCP_DEFAULT_PROVIDER = "cerebras";
 process.env.PORTUS_MCP_CEREBRAS_MODEL = "llama3.1-8b";
 process.env.CEREBRAS_API_KEY = "test-key";
+process.env.PORTUS_MCP_PROJECTS = `read-max=${projectRoot};unicode-input=${projectRoot}`;
 
 const { createHttpServer } = await import("../src/server.js");
-// State modules read environment variables during initialization, so project setup must follow fixture configuration.
-const { upsertProject } = await import("../src/state/ProjectRegistry.js");
-
 function resultOf(response: any): any {
   assert.equal(response.isError, undefined, JSON.stringify(response.structuredContent));
   return response.structuredContent.result;
@@ -163,7 +161,6 @@ async function withClient(t: any): Promise<Client> {
 }
 
 test("project reads use configured maxReadChars", async (t) => {
-  upsertProject({ projectAlias: "read-max", rootPath: projectRoot });
   const client = await withClient(t);
 
   const response = resultOf(await client.callTool({
@@ -209,7 +206,6 @@ test("text input limits count Unicode code points", async (t) => {
   });
   t.after(() => writePolicy());
 
-  upsertProject({ projectAlias: "unicode-input", rootPath: projectRoot });
   const client = await withClient(t);
 
   const write = resultOf(await client.callTool({

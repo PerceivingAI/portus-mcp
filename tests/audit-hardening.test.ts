@@ -143,11 +143,10 @@ process.env.SUBAGENTS_SKILL_PATHS = "";
 process.env.PORTUS_MCP_DEFAULT_PROVIDER = "cerebras";
 process.env.PORTUS_MCP_CEREBRAS_MODEL = "llama3.1-8b";
 process.env.CEREBRAS_API_KEY = "test-key";
+process.env.PORTUS_MCP_PROJECTS = `audit=${projectRoot}`;
 
 const { createHttpServer } = await import("../src/server.js");
-const { upsertProject } = await import("../src/state/ProjectRegistry.js");
 
-upsertProject({ projectAlias: "audit", rootPath: projectRoot });
 mkdirSync(path.join(stateDir, "audit.log"), { recursive: true });
 
 async function withClient(t: any): Promise<Client> {
@@ -207,12 +206,6 @@ test("strict audit mode blocks selected mutations when audit log is not writable
     assert.equal(writeDenied.results[0].outcome, "skipped");
     assert.equal(writeDenied.results[0].reason, "batch_failed");
 
-    const registrationDenied = await client.callTool({
-      name: "project_policy",
-      arguments: { action: { type: "register_project", projectAlias: "audit-denied", rootPath: projectRoot } }
-    });
-    assert.equal(registrationDenied.isError, true);
-    assert.match(JSON.stringify(registrationDenied), /audit/i);
   } finally {
     writePolicy(false);
   }

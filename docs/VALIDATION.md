@@ -15,7 +15,7 @@ npm run flue:check
 
 ## Manual ChatGPT Verification
 
-Use ChatGPT to verify project registration, file read/write/move/delete behavior, delete confirmation, package script execution, search, symbol search, path boundary enforcement, spawned-agent lifecycle, session events, cleanup, config inspection, permission inspection, and agent limit inspection.
+Use ChatGPT to verify project discovery, file read/write/move/delete behavior, delete confirmation, package script execution, search, symbol search, path boundary enforcement, spawned-agent lifecycle, session events, cleanup, config inspection, permission inspection, and agent limit inspection.
 
 Also verify the expected failure messages for disabled spawned agents, zero agent limits, and missing provider credentials.
 

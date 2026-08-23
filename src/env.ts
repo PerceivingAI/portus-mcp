@@ -1,4 +1,5 @@
-import "dotenv/config";
+import dotenv from "dotenv";
+dotenv.config({ path: process.env.DOTENV_CONFIG_PATH });
 
 export function optionalEnv(name: string, fallback = ""): string {
   const value = process.env[name];

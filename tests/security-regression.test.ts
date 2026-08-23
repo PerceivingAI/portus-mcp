@@ -70,7 +70,12 @@ process.env.CEREBRAS_API_KEY = "test-key";
 const { createHttpServer } = await import("../src/server.js");
 
 const { loadPolicyConfig, policyPermissions } = await import("../src/policy/policyConfig.js");
-const { upsertProject } = await import("../src/state/ProjectRegistry.js");
+const { getProject } = await import("../src/state/ProjectRegistry.js");
+function registerProject(alias: string, rootPath: string): void {
+  const projects = (process.env.PORTUS_MCP_PROJECTS ?? "").split(";").filter(Boolean).filter((entry) => !entry.startsWith(`${alias}=`));
+  projects.push(`${alias}=${rootPath}`);
+  process.env.PORTUS_MCP_PROJECTS = projects.join(";");
+}
 const selectedPolicy = loadPolicyConfig();
 const withMainAgentPermissions = (
   permissions: Partial<typeof selectedPolicy.main_agent.permissions>
@@ -137,7 +142,7 @@ test("MCP tools use their matching selected-policy permission", async (t) => {
   let activePolicy = selectedPolicy;
   const client = await withClient(t, () => activePolicy);
   const projectAlias = "broad-gates";
-  upsertProject({ projectAlias, rootPath: projectRoot });
+  registerProject(projectAlias, projectRoot);
   const cases = [
     { permission: "projectContext", tool: "project_context", arguments: { projectAlias, include: { status: true } } },
     { permission: "projectRead", tool: "project_read", arguments: { projectAlias, requests: [{ relativePath: "README.md", mode: "exists" }] } },
@@ -169,7 +174,7 @@ test("project_screenshot gates on its dedicated projectScreenshot permission", a
   let activePolicy = selectedPolicy;
   const client = await withClient(t, () => activePolicy);
   const projectAlias = "screenshot-gates";
-  upsertProject({ projectAlias, rootPath: projectRoot });
+  registerProject(projectAlias, projectRoot);
 
   // Persisted (completed) session so list is otherwise permitted.
   const sessionId = "exec_42_cafecafe";
@@ -227,7 +232,7 @@ test("ignored-file authorization does not widen default root search", async (t) 
   const ignoredAccessPolicy = withMainAgentPermissions({ readGitIgnoredFiles: true });
   const client = await withClient(t, () => ignoredAccessPolicy);
   const projectAlias = "ignored-search-scope";
-  upsertProject({ projectAlias, rootPath: projectRoot });
+  registerProject(projectAlias, projectRoot);
 
   const defaultScope = resultOf(await client.callTool({
     name: "project_search",
@@ -276,7 +281,7 @@ test("regex timeout leaves the MCP server responsive", async (t) => {
   };
   const client = await withClient(t, () => regexPolicy);
   const projectAlias = "regex-timeout";
-  upsertProject({ projectAlias, rootPath: projectRoot });
+  registerProject(projectAlias, projectRoot);
 
   const section = resultOf(await client.callTool({
     name: "project_search",
@@ -322,7 +327,9 @@ test("canonical project boundary permits internal links and rejects external jun
   symlinkSync(outsideRoot, outsideLink, directoryLinkType);
   symlinkSync(insideRoot, insideLink, directoryLinkType);
   symlinkSync(projectRoot, rootLink, directoryLinkType);
+  const savedProjects = process.env.PORTUS_MCP_PROJECTS;
   t.after(() => {
+    process.env.PORTUS_MCP_PROJECTS = savedProjects;
     for (const junction of [outsideLink, insideLink, rootLink]) {
       try {
         unlinkSync(junction);
@@ -331,8 +338,8 @@ test("canonical project boundary permits internal links and rejects external jun
       }
     }
   });
-
-  const linkedRegistration = upsertProject({ projectAlias, rootPath: rootLink });
+  registerProject(projectAlias, rootLink);
+  const linkedRegistration = getProject(projectAlias);
   assert.equal(linkedRegistration.rootPath, realpathSync.native(projectRoot));
 
   const reads = resultOf(await client.callTool({
@@ -418,7 +425,8 @@ test("canonical project boundary permits internal links and rejects external jun
 
 test("MCP denies gitignored-file reads and excludes traversal patterns", async (t) => {
   const client = await withClient(t);
-  upsertProject({ projectAlias: "sec", rootPath: projectRoot });
+  const projectAlias = "sec";
+  registerProject(projectAlias, projectRoot);
 
   const reads = resultOf(await client.callTool({
     name: "project_read",
@@ -544,7 +552,7 @@ test("MCP package script tools cannot consume ignored package.json files when ig
   execFileSync("git", ["init"], { cwd: ignoredPackageProjectRoot, stdio: "ignore" });
 
   const projectAlias = "ignored-package";
-  upsertProject({ projectAlias, rootPath: ignoredPackageProjectRoot });
+  registerProject(projectAlias, ignoredPackageProjectRoot);
 
   const context = resultOf(await client.callTool({
     name: "project_context",
@@ -565,8 +573,8 @@ test("MCP package script tools cannot consume ignored package.json files when ig
 
 test("direct file tools stay filtered while allowed git commands expose repository state", async (t) => {
   const client = await withClient(t);
-  upsertProject({ projectAlias: "blocked", rootPath: projectRoot });
-
+  const projectAlias = "blocked";
+  registerProject(projectAlias, projectRoot);
   const diff = resultOf(await client.callTool({
     name: "project_run",
     arguments: { projectAlias: "blocked", requests: [{ type: "command", command: "git", args: ["diff"] }] }
@@ -585,7 +593,7 @@ test("direct file tools stay filtered while allowed git commands expose reposito
 test("MCP mutation tools cannot operate on existing gitignored files when ignored reads are disabled", async (t) => {
   const client = await withClient(t);
   const projectAlias = "ignored-mutation";
-  upsertProject({ projectAlias, rootPath: projectRoot });
+  registerProject(projectAlias, projectRoot);
 
   const operations = [
     { type: "write", relativePath: "ignored.txt", content: "overwrite\n" },
@@ -662,7 +670,7 @@ test("MCP mutation tools cannot operate on existing gitignored files when ignore
 test("MCP mutation tools reject oversized input payloads", async (t) => {
   const client = await withClient(t);
   const projectAlias = "input-limits";
-  upsertProject({ projectAlias, rootPath: projectRoot });
+  registerProject(projectAlias, projectRoot);
 
   for (const [operation, error] of [
     [{ type: "write", relativePath: "large.txt", content: "x".repeat(1000001) }, /limits\.fileWrite\.maxChars/],

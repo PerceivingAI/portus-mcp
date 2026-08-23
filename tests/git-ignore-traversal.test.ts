@@ -90,8 +90,8 @@ process.env.PORTUS_MCP_CONFIG_PATH = configPath;
 process.env.PORTUS_MCP_POLICY_PATH = policyPath;
 process.env.PORTUS_MCP_STATE_DIR = stateDir;
 process.env.DOTENV_CONFIG_PATH = path.join(root, "missing.env");
+process.env.PORTUS_MCP_PROJECTS = `git-shapes=${gitProjectRoot};non-git-shape=${nonGitProjectRoot}`;
 
-const { upsertProject } = await import("../src/state/ProjectRegistry.js");
 const { collectSearchableFiles } = await import("../src/tools/projects.js");
 const { loadPolicyConfig } = await import("../src/policy/policyConfig.js");
 const policy = loadPolicyConfig();
@@ -122,8 +122,6 @@ for (let index = 0; index < 40; index += 1) {
   writeFileSync(path.join(directory, `file-${index}.txt`), `${index}\n`, "utf8");
 }
 
-upsertProject({ projectAlias: "git-shapes", rootPath: gitProjectRoot });
-upsertProject({ projectAlias: "non-git-shape", rootPath: nonGitProjectRoot });
 
 test("wide and deep Git traversal uses one classifier process and prunes ignored directories", async () => {
   const result = await collectSearchableFiles("git-shapes", ".", 100000, false, policy);

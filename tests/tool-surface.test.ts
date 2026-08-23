@@ -46,11 +46,10 @@ process.env.PORTUS_MCP_POLICY_PATH = policyPath;
 process.env.PORTUS_MCP_STATE_DIR = stateDir;
 process.env.AGENT_SKILL_PATHS = "";
 process.env.SUBAGENTS_SKILL_PATHS = "";
+process.env.PORTUS_MCP_PROJECTS = `surface=${projectRoot};selected-policy=${projectRoot}`;
 
 // These modules bind environment-backed state at import time, so the fixture paths must be installed first.
 const { createHttpServer } = await import("../src/server.js");
-const { upsertProject } = await import("../src/state/ProjectRegistry.js");
-
 const shippedPolicy = JSON.parse(
   readFileSync(path.resolve("portus-mcp.policy.json"), "utf8")
 ) as PortusPolicyConfig;
@@ -196,7 +195,6 @@ test.after(() => {
 });
 
 test("fixed tool discovery and positive capabilities follow effective permissions", async () => {
-  upsertProject({ projectAlias: "surface", rootPath: projectRoot });
 
   await withClient(() => restrictivePolicy, async (client) => {
     const names = (await client.listTools()).tools.map((tool) => tool.name).sort();
@@ -319,7 +317,6 @@ test("project_context uses the policy selected by PORTUS_MCP_POLICY_PATH", async
     allowShell: false
   });
   writeFileSync(policyPath, JSON.stringify(selectedPolicy, null, 2), "utf8");
-  upsertProject({ projectAlias: "selected-policy", rootPath: projectRoot });
 
   await withClient(undefined, async (client) => {
     assert.deepEqual(

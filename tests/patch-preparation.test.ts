@@ -98,13 +98,10 @@ process.env.PORTUS_MCP_POLICY_PATH = policyPath;
 process.env.PORTUS_MCP_STATE_DIR = stateDir;
 process.env.AGENT_SKILL_PATHS = "";
 process.env.SUBAGENTS_SKILL_PATHS = "";
+process.env.PORTUS_MCP_PROJECTS = `patch=${projectRoot};prepare-read-only=${projectRoot}`;
 
 // Configuration modules read environment variables during module initialization, so this import must follow fixture setup.
 const { createHttpServer } = await import("../src/server.js");
-// State modules read environment variables during initialization, so fixture registration follows environment setup.
-const { upsertProject } = await import("../src/state/ProjectRegistry.js");
-upsertProject({ projectAlias: "patch", rootPath: projectRoot });
-upsertProject({ projectAlias: "prepare-read-only", rootPath: projectRoot });
 
 const expectedFileSchema = z.object({
   relativePath: z.string(),
