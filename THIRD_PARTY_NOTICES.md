@@ -29,6 +29,30 @@ License:
 Apache-2.0
 ```
 
+## Screenshot Capture
+
+Portus MCP uses `node-screenshots` for native session-window enumeration and capture, and `sharp` for bounded resizing and JPEG quality control.
+
+Packages:
+
+```text
+node-screenshots@0.2.8
+sharp@0.35.3
+```
+
+Projects:
+
+```text
+https://github.com/nashaofu/node-screenshots
+https://github.com/lovell/sharp
+```
+
+License:
+
+```text
+Apache-2.0
+```
+
 ## Project License
 
 Portus MCP is released under Apache-2.0.

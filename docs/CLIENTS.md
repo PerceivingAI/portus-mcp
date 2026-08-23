@@ -79,7 +79,7 @@ If it does not, leave `PORTUS_MCP_BEARER_TOKEN` empty or use another exposure la
 
 ## Cold Start and Verification
 
-After the client discovers the nine MCP tools, use this sequence:
+After the client discovers the ten MCP tools, use this sequence:
 
 1. Call `project_context` with `include.projects=true` and omit `projectAlias`.
 2. Choose one alias from the alias-only response. The response must not contain an absolute root or internal registry metadata.
@@ -90,4 +90,4 @@ Any project-scoped `project_context` section requires `projectAlias`; only alias
 
 Every returned capability entry is enabled. Disabled tools and features are omitted rather than returned as `enabled: false`; `complete: true` makes absence unambiguous. This report improves planning but is not a security boundary—runtime permission and request-specific checks remain authoritative.
 
-The client should show exactly nine tools. No management profile, obsolete project/admin tool name, deprecated registration, or compatibility path should appear.
+The client should show exactly ten tools, including `project_screenshot`. No management profile, obsolete project/admin tool name, deprecated registration, or compatibility path should appear. Clients that support native MCP image blocks can display `project_screenshot` capture and read results directly; base64 is not duplicated into structured metadata.

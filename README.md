@@ -4,7 +4,7 @@ Portus MCP is an MCP server for AI-assisted project work across local machines, 
 
 ## Exposed Tool Surface
 
-Portus MCP exposes one fixed nine-tool surface:
+Portus MCP exposes one fixed ten-tool surface:
 
 ```text
 project_context
@@ -14,16 +14,16 @@ project_edit
 project_patch
 project_run
 project_policy
+project_screenshot
 subagent_task
 subagent_context
 ```
 
-Together they provide alias-only project discovery, bounded project context, ordered reads, search, file and directory edits, patch preparation/application, approved execution, policy inspection/administration, and Flue subagent lifecycle management and context retrieval.
-
+Together they provide alias-only project discovery, bounded project context, ordered reads, search, file and directory edits, patch preparation/application, approved execution, session-owned GUI screenshots, policy inspection/administration, and Flue subagent lifecycle management and context retrieval.
 
 ## Requirements
 
-You need Node.js 20 or newer, npm, and Git.
+You need Node.js 20.9 or newer, npm, and Git.
 
 For access from another machine or hosted client, use Tailscale Funnel, Cloudflare Tunnel, or another exposure layer that can reach the MCP server.
 
@@ -86,7 +86,7 @@ The shipped `portus-mcp.config.json` configures default subagent retry behavior 
     "defaultTemplate": "ephemeral-project-subagent"
   },
   "traversal": {
-    "excludedPatterns": [".git", "node_modules", "dist", ".portus-mcp"]
+    "excludedPatterns": [".git", "node_modules", "dist", ".portus-mcp", ".portus-artifacts"]
   }
 }
 ```
@@ -344,9 +344,27 @@ Use `project_read.requests[]` for reads and complete-file hashes, `project_conte
 
 See `docs/TOOLS.md` for the current tool contract and `docs/BROAD_MOBILITY_SURFACE.md` for the architectural decision.
 
+## Session-owned screenshots
+
+`project_screenshot` captures visible application windows owned by a running `project_run` execution session. Enable `main_agent.permissions.projectScreenshot` in the selected policy, start the GUI with `project_run.sessionAction.type="start"`, and pass the returned session ID to the screenshot tool. (`src/tools/projectScreenshot.ts:34-216`, `src/runtime/screenshotSystem.ts:78-1157`)
+
+```json
+{
+  "operation": "capture",
+  "projectAlias": "app",
+  "executionSessionId": "exec_1787430000000_a1b2c3d4",
+  "format": "png"
+}
+```
+
+Operations are `targets`, `capture`, `read`, `list`, and `delete`. Capture and read return native MCP image content unless `returnImage=false`. Files are stored under `.portus-artifacts/screenshots/<executionSessionId>/` in the selected registered project and remain there until an explicit `delete` request. Portus does not capture desktops, monitors, active windows, arbitrary host windows, or screen regions.
+
+Windows, macOS, and Linux X11 use the npm-installed native worker. Wayland returns `unsupported_session_window_capture`.
+
+
 ## Platforms
 
-Windows and Linux were verified for the initial release. macOS is intended to use the same Node.js workflow but was not verified.
+Portus runs on Windows, macOS, and Linux. Session-window screenshots use the native npm worker on Windows, macOS, and Linux X11; Wayland capture fails closed when ownership cannot be attested.
 
 ## Validation
 

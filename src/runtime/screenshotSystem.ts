@@ -3,7 +3,7 @@
  *
  * Owns execution-session ownership checks, opaque window tokens, worker
  * launches, repository-local storage under `.portus-artifacts/screenshots`,
- * publication/read/list/delete, retention, and audit events. Complexity is
+ * publication, read, list, explicit deletion, and audit events. Complexity is
  * kept behind a small operation interface; worker-launch, clock, random, and
  * PID-enumeration dependencies are injectable so tests replace side effects
  * without a public adapter hierarchy.
@@ -16,20 +16,35 @@
  *   filenames, revalidated through canonical project containment on every use;
  * - image bytes are validated (signature, dimensions, size) before
  *   publication and again before read;
- * - mutation and retention are serialized per project;
+ * - capture publication and explicit deletion are serialized per project;
  * - audit events omit titles, PIDs, native ids, and absolute paths.
  */
 
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync } from "node:fs";
-import path from "node:path";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  unlinkSync
+} from "node:fs";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import { ToolError } from "../errors.js";
 import { resolveProjectPath } from "../policy/pathPolicy.js";
 import { stateStore } from "../state/StateStore.js";
 import { getExecutionSessionOwnership, type ExecutionSessionOwnership } from "./executionSessions.js";
-import { getPosixDescendants, getWindowsDescendants, isProcessAlive } from "./processTermination.js";
+import {
+  getPosixSessionProcessSnapshot,
+  getWindowsSessionProcessSnapshot,
+  type SessionProcessSnapshot
+} from "./processTermination.js";
 
 export const SCREENSHOT_STORAGE_DIR = ".portus-artifacts/screenshots";
 const WORKER_PROTOCOL_VERSION = 1;
@@ -40,9 +55,6 @@ export type ScreenshotLimits = {
   maxBytes: number;
   maxWidth: number;
   maxHeight: number;
-  maxStoredFilesPerSession: number;
-  maxTotalBytesPerProject: number;
-  maxAgeDays: number;
   captureTimeoutMs: number;
   maxWindowWaitMs: number;
   windowTokenTtlMs: number;
@@ -55,9 +67,6 @@ export const DEFAULT_SCREENSHOT_LIMITS: ScreenshotLimits = {
   maxBytes: 8388608,
   maxWidth: 3840,
   maxHeight: 2160,
-  maxStoredFilesPerSession: 20,
-  maxTotalBytesPerProject: 104857600,
-  maxAgeDays: 7,
   captureTimeoutMs: 10000,
   maxWindowWaitMs: 30000,
   windowTokenTtlMs: 30000,
@@ -70,14 +79,20 @@ export const SCREENSHOT_ERROR_CODES = {
   invalidSessionId: "invalid_session_id",
   unknownSession: "unknown_session",
   sessionProjectMismatch: "session_project_mismatch",
+  confirmationRequired: "confirmation_required",
   sessionNotRunning: "session_not_running",
   rootPidUnavailable: "root_pid_unavailable",
+  processIdentityMismatch: "process_identity_mismatch",
   invalidScreenshotId: "invalid_screenshot_id",
+  invalidCursor: "invalid_cursor",
   screenshotNotFound: "screenshot_not_found",
   screenshotTooLarge: "screenshot_too_large",
   sessionWindowNotFound: "session_window_not_found",
   multipleSessionWindows: "multiple_session_windows",
   windowTokenInvalid: "window_token_invalid",
+  staleSessionWindow: "stale_session_window",
+  sessionWindowOwnershipChanged: "session_window_ownership_changed",
+  windowIneligible: "window_ineligible",
   windowTokenExpired: "window_token_expired",
   workerTimeout: "screenshot_worker_timeout",
   workerFailed: "screenshot_worker_failed",
@@ -85,16 +100,16 @@ export const SCREENSHOT_ERROR_CODES = {
   bindingUnavailable: "screenshot_binding_unavailable",
   invalidImageData: "invalid_image_data",
   imageBoundsExceeded: "image_bounds_exceeded",
-  invalidCaptureOptions: "invalid_capture_options"
+  invalidCaptureOptions: "invalid_capture_options",
+  unsupportedSessionWindowCapture: "unsupported_session_window_capture",
 } as const;
 
-export class ScreenshotError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-    readonly details?: Record<string, unknown>
-  ) {
-    super(message);
+export class ScreenshotError extends ToolError {
+  readonly code: string;
+
+  constructor(code: string, message: string, details?: Record<string, unknown>) {
+    super(message, { code, ...details });
+    this.code = code;
     this.name = "ScreenshotError";
   }
 }
@@ -120,6 +135,7 @@ export type WorkerRequest =
       nativeWindowId: number;
       expectedPid: number;
       format: ScreenshotFormat;
+      maxBytes: number;
       jpegQuality?: number;
       maxWidth?: number;
       maxHeight?: number;
@@ -156,6 +172,11 @@ const workerWindowSchema = z.object({
 
 const targetsResultSchema = z.object({ windows: z.array(workerWindowSchema).max(256) }).strict();
 
+const capabilitiesResultSchema = z.object({
+  captureAvailable: z.boolean(),
+  reason: z.string().min(1).max(64).optional()
+}).passthrough();
+
 const captureResultSchema = z.object({
   nativeWindowId: z.number().int().positive(),
   pid: z.number().int().positive(),
@@ -176,10 +197,35 @@ function formatUtcStamp(ms: number): string {
 const GENERATED_NAME_RE = /^\d{8}T\d{6}Z_[0-9a-f]{8}\.(png|jpeg)$/;
 const SESSION_ID_RE = /^exec_[0-9]+_[0-9a-f]{6,16}$/;
 
-function capturedAtMsFromName(name: string): number {
+function capturedAtMsFromName(name: string): number | null {
   const stamp = name.slice(0, 16);
   const iso = `${stamp.slice(0, 4)}-${stamp.slice(4, 6)}-${stamp.slice(6, 8)}T${stamp.slice(9, 11)}:${stamp.slice(11, 13)}:${stamp.slice(13, 15)}Z`;
-  return Date.parse(iso);
+  const parsed = Date.parse(iso);
+  return Number.isFinite(parsed) && formatUtcStamp(parsed) === stamp ? parsed : null;
+}
+
+function encodeListCursor(screenshotId: string): string {
+  return `v1.${Buffer.from(screenshotId, "utf8").toString("base64url")}`;
+}
+
+function decodeListCursor(cursor: string): string {
+  if (!cursor.startsWith("v1.")) {
+    throw new ScreenshotError(SCREENSHOT_ERROR_CODES.invalidCursor, "Malformed screenshot list cursor.");
+  }
+  let screenshotId: string;
+  try {
+    screenshotId = Buffer.from(cursor.slice(3), "base64url").toString("utf8");
+  } catch {
+    throw new ScreenshotError(SCREENSHOT_ERROR_CODES.invalidCursor, "Malformed screenshot list cursor.");
+  }
+  if (
+    encodeListCursor(screenshotId) !== cursor
+    || !GENERATED_NAME_RE.test(screenshotId)
+    || capturedAtMsFromName(screenshotId) === null
+  ) {
+    throw new ScreenshotError(SCREENSHOT_ERROR_CODES.invalidCursor, "Malformed screenshot list cursor.");
+  }
+  return screenshotId;
 }
 
 // ---- Image validation ----
@@ -247,6 +293,7 @@ class WindowTokenStore {
   constructor(
     private readonly ttlMs: number,
     private readonly now: () => number,
+    private readonly randomHex: (bytes: number) => string,
     private readonly maxTokens = 512
   ) {}
 
@@ -257,8 +304,8 @@ class WindowTokenStore {
       if (oldest === undefined) break;
       this.tokens.delete(oldest);
     }
-    let windowId = randomBytes(16).toString("hex");
-    while (this.tokens.has(windowId)) windowId = randomBytes(16).toString("hex");
+    let windowId = this.randomHex(16);
+    while (this.tokens.has(windowId)) windowId = this.randomHex(16);
     this.tokens.set(windowId, {
       projectAlias,
       sessionId,
@@ -303,27 +350,56 @@ class WindowTokenStore {
 
 export type AllowedPidSetBuilder = (session: ExecutionSessionOwnership) => Promise<number[]>;
 
-/**
- * Builds the fresh allowed-PID set for one worker launch: the session root
- * PID plus its current descendants. Throws `root_pid_unavailable` when the
- * root PID is missing or dead so capture fails closed.
- */
-export const defaultBuildAllowedPids: AllowedPidSetBuilder = async (session) => {
-  if (!session.pid || !isProcessAlive(session.pid)) {
+const PROCESS_START_TOLERANCE_MS = 10_000;
+
+export function attestSessionProcessSnapshot(
+  session: ExecutionSessionOwnership,
+  snapshot: SessionProcessSnapshot
+): number[] {
+  if (
+    session.pid === undefined
+    || snapshot.rootPid !== session.pid
+    || !Number.isFinite(session.startedAtMs)
+    || Math.abs(snapshot.rootStartedAtMs - session.startedAtMs) > PROCESS_START_TOLERANCE_MS
+  ) {
     throw new ScreenshotError(
-      SCREENSHOT_ERROR_CODES.rootPidUnavailable,
-      "Execution session has no live root process; capture is unavailable."
+      SCREENSHOT_ERROR_CODES.processIdentityMismatch,
+      "Execution-session process identity no longer matches the recorded launch."
     );
   }
-  const descendants =
-    process.platform === "win32"
-      ? await getWindowsDescendants(session.pid)
-      : await getPosixDescendants(session.pid);
-  const allowed = new Set<number>([session.pid]);
-  for (const pid of descendants) {
-    if (Number.isInteger(pid) && pid > 0) allowed.add(pid);
+  const allowed = Array.from(new Set(snapshot.allowedPids.filter((pid) => Number.isInteger(pid) && pid > 0)));
+  if (!allowed.includes(session.pid)) {
+    throw new ScreenshotError(
+      SCREENSHOT_ERROR_CODES.processIdentityMismatch,
+      "Execution-session root process is absent from the attested process set."
+    );
   }
-  return Array.from(allowed);
+  return allowed;
+}
+
+/** Builds a fresh, start-time-attested process set for every worker launch. */
+export const defaultBuildAllowedPids: AllowedPidSetBuilder = async (session) => {
+  if (!session.pid) {
+    throw new ScreenshotError(
+      SCREENSHOT_ERROR_CODES.rootPidUnavailable,
+      "Execution session has no root process; capture is unavailable."
+    );
+  }
+  let snapshot: SessionProcessSnapshot | null;
+  try {
+    snapshot = process.platform === "win32"
+      ? await getWindowsSessionProcessSnapshot(session.pid)
+      : await getPosixSessionProcessSnapshot(session.pid);
+  } catch {
+    snapshot = null;
+  }
+  if (snapshot === null) {
+    throw new ScreenshotError(
+      SCREENSHOT_ERROR_CODES.rootPidUnavailable,
+      "Execution-session root process could not be attested."
+    );
+  }
+  return attestSessionProcessSnapshot(session, snapshot);
 };
 
 function resolveWorkerScriptPath(): string {
@@ -471,8 +547,23 @@ export type ScreenshotMeta = {
   sha256?: string;
 };
 
+export type ScreenshotOperation = "targets" | "capture" | "read" | "list" | "delete";
+
+export type ScreenshotCapabilities = {
+  enabled: boolean;
+  scope?: "execution_session_windows";
+  operations: ScreenshotOperation[];
+  platform: NodeJS.Platform;
+  formats: ScreenshotFormat[];
+  captureAvailable: boolean;
+  reason?: string;
+  desktopCapture: false;
+  activeWindowCapture: false;
+  regionCapture: false;
+};
+
 export type ScreenshotSystem = {
-  getCapabilities(input: { permissionGranted: boolean }): Record<string, unknown>;
+  getCapabilities(input: { permissionGranted: boolean }): ScreenshotCapabilities;
   /** Probes (once per generation) whether the native binding supports capture. */
   ensureBindingAvailability(): Promise<boolean>;
   refreshBindingAvailability(): void;
@@ -501,13 +592,17 @@ export function createScreenshotSystem(deps: {
   buildAllowedPids?: AllowedPidSetBuilder;
   limits?: ScreenshotLimits;
   now?: () => number;
+  randomHex?: (bytes: number) => string;
+  subscribeSessionExit?: (listener: (sessionId: string) => void) => () => void;
 } = {}): ScreenshotSystem {
   const limits = deps.limits ?? DEFAULT_SCREENSHOT_LIMITS;
   const now = deps.now ?? Date.now;
   const launchWorker = deps.launchWorker ?? defaultLaunchWorker;
   const buildAllowedPids = deps.buildAllowedPids ?? defaultBuildAllowedPids;
-  const tokens = new WindowTokenStore(limits.windowTokenTtlMs, now);
-  const randomHex = (bytes: number) => randomBytes(bytes).toString("hex");
+  const randomHex = deps.randomHex ?? ((bytes: number) => randomBytes(bytes).toString("hex"));
+  const tokens = new WindowTokenStore(limits.windowTokenTtlMs, now, randomHex);
+  deps.subscribeSessionExit?.((sessionId) => tokens.dropSession(sessionId));
+  let bindingUnavailableReason: string | null = null;
   const projectLocks = new Map<string, Promise<unknown>>();
   let bindingAvailable: boolean | null = null;
   let bindingProbe: Promise<boolean> | null = null;
@@ -544,14 +639,44 @@ export function createScreenshotSystem(deps: {
   }
 
   function resolveScreenshotFile(projectAlias: string, sessionId: string, name: string): string {
-    // Canonical containment is revalidated through path policy on every use.
     return resolveProjectPath(projectAlias, `${SCREENSHOT_STORAGE_DIR}/${sessionId}/${name}`);
   }
 
   function sessionDir(projectAlias: string, sessionId: string, create: boolean): string {
-    const dir = path.join(resolveProjectPath(projectAlias, SCREENSHOT_STORAGE_DIR), sessionId);
-    if (create) mkdirSync(dir, { recursive: true });
+    const relativeDir = `${SCREENSHOT_STORAGE_DIR}/${sessionId}`;
+    let dir = resolveProjectPath(projectAlias, relativeDir);
+    if (create) {
+      mkdirSync(dir, { recursive: true });
+      dir = resolveProjectPath(projectAlias, relativeDir);
+    }
     return dir;
+  }
+
+  function readBoundedFile(filePath: string, tooLargeCode: string): Buffer {
+    const descriptor = openSync(filePath, "r");
+    try {
+      const before = fstatSync(descriptor);
+      if (!before.isFile()) {
+        throw new ScreenshotError(SCREENSHOT_ERROR_CODES.invalidImageData, "Managed screenshot path is not a regular file.");
+      }
+      if (before.size > limits.maxBytes) {
+        throw new ScreenshotError(tooLargeCode, "Stored screenshot exceeds the byte limit.");
+      }
+      const bytes = Buffer.allocUnsafe(before.size);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const read = readSync(descriptor, bytes, offset, bytes.length - offset, offset);
+        if (read === 0) break;
+        offset += read;
+      }
+      const after = fstatSync(descriptor);
+      if (offset !== before.size || after.size !== before.size) {
+        throw new ScreenshotError(SCREENSHOT_ERROR_CODES.invalidImageData, "Managed screenshot changed while it was being read.");
+      }
+      return bytes;
+    } finally {
+      closeSync(descriptor);
+    }
   }
 
   interface GeneratedFile {
@@ -561,74 +686,30 @@ export function createScreenshotSystem(deps: {
     bytes: number;
   }
 
-  function listGeneratedFiles(projectAlias: string): GeneratedFile[] {
-    const root = resolveProjectPath(projectAlias, SCREENSHOT_STORAGE_DIR);
-    if (!existsSync(root)) return [];
+  function listGeneratedFiles(projectAlias: string, sessionId: string): GeneratedFile[] {
+    if (!SESSION_ID_RE.test(sessionId)) return [];
+    let dir: string;
+    try {
+      dir = sessionDir(projectAlias, sessionId, false);
+      if (!existsSync(dir) || !statSync(dir).isDirectory()) return [];
+    } catch {
+      return [];
+    }
     const files: GeneratedFile[] = [];
-    for (const entry of readdirSync(root, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !SESSION_ID_RE.test(entry.name)) continue;
-      const dir = path.join(root, entry.name);
-      for (const file of readdirSync(dir)) {
-        if (!GENERATED_NAME_RE.test(file)) continue;
-        try {
-          files.push({
-            name: file,
-            sessionId: entry.name,
-            capturedAtMs: capturedAtMsFromName(file),
-            bytes: statSync(path.join(dir, file)).size
-          });
-        } catch {
-          // File vanished mid-scan; skip it.
-        }
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile() || !GENERATED_NAME_RE.test(entry.name)) continue;
+      const capturedAtMs = capturedAtMsFromName(entry.name);
+      if (capturedAtMs === null) continue;
+      try {
+        const filePath = resolveScreenshotFile(projectAlias, sessionId, entry.name);
+        const stats = statSync(filePath);
+        if (!stats.isFile()) continue;
+        files.push({ name: entry.name, sessionId, capturedAtMs, bytes: stats.size });
+      } catch {
+        // Repository contents changed during the scan.
       }
     }
     return files;
-  }
-
-  function removeGeneratedFile(projectAlias: string, file: GeneratedFile): void {
-    try {
-      rmSync(path.join(resolveProjectPath(projectAlias, SCREENSHOT_STORAGE_DIR), file.sessionId, file.name));
-    } catch {
-      // Best-effort eviction; never delete unknown files and never fail capture for eviction issues.
-      return;
-    }
-    audit("retention_evict", { projectAlias, sessionId: file.sessionId, screenshotId: file.name, bytes: file.bytes });
-  }
-
-  /** Age → per-session count → per-project total bytes; oldest first, generated files only. */
-  function enforceRetention(projectAlias: string): void {
-    let files = listGeneratedFiles(projectAlias);
-    const cutoffMs = now() - limits.maxAgeDays * 86400_000;
-    for (const file of files) {
-      if (file.capturedAtMs < cutoffMs) {
-        removeGeneratedFile(projectAlias, file);
-        file.bytes = 0;
-      }
-    }
-    files = files.filter((file) => file.bytes > 0);
-
-    const bySession = new Map<string, GeneratedFile[]>();
-    for (const file of files) {
-      const bucket = bySession.get(file.sessionId);
-      if (bucket) bucket.push(file);
-      else bySession.set(file.sessionId, [file]);
-    }
-    for (const bucket of bySession.values()) {
-      bucket.sort((a, b) => b.capturedAtMs - a.capturedAtMs); // newest first
-      for (const file of bucket.slice(limits.maxStoredFilesPerSession)) {
-        removeGeneratedFile(projectAlias, file);
-        file.bytes = 0;
-      }
-    }
-
-    let remaining = files.filter((file) => file.bytes > 0);
-    let totalBytes = remaining.reduce((sum, file) => sum + file.bytes, 0);
-    remaining.sort((a, b) => a.capturedAtMs - b.capturedAtMs); // oldest first
-    for (const file of remaining) {
-      if (totalBytes <= limits.maxTotalBytesPerProject) break;
-      removeGeneratedFile(projectAlias, file);
-      totalBytes -= file.bytes;
-    }
   }
 
   function mapWorkerFailure(error: { code: string; message: string }): ScreenshotError {
@@ -637,8 +718,28 @@ export function createScreenshotSystem(deps: {
         return new ScreenshotError(SCREENSHOT_ERROR_CODES.workerTimeout, error.message);
       case SCREENSHOT_ERROR_CODES.bindingUnavailable:
         return new ScreenshotError(SCREENSHOT_ERROR_CODES.bindingUnavailable, error.message);
+      case SCREENSHOT_ERROR_CODES.unsupportedSessionWindowCapture:
+        return new ScreenshotError(SCREENSHOT_ERROR_CODES.unsupportedSessionWindowCapture, error.message);
+      case "window_not_found":
+        return new ScreenshotError(SCREENSHOT_ERROR_CODES.staleSessionWindow, error.message);
+      case "window_not_owned":
+        return new ScreenshotError(SCREENSHOT_ERROR_CODES.sessionWindowOwnershipChanged, error.message);
+      case "window_ineligible":
+        return new ScreenshotError(SCREENSHOT_ERROR_CODES.windowIneligible, error.message);
+      case "protocol_error":
+      case "input_too_large":
+      case "output_too_large":
+      case SCREENSHOT_ERROR_CODES.protocolError:
+        return new ScreenshotError(SCREENSHOT_ERROR_CODES.protocolError, error.message);
+      case SCREENSHOT_ERROR_CODES.imageBoundsExceeded:
+        return new ScreenshotError(SCREENSHOT_ERROR_CODES.imageBoundsExceeded, error.message);
+      case "encode_failed":
+      case "image_processing_failed":
+      case "output_write_failed":
+      case "worker_internal":
+        return new ScreenshotError(error.code, error.message);
       default:
-        return new ScreenshotError(SCREENSHOT_ERROR_CODES.workerFailed, `Screenshot worker failed: ${error.code}`);
+        return new ScreenshotError(SCREENSHOT_ERROR_CODES.workerFailed, "Screenshot worker failed.");
     }
   }
 
@@ -766,27 +867,29 @@ export function createScreenshotSystem(deps: {
       windowId: string | null;
     }
   ): Promise<CaptureResult> {
-    const root = sessionDir(projectAlias, sessionId, true);
+    sessionDir(projectAlias, sessionId, true);
     const extension = target.format === "png" ? "png" : "jpeg";
     let finalName = `${formatUtcStamp(now())}_${randomHex(4)}.${extension}`;
-    while (existsSync(path.join(root, finalName))) {
+    while (existsSync(resolveScreenshotFile(projectAlias, sessionId, finalName))) {
       finalName = `${formatUtcStamp(now())}_${randomHex(4)}.${extension}`;
     }
     let tempName = `pending_${randomHex(4)}.${extension}`;
-    while (existsSync(path.join(root, tempName))) {
+    while (existsSync(resolveScreenshotFile(projectAlias, sessionId, tempName))) {
       tempName = `pending_${randomHex(4)}.${extension}`;
     }
-    const tempPath = path.join(root, tempName);
+    const tempPath = resolveScreenshotFile(projectAlias, sessionId, tempName);
     let published = false;
 
     try {
+      const liveSession = requireLiveSession(projectAlias, sessionId);
       const request: WorkerRequest = {
         op: "capture",
         protocolVersion: WORKER_PROTOCOL_VERSION,
-        allowedPids: await buildAllowedPids(getExecutionSessionOwnership(sessionId)!),
+        allowedPids: await buildAllowedPids(liveSession),
         nativeWindowId: target.nativeWindowId,
         expectedPid: target.ownerPid,
         format: target.format,
+        maxBytes: limits.maxBytes,
         outPath: tempPath,
         ...(target.jpegQuality !== undefined ? { jpegQuality: target.jpegQuality } : {}),
         ...(target.maxWidth !== undefined ? { maxWidth: target.maxWidth } : {}),
@@ -804,16 +907,10 @@ export function createScreenshotSystem(deps: {
         throw new ScreenshotError(SCREENSHOT_ERROR_CODES.protocolError, "Worker capture result failed validation.");
       }
 
-      // Validate the encoded image before it may leave the pending namespace.
-      let bytes: Buffer;
-      try {
-        bytes = readFileSync(tempPath);
-      } catch {
+      if (!existsSync(tempPath)) {
         throw new ScreenshotError(SCREENSHOT_ERROR_CODES.workerFailed, "Worker reported success without writing an image file.");
       }
-      if (bytes.length > limits.maxBytes) {
-        throw new ScreenshotError(SCREENSHOT_ERROR_CODES.imageBoundsExceeded, "Captured image exceeds the byte limit.");
-      }
+      const bytes = readBoundedFile(tempPath, SCREENSHOT_ERROR_CODES.imageBoundsExceeded);
       const dims = validateImageBytes(bytes, target.format);
       if (!dims) {
         throw new ScreenshotError(SCREENSHOT_ERROR_CODES.invalidImageData, "Encoded image failed signature validation.");
@@ -822,13 +919,13 @@ export function createScreenshotSystem(deps: {
         throw new ScreenshotError(SCREENSHOT_ERROR_CODES.imageBoundsExceeded, "Captured image exceeds dimension limits.");
       }
 
-      // Canonical containment revalidation immediately before publication.
       const finalPath = resolveScreenshotFile(projectAlias, sessionId, finalName);
       if (existsSync(finalPath)) {
         throw new ScreenshotError(SCREENSHOT_ERROR_CODES.workerFailed, "Generated screenshot name collided; retry.");
       }
       renameSync(tempPath, finalPath);
       published = true;
+
 
       audit("capture", {
         projectAlias,
@@ -837,8 +934,10 @@ export function createScreenshotSystem(deps: {
         format: target.format,
         bytes: bytes.length
       });
-      enforceRetention(projectAlias);
-
+      const capturedAtMs = capturedAtMsFromName(finalName);
+      if (capturedAtMs === null) {
+        throw new ScreenshotError(SCREENSHOT_ERROR_CODES.workerFailed, "Generated screenshot timestamp was invalid.");
+      }
       return {
         screenshotId: finalName,
         format: target.format,
@@ -846,27 +945,30 @@ export function createScreenshotSystem(deps: {
         height: dims.height,
         bytes: bytes.length,
         sha256: sha256Hex(bytes),
-        capturedAt: new Date(capturedAtMsFromName(finalName)).toISOString(),
+        capturedAt: new Date(capturedAtMs).toISOString(),
         resized: parsed.data.resized
       };
     } finally {
-      if (!published && existsSync(tempPath)) {
+      if (!published) {
         try {
-          unlinkSync(tempPath);
+          const pendingPath = resolveScreenshotFile(projectAlias, sessionId, tempName);
+          if (existsSync(pendingPath)) unlinkSync(pendingPath);
         } catch {
-          // Cleanup is best-effort; the pending namespace is excluded from listing.
+          // Never follow a repository-controlled path outside canonical containment.
         }
       }
     }
   }
 
-  function parseScreenshotName(projectAlias: string, sessionId: string, screenshotId: string): { path: string; format: ScreenshotFormat } {
-    if (!GENERATED_NAME_RE.test(screenshotId)) {
+  function parseScreenshotName(projectAlias: string, sessionId: string, screenshotId: string): { path: string; format: ScreenshotFormat; capturedAtMs: number } {
+    const capturedAtMs = capturedAtMsFromName(screenshotId);
+    if (!GENERATED_NAME_RE.test(screenshotId) || capturedAtMs === null) {
       throw new ScreenshotError(SCREENSHOT_ERROR_CODES.invalidScreenshotId, "Malformed screenshot id.");
     }
     return {
       path: resolveScreenshotFile(projectAlias, sessionId, screenshotId),
-      format: screenshotId.endsWith(".png") ? "png" : "jpeg"
+      format: screenshotId.endsWith(".png") ? "png" : "jpeg",
+      capturedAtMs
     };
   }
 
@@ -877,33 +979,29 @@ export function createScreenshotSystem(deps: {
     options?: { audit?: boolean }
   ): Promise<{ meta: ScreenshotMeta; data: Buffer }> {
     const session = requireSession(projectAlias, executionSessionId);
-    const { format } = parseScreenshotName(projectAlias, session.sessionId, screenshotId);
-    // Revalidate canonical containment right before reading; repository contents are untrusted.
-    const filePath = resolveProjectPath(projectAlias, `${SCREENSHOT_STORAGE_DIR}/${session.sessionId}/${screenshotId}`);
-    if (!existsSync(filePath)) {
+    const parsedName = parseScreenshotName(projectAlias, session.sessionId, screenshotId);
+    if (!existsSync(parsedName.path)) {
       throw new ScreenshotError(SCREENSHOT_ERROR_CODES.screenshotNotFound, "Screenshot not found.");
     }
-    const stats = statSync(filePath);
-    if (stats.size > limits.maxBytes) {
-      throw new ScreenshotError(SCREENSHOT_ERROR_CODES.screenshotTooLarge, "Stored screenshot exceeds the byte limit.");
-    }
-    const bytes = readFileSync(filePath);
-    // Stored bytes are untrusted: signature and dimensions are revalidated on every read.
-    const dims = validateImageBytes(bytes, format);
+    const bytes = readBoundedFile(parsedName.path, SCREENSHOT_ERROR_CODES.screenshotTooLarge);
+    const dims = validateImageBytes(bytes, parsedName.format);
     if (!dims) {
       throw new ScreenshotError(SCREENSHOT_ERROR_CODES.invalidImageData, "Stored image failed signature validation.");
     }
+    if (dims.width > limits.maxWidth || dims.height > limits.maxHeight) {
+      throw new ScreenshotError(SCREENSHOT_ERROR_CODES.imageBoundsExceeded, "Stored screenshot exceeds dimension limits.");
+    }
     if (options?.audit !== false) {
-      audit("read", { projectAlias, sessionId: session.sessionId, screenshotId, format });
+      audit("read", { projectAlias, sessionId: session.sessionId, screenshotId, format: parsedName.format });
     }
     return {
       meta: {
         screenshotId,
-        format,
+        format: parsedName.format,
         width: dims.width,
         height: dims.height,
         bytes: bytes.length,
-        capturedAt: new Date(capturedAtMsFromName(screenshotId)).toISOString(),
+        capturedAt: new Date(parsedName.capturedAtMs).toISOString(),
         sha256: sha256Hex(bytes)
       },
       data: bytes
@@ -913,12 +1011,23 @@ export function createScreenshotSystem(deps: {
   function buildMeta(projectAlias: string, file: GeneratedFile): ScreenshotMeta {
     const format: ScreenshotFormat = file.name.endsWith(".png") ? "png" : "jpeg";
     let dims: ImageDimensions | null = null;
-    try {
-      const headerPath = resolveProjectPath(projectAlias, `${SCREENSHOT_STORAGE_DIR}/${file.sessionId}/${file.name}`);
-      const header = readFileSync(headerPath).subarray(0, 512 * 1024);
-      dims = validateImageBytes(header, format);
-    } catch {
-      dims = null;
+    if (file.bytes > 0 && file.bytes <= limits.maxBytes) {
+      let descriptor: number | null = null;
+      try {
+        const headerPath = resolveScreenshotFile(projectAlias, file.sessionId, file.name);
+        descriptor = openSync(headerPath, "r");
+        const stats = fstatSync(descriptor);
+        if (stats.isFile() && stats.size === file.bytes) {
+          const header = Buffer.allocUnsafe(Math.min(file.bytes, 512 * 1024));
+          const bytesRead = readSync(descriptor, header, 0, header.length, 0);
+          dims = validateImageBytes(header.subarray(0, bytesRead), format);
+          if (dims && (dims.width > limits.maxWidth || dims.height > limits.maxHeight)) dims = null;
+        }
+      } catch {
+        dims = null;
+      } finally {
+        if (descriptor !== null) closeSync(descriptor);
+      }
     }
     return {
       screenshotId: file.name,
@@ -937,18 +1046,24 @@ export function createScreenshotSystem(deps: {
   ): { items: ScreenshotMeta[]; nextCursor: string | null; total: number } {
     const session = requireSession(projectAlias, executionSessionId);
     const limit = Math.min(Math.max(1, page?.limit ?? limits.maxListPageSize), limits.maxListPageSize);
-    const files = listGeneratedFiles(projectAlias)
-      .filter((file) => file.sessionId === session.sessionId)
+    const files = listGeneratedFiles(projectAlias, session.sessionId)
       .sort((a, b) => b.capturedAtMs - a.capturedAtMs || (a.name < b.name ? 1 : -1));
-    const startIndex = page?.cursor ? files.findIndex((file) => file.name === page.cursor) + 1 : 0;
-    const effectiveStart = startIndex > 0 ? startIndex : 0;
-    const pageFiles = files.slice(effectiveStart, effectiveStart + limit);
+    let startIndex = 0;
+    if (page?.cursor) {
+      const cursorName = decodeListCursor(page.cursor);
+      const cursorIndex = files.findIndex((file) => file.name === cursorName);
+      if (cursorIndex < 0) {
+        throw new ScreenshotError(SCREENSHOT_ERROR_CODES.invalidCursor, "Screenshot list cursor is no longer valid.");
+      }
+      startIndex = cursorIndex + 1;
+    }
+    const pageFiles = files.slice(startIndex, startIndex + limit);
     audit("list", { projectAlias, sessionId: session.sessionId, count: pageFiles.length });
     return {
       items: pageFiles.map((file) => buildMeta(projectAlias, file)),
       nextCursor:
-        pageFiles.length === limit && effectiveStart + limit < files.length
-          ? pageFiles[pageFiles.length - 1].name
+        pageFiles.length === limit && startIndex + limit < files.length
+          ? encodeListCursor(pageFiles[pageFiles.length - 1].name)
           : null,
       total: files.length
     };
@@ -957,9 +1072,8 @@ export function createScreenshotSystem(deps: {
   async function deleteScreenshot(projectAlias: string, executionSessionId: string, screenshotId: string): Promise<void> {
     await runExclusive(projectAlias, () => {
       const session = requireSession(projectAlias, executionSessionId);
-      parseScreenshotName(projectAlias, session.sessionId, screenshotId);
-      // Revalidate canonical containment immediately before deletion.
-      const filePath = resolveProjectPath(projectAlias, `${SCREENSHOT_STORAGE_DIR}/${session.sessionId}/${screenshotId}`);
+      const parsedName = parseScreenshotName(projectAlias, session.sessionId, screenshotId);
+      const filePath = parsedName.path;
       if (!existsSync(filePath)) {
         throw new ScreenshotError(SCREENSHOT_ERROR_CODES.screenshotNotFound, "Screenshot not found.");
       }
@@ -968,7 +1082,7 @@ export function createScreenshotSystem(deps: {
     });
   }
 
-  function getCapabilities(input: { permissionGranted: boolean }): Record<string, unknown> {
+  function getCapabilities(input: { permissionGranted: boolean }): ScreenshotCapabilities {
     if (!input.permissionGranted) {
       return {
         enabled: false,
@@ -981,8 +1095,6 @@ export function createScreenshotSystem(deps: {
         regionCapture: false
       };
     }
-    // Only platform support is cached — never window or process state. A pending
-    // or failed probe reports capture as unavailable and keeps the server healthy.
     const captureReady = bindingAvailable === true;
     return {
       enabled: true,
@@ -991,6 +1103,7 @@ export function createScreenshotSystem(deps: {
       platform: process.platform,
       formats: ["png", "jpeg"],
       captureAvailable: captureReady,
+      ...(bindingUnavailableReason ? { reason: bindingUnavailableReason } : {}),
       desktopCapture: false,
       activeWindowCapture: false,
       regionCapture: false
@@ -998,20 +1111,31 @@ export function createScreenshotSystem(deps: {
   }
 
   function ensureBindingAvailability(): Promise<boolean> {
-    bindingProbe ??= Promise.resolve()
-      .then(() => launchWorker({ op: "capabilities", protocolVersion: WORKER_PROTOCOL_VERSION }, 5000))
-      .then(
-        (outcome) =>
-          outcome.ok &&
-          typeof outcome.result === "object" &&
-          outcome.result !== null &&
-          (outcome.result as { captureAvailable?: unknown }).captureAvailable === true
-      )
-      .catch(() => false)
-      .then((available) => {
-        bindingAvailable = available;
-        return available;
-      });
+    bindingProbe ??= (async () => {
+      try {
+        const outcome = await launchWorker({ op: "capabilities", protocolVersion: WORKER_PROTOCOL_VERSION }, 5000);
+        if (!outcome.ok) {
+          bindingUnavailableReason = outcome.error.code;
+          bindingAvailable = false;
+          return false;
+        }
+        const parsed = capabilitiesResultSchema.safeParse(outcome.result);
+        if (!parsed.success) {
+          bindingUnavailableReason = SCREENSHOT_ERROR_CODES.protocolError;
+          bindingAvailable = false;
+          return false;
+        }
+        bindingAvailable = parsed.data.captureAvailable;
+        bindingUnavailableReason = parsed.data.captureAvailable
+          ? null
+          : (parsed.data.reason ?? SCREENSHOT_ERROR_CODES.bindingUnavailable);
+        return bindingAvailable;
+      } catch {
+        bindingAvailable = false;
+        bindingUnavailableReason = SCREENSHOT_ERROR_CODES.workerFailed;
+        return false;
+      }
+    })();
     return bindingProbe;
   }
 
@@ -1021,6 +1145,7 @@ export function createScreenshotSystem(deps: {
     refreshBindingAvailability: () => {
       bindingProbe = null;
       bindingAvailable = null;
+      bindingUnavailableReason = null;
     },
     listTargets,
     capture,

@@ -11,15 +11,18 @@
 
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { loadScreenshotLimits, policyPermissions, type PortusPolicyConfig } from "../policy/policyConfig.js";
 import { assertMainAgentPermission } from "../policy/permissionPolicy.js";
 import {
+  SCREENSHOT_ERROR_CODES,
+  ScreenshotError,
   createScreenshotSystem,
-  type ScreenshotFormat,
+  type ScreenshotCapabilities,
   type ScreenshotSystem
 } from "../runtime/screenshotSystem.js";
-import { registerStrictProjectToolWithContent } from "./projectToolUtils.js";
+import { subscribeExecutionSessionExit } from "../runtime/executionSessions.js";
+import { richToolErrorResult, richToolSuccessResult, type RichToolResult } from "./projectToolUtils.js";
 
 const SCREENSHOT_TOOL_ANNOTATIONS: ToolAnnotations = {
   readOnlyHint: false,
@@ -28,12 +31,68 @@ const SCREENSHOT_TOOL_ANNOTATIONS: ToolAnnotations = {
   openWorldHint: false
 };
 
+const projectAliasSchema = z.string().min(1);
+const executionSessionIdSchema = z.string().min(1);
+
+export const projectScreenshotInputSchema = z.discriminatedUnion("operation", [
+  z.object({
+    operation: z.literal("targets"),
+    projectAlias: projectAliasSchema,
+    executionSessionId: executionSessionIdSchema
+  }).strict(),
+  z.object({
+    operation: z.literal("capture"),
+    projectAlias: projectAliasSchema,
+    executionSessionId: executionSessionIdSchema,
+    windowId: z.string().regex(/^[0-9a-f]{32}$/).optional(),
+    waitForWindowMs: z.number().int().min(0).max(600000).optional(),
+    format: z.enum(["png", "jpeg"]).optional(),
+    jpegQuality: z.number().int().min(1).max(100).optional(),
+    maxWidth: z.number().int().min(1).max(7680).optional(),
+    maxHeight: z.number().int().min(1).max(7680).optional(),
+    returnImage: z.boolean().optional(),
+    confirm: z.boolean().optional()
+  }).strict(),
+  z.object({
+    operation: z.literal("read"),
+    projectAlias: projectAliasSchema,
+    executionSessionId: executionSessionIdSchema,
+    screenshotId: z.string().min(1).max(64),
+    returnImage: z.boolean().optional()
+  }).strict(),
+  z.object({
+    operation: z.literal("list"),
+    projectAlias: projectAliasSchema,
+    executionSessionId: executionSessionIdSchema,
+    cursor: z.string().min(1).max(128).optional(),
+    limit: z.number().int().min(1).max(10000).optional()
+  }).strict(),
+  z.object({
+    operation: z.literal("delete"),
+    projectAlias: projectAliasSchema,
+    executionSessionId: executionSessionIdSchema,
+    screenshotId: z.string().min(1).max(64),
+    confirm: z.boolean().optional()
+  }).strict()
+]).superRefine((input, context) => {
+  if (input.operation === "capture" && input.jpegQuality !== undefined && input.format !== "jpeg") {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["jpegQuality"],
+      message: "jpegQuality requires format=jpeg"
+    });
+  }
+});
+
 // Shared per-process instance so capability projection and tool calls observe
 // the same binding-availability cache. Limits come from server-startup policy.
 let sharedSystem: ScreenshotSystem | null = null;
 
 export function getScreenshotSystem(policy: PortusPolicyConfig): ScreenshotSystem {
-  sharedSystem ??= createScreenshotSystem({ limits: loadScreenshotLimits(policy) });
+  sharedSystem ??= createScreenshotSystem({
+    limits: loadScreenshotLimits(policy),
+    subscribeSessionExit: subscribeExecutionSessionExit
+  });
   return sharedSystem;
 }
 
@@ -42,13 +101,7 @@ export function probeScreenshotBinding(policy: PortusPolicyConfig): void {
   void getScreenshotSystem(policy).ensureBindingAvailability();
 }
 
-/**
- * Capability entry for project_context projection. Returns null when the
- * permission is not granted; otherwise exposes only operations that are
- * actually usable (capture-related operations drop out when the platform
- * cannot prove session ownership or load the binding).
- */
-export function screenshotCapabilityEntry(policy: PortusPolicyConfig): Record<string, unknown> | null {
+export function screenshotCapabilityEntry(policy: PortusPolicyConfig): ScreenshotCapabilities | null {
   if (!policyPermissions(policy).main_agent.projectScreenshot) return null;
   return getScreenshotSystem(policy).getCapabilities({ permissionGranted: true });
 }
@@ -59,37 +112,21 @@ function requireConfirmationIfPolicyDemands(
   confirm: boolean | undefined
 ): void {
   if (policyPermissions(policy).main_agent.requireConfirmation && confirm !== true) {
-    throw new Error(`Confirmation required: ${operation} needs confirm=true under main_agent.permissions.requireConfirmation`);
+    throw new ScreenshotError(
+      SCREENSHOT_ERROR_CODES.confirmationRequired,
+      `Confirmation required: ${operation} needs confirm=true under main_agent.permissions.requireConfirmation`
+    );
   }
 }
 
-export function registerScreenshotTool(server: McpServer, policy: PortusPolicyConfig): void {
-  const system = getScreenshotSystem(policy);
-
-  const shape = {
-    operation: z.enum(["targets", "capture", "read", "list", "delete"]),
-    projectAlias: z.string().min(1),
-    executionSessionId: z.string().min(1),
-    windowId: z.string().min(16).max(128).optional(),
-    waitForWindowMs: z.number().int().min(0).max(600000).optional(),
-    format: z.enum(["png", "jpeg"]).optional(),
-    jpegQuality: z.number().int().min(1).max(100).optional(),
-    maxWidth: z.number().int().min(1).optional(),
-    maxHeight: z.number().int().min(1).optional(),
-    returnImage: z.boolean().optional(),
-    confirm: z.boolean().optional(),
-    screenshotId: z.string().min(1).optional(),
-    cursor: z.string().min(1).max(64).optional(),
-    limit: z.number().int().min(1).max(10000).optional()
-  };
-
-  registerStrictProjectToolWithContent(
-    server,
-    "project_screenshot",
-    "Visual verification of GUI work: list, capture, read, list, or delete screenshots of windows owned by a selected running execution session. Storage is repository-local under .portus-artifacts/screenshots.",
-    shape,
-    SCREENSHOT_TOOL_ANNOTATIONS,
-    async (args) => {
+export function registerScreenshotTool(
+  server: McpServer,
+  policy: PortusPolicyConfig,
+  system: ScreenshotSystem = getScreenshotSystem(policy)
+): void {
+  const execute = async (
+    args: z.output<typeof projectScreenshotInputSchema>
+  ): Promise<RichToolResult> => {
       assertMainAgentPermission("projectScreenshot", policy);
       const { operation, projectAlias, executionSessionId } = args;
 
@@ -110,7 +147,7 @@ export function registerScreenshotTool(server: McpServer, policy: PortusPolicyCo
         const capture = await system.capture(projectAlias, executionSessionId, {
           windowId: args.windowId,
           waitForWindowMs: args.waitForWindowMs,
-          format: args.format as ScreenshotFormat | undefined,
+          format: args.format,
           jpegQuality: args.jpegQuality,
           maxWidth: args.maxWidth,
           maxHeight: args.maxHeight
@@ -128,13 +165,10 @@ export function registerScreenshotTool(server: McpServer, policy: PortusPolicyCo
             ]
           };
         }
-        return {
-          result: { operation, ...capture, returnImage: false }
-        };
+        return { result: { operation, ...capture, returnImage: false } };
       }
 
       if (operation === "read") {
-        if (!args.screenshotId) throw new Error("read requires screenshotId");
         if (args.returnImage !== false) {
           const { meta, data } = await system.read(projectAlias, executionSessionId, args.screenshotId);
           return {
@@ -160,11 +194,24 @@ export function registerScreenshotTool(server: McpServer, policy: PortusPolicyCo
         return { result: { operation, ...page } };
       }
 
-      // delete
-      if (!args.screenshotId) throw new Error("delete requires screenshotId");
       requireConfirmationIfPolicyDemands(policy, "delete", args.confirm);
       await system.deleteScreenshot(projectAlias, executionSessionId, args.screenshotId);
       return { result: { operation, screenshotId: args.screenshotId, deleted: true } };
+  };
+
+  server.registerTool(
+    "project_screenshot",
+    {
+      description: "Visual verification of GUI work: target, capture, read, list, or delete screenshots of windows owned by a selected running execution session. Storage is repository-local under .portus-artifacts/screenshots.",
+      inputSchema: projectScreenshotInputSchema,
+      annotations: SCREENSHOT_TOOL_ANNOTATIONS
+    },
+    async (args): Promise<CallToolResult> => {
+      try {
+        return richToolSuccessResult(await execute(args));
+      } catch (error) {
+        return richToolErrorResult(error);
+      }
     }
   );
 }

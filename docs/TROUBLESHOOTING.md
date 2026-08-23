@@ -10,7 +10,7 @@ Check Node.js first:
 node -v
 ```
 
-Portus MCP requires Node.js 20 or newer.
+Portus MCP requires Node.js 20.9 or newer.
 
 Then confirm dependencies are installed:
 
@@ -91,6 +91,23 @@ subagents.concurrency.maxConcurrentPerProject=0
 ## Path Blocked
 
 The path may escape the registered project root, match a blocked path pattern, or be gitignored while `readGitIgnoredFiles=false`.
+
+
+## Screenshot Capture Is Unavailable
+
+Confirm the selected complete policy grants:
+
+```text
+main_agent.permissions.projectScreenshot=true
+```
+
+Restart Portus after changing the policy. `targets` and `capture` also require a running execution session created by `project_run.sessionAction.type="start"`; a blocking command request or manually launched application has no screenshot ownership identity. Use the returned `sessionId` as `executionSessionId`.
+
+`screenshot_binding_unavailable` means the npm-installed native package could not load. Re-run `npm install` on the target machine. Linux X11 additionally requires `libxcb`, `libxrandr`, and D-Bus runtime libraries. `unsupported_session_window_capture` is the expected fail-closed result on unsupported Wayland capture.
+
+`session_window_not_found` means the running session currently owns no visible, non-minimized top-level window. `multiple_session_windows` returns opaque candidates; retry `capture` with one candidate `windowId`. Window tokens expire after `limits.screenshot.windowTokenTtlMs`, so call `targets` again after expiry or application hot reload.
+
+Saved captures are under `.portus-artifacts/screenshots/<executionSessionId>/` in the registered project. `read`, `list`, and explicit `delete` remain available after the execution session exits.
 
 ## Flue CLI Missing
 

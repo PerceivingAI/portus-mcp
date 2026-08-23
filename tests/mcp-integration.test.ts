@@ -1441,7 +1441,11 @@ test("project_screenshot enforces its permission and serves validated images wit
       ...selectedPolicy,
       main_agent: {
         ...selectedPolicy.main_agent,
-        permissions: { ...selectedPolicy.main_agent.permissions, projectScreenshot: true }
+        permissions: {
+          ...selectedPolicy.main_agent.permissions,
+          projectScreenshot: true,
+          allowedCommands: [...selectedPolicy.main_agent.permissions.allowedCommands, "node"]
+        }
       }
     }, null, 2),
     "utf8"
@@ -1503,6 +1507,13 @@ test("project_screenshot enforces its permission and serves validated images wit
   });
   assert.equal(bad.isError, true);
 
+  // Strict discriminated union: fields from another operation are rejected.
+  const wrongVariantField = await client.callTool({
+    name: "project_screenshot",
+    arguments: { operation: "list", projectAlias: "mcp", executionSessionId: sessionId, screenshotId: shotName }
+  });
+  assert.equal(wrongVariantField.isError, true);
+
   // List returns validated metadata only.
   const listed = resultOf(await client.callTool({
     name: "project_screenshot",
@@ -1553,5 +1564,53 @@ test("project_screenshot enforces its permission and serves validated images wit
   }));
   assert.equal(confirmedDelete.deleted, true);
   assert.equal(existsSync(path.join(shotDir, shotName)), false);
+
+  // End-to-end ownership pipeline against a REAL execution session: a plain
+  // node child owns no GUI windows, so targets must return zero candidates —
+  // any entry here would be an unrelated-desktop-window leak — and capture
+  // must fail closed with the stable zero-candidate error.
+  const started = resultOf(await client.callTool({
+    name: "project_run",
+    arguments: {
+      projectAlias: "mcp",
+      sessionAction: { type: "start", command: "node", args: ["-e", "setTimeout(() => {}, 10000)"], confirm: true }
+    }
+  }));
+  const runningSessionId = started.session.sessionId as string;
+  assert.equal(started.session.status, "running");
+
+  const terminateRunning = () =>
+    client.callTool({
+      name: "project_run",
+      arguments: { projectAlias: "mcp", sessionAction: { type: "terminate", sessionId: runningSessionId } }
+    }).catch(() => undefined);
+  t.after(terminateRunning);
+
+  const liveTargets = resultOf(await client.callTool({
+    name: "project_screenshot",
+    arguments: { operation: "targets", projectAlias: "mcp", executionSessionId: runningSessionId }
+  }));
+  assert.deepEqual(liveTargets.targets, []);
+
+  const noWindowCapture = await client.callTool({
+    name: "project_screenshot",
+    arguments: { operation: "capture", projectAlias: "mcp", executionSessionId: runningSessionId, confirm: true }
+  });
+  assert.equal(noWindowCapture.isError, true);
+  assert.match(JSON.stringify(noWindowCapture.structuredContent), /No eligible session window found/);
+
+  // After the session exits: capture denied, list still allowed (empty).
+  await terminateRunning();
+  const captureAfterExit = await client.callTool({
+    name: "project_screenshot",
+    arguments: { operation: "capture", projectAlias: "mcp", executionSessionId: runningSessionId, confirm: true }
+  });
+  assert.equal(captureAfterExit.isError, true);
+  assert.match(JSON.stringify(captureAfterExit.structuredContent), /not running/);
+  const listAfterExit = resultOf(await client.callTool({
+    name: "project_screenshot",
+    arguments: { operation: "list", projectAlias: "mcp", executionSessionId: runningSessionId }
+  }));
+  assert.equal(listAfterExit.total, 0);
 });
 

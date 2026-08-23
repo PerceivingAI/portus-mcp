@@ -2,12 +2,12 @@
 
 ## Decision
 
-Portus MCP treats **the connection as the product** and tools as policy-bounded adapters over that connection. A client connects to a registered machine and project, then performs ordinary project work through nine consolidated adapters instead of negotiating a growing collection of micro-tools.
+Portus MCP treats **the connection as the product** and tools as policy-bounded adapters over that connection. A client connects to a registered machine and project, then performs ordinary project work through ten consolidated adapters instead of negotiating a growing collection of micro-tools.
 
 
-## Fixed Nine-Tool Surface
+## Fixed Ten-Tool Surface
 
-Portus MCP exposes exactly nine tools:
+Portus MCP exposes exactly ten tools:
 
 ```text
 project_context
@@ -17,6 +17,7 @@ project_edit
 project_patch
 project_run
 project_policy
+project_screenshot
 subagent_task
 subagent_context
 ```
@@ -31,12 +32,13 @@ The adapters divide work by intent:
 | `project_patch` | Patch preparation or application, including preconditions and dry runs. |
 | `project_run` | Approved checks, package scripts, or allowlisted device-installed commands. |
 | `project_policy` | Ordered permission, path-decision, and safe read-only effective-configuration checks, or one native registration or audit action. |
+| `project_screenshot` | Session-owned GUI target discovery, PNG/JPEG capture, managed read/list, and explicit delete under a dedicated permission. |
 | `subagent_task` | Subagent lifecycle management using discriminated action union (`start`, `stop`, `cleanup`). |
 | `subagent_context` | Batch read subagent status, events, stdout/stderr logs, and collected results. |
 
 Broad schemas group related behavior without moving authority into the tool layer. `project_policy` requires exactly one of `checks` or `action`; `action` is a nested object selected by its inner `type` discriminator, as in `{ "action": { "type": "list_audit" } }`, not a flat string. Its native actions (`register_project`, `list_audit`, `read_audit`) require `projectPolicy`; no MCP action accepts permission changes. The read-only `config` check safely reports operator-policy provenance, shipped-versus-configured selection, effective permissions, and redacted path/traversal patterns. `subagent_task` requires `subagentTask`; `subagent_context` independently requires `subagentContext`. Canonical paths, confirmation, safe projections, strict schemas, and redacted audit behavior remain authoritative.
 
-The registered catalog and effective authority are intentionally separate. MCP discovery remains the fixed nine-tool product surface. Scoped `project_context.capabilities.availableTools` is the complete policy-derived allowlist for the current connection: enabled exact tool names are present, disabled names are absent, and no entry uses `enabled: false`. Dependent features are likewise published only when usable. This planning projection does not replace runtime permission enforcement.
+The registered catalog and effective authority are intentionally separate. MCP discovery remains the fixed ten-tool product surface. Scoped `project_context.capabilities.availableTools` is the complete policy-derived allowlist for the current connection: enabled exact tool names are present, disabled names are absent, and no entry uses `enabled: false`. `project_screenshot` appears only when its dedicated permission is enabled; its capability entry reports formats, platform, operations, and capture availability. This planning projection does not replace runtime permission enforcement.
 
 ## Subagent & Policy Unification
 

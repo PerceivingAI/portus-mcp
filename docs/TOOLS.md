@@ -4,9 +4,9 @@ Portus MCP treats the connection as the product and tools as policy-bounded adap
 
 The exact names displayed by a client may include the MCP server name as a prefix.
 
-## Fixed Nine-Tool Surface
+## Fixed Ten-Tool Surface
 
-Portus MCP exposes exactly nine tools:
+Portus MCP exposes exactly ten tools:
 
 ```text
 project_context
@@ -16,6 +16,7 @@ project_edit
 project_patch
 project_run
 project_policy
+project_screenshot
 subagent_task
 subagent_context
 ```
@@ -29,6 +30,7 @@ subagent_context
 | `project_patch` | Prepare or apply a unified patch or structured hunks with policy checks, preconditions, dry-run behavior, and destructive confirmation where required. |
 | `project_run` | Submit 1–10 ordered execution requests (`type`: `check`, `script`, or `command`) or manage observable execution sessions (`sessionAction`: `start`, `poll`, `terminate`, `list`). Direct command execution uses native argv process spawn by default, with `shell=true` explicitly required and policy-gated (`allowShell`) for shell syntax or Windows `.cmd`/`.bat` launchers. Preflights all items before starting execution. Enforces an aggregate execution deadline (`batchTimeoutSecs`) with `batchTimedOut`, an aggregate output budget (`maxBatchOutputChars`) with `batchOutputTruncated`, and ordered process outcomes (`exited`, `spawn_failed`, `timed_out`, `signaled`, `output_limit`). Timed-out items return bounded partial stdout/stderr plus deadline, elapsed-time, truncation, and explicit process lifecycle metadata. Public audit events project execution metadata. |
 | `project_policy` | Perform ordered permission, path-decision, and safe read-only effective-configuration checks, or exactly one native administrative action: `register_project`, `list_audit`, or `read_audit`. |
+| `project_screenshot` | List or capture visible top-level windows owned by a running execution session, then read, list, or explicitly delete repository-local PNG/JPEG captures. Every operation requires `projectAlias` and `executionSessionId`. |
 | `subagent_task` | Subagent lifecycle management using discriminated action union (`start`, `stop`, `cleanup`). Accepts ordered batch actions and returns ordered results. |
 | `subagent_context` | Batch read subagent execution status, events, stdout/stderr logs, and collected result artifacts. |
 
@@ -52,6 +54,21 @@ For long-running tasks (e.g. mathematical replays, large builds, tests), `projec
 2. **`poll`**: `{ sessionAction: { type: "poll", sessionId: "...", cursor?: number, maxChars?: number, stream?: "stdout" | "stderr" | "both" } }` returns `{ projectAlias, sessionAction: "poll", sessionId, status, stdoutChunk, nextCursor, exitCode, elapsedMs, lifecycle }`, allowing incremental progress observation without holding open a blocking tool invocation.
 3. **`terminate`**: `{ sessionAction: { type: "terminate", sessionId: "..." } }` gracefully terminates and reaps the entire process tree for that session.
 4. **`list`**: `{ sessionAction: { type: "list" } }` lists execution sessions for the project, newest first.
+
+### `project_screenshot` contract
+
+Enable the tool with `main_agent.permissions.projectScreenshot`. Every request uses a strict operation union and requires both `projectAlias` and `executionSessionId`. `targets` and `capture` require a running execution session whose live process identity can be attested; `read`, `list`, and `delete` remain available for persisted captures after the session exits. (`src/tools/projectScreenshot.ts:34-216`, `src/runtime/screenshotSystem.ts:620-1157`)
+
+| Operation | Behavior |
+|---|---|
+| `targets` | Return only visible, non-minimized windows owned by the selected execution session. Results contain opaque, short-lived `windowId` tokens, never PIDs or native handles. |
+| `capture` | Capture the sole eligible window or a selected `windowId`; save PNG or JPEG under `.portus-artifacts/screenshots/<executionSessionId>/`; return metadata and a native MCP image block unless `returnImage=false`. |
+| `read` | Revalidate and return one managed screenshot from the same project/session, including a native image block unless `returnImage=false`. |
+| `list` | Return newest-first managed screenshot metadata using bounded, opaque cursor pagination. It does not limit the number of stored screenshots. |
+| `delete` | Explicitly remove one managed screenshot from the same project/session. No screenshot is deleted automatically. |
+
+Capture supports bounded `waitForWindowMs`, `format`, `jpegQuality`, `maxWidth`, and `maxHeight`. If several eligible windows exist and no `windowId` is supplied, the error is `multiple_session_windows` and includes scoped candidates. `capture` and `delete` require `confirm=true` when `main_agent.permissions.requireConfirmation=true`. Windows, macOS, and Linux X11 use the isolated npm-installed worker; Wayland fails closed with `unsupported_session_window_capture`. (`scripts/screenshot-worker.mjs:36-439`, `src/runtime/screenshotSystem.ts:322-1157`)
+
 ### `project_patch` Input and Result Contract
 
 `project_patch` supports both raw unified diff strings and structured patch objects:
@@ -166,6 +183,6 @@ The shipped direct-agent allowlist contains only `git`. Operators explicitly gra
 Subagent execution, context, lifecycle, and cleanup are managed via `subagent_task` and `subagent_context`. `subagentTask` controls start, stop, and cleanup; `subagentContext` independently controls session listings, status, outputs, events, and capability inspection. Sessions remain internal runtime records used for asynchronous execution, queueing, retries, logs, process control, and cleanup, and do not exist as a separate MCP tool family.
 ## Verification Contract
 
-Surface tests must establish that default discovery is exactly nine tools, obsolete names are absent, schemas reject unknown or bypass-looking fields, and broad workflows preserve permission, path, Git-ignore, confirmation, limit, audit, ordering, and safe-error behavior. Security regressions must cover traversal, blocked and ignored paths, command escape, permission denial, destructive confirmation, output bounds, Unicode accounting, and absolute-path or secret leakage.
+Surface tests must establish that default discovery is exactly ten tools, obsolete names are absent, schemas reject unknown or bypass-looking fields, and broad workflows preserve permission, path, Git-ignore, confirmation, limit, audit, ordering, and safe-error behavior. Screenshot regressions additionally cover process ownership, unrelated-window exclusion, native image results, repository confinement, explicit-delete persistence, and platform capability behavior.
 
 See `docs/BROAD_MOBILITY_SURFACE.md` for the architecture decision and full cutover rationale.

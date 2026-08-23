@@ -8,7 +8,7 @@
 
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 
@@ -25,6 +25,8 @@ const { upsertProject } = await import("../src/state/ProjectRegistry.js");
 const { upsertExecutionSession, getExecutionSession } = await import("../src/runtime/executionSessions.js");
 const { stateStore } = await import("../src/state/StateStore.js");
 const screenshot = await import("../src/runtime/screenshotSystem.js");
+const screenshotTool = await import("../src/tools/projectScreenshot.js");
+const toolUtils = await import("../src/tools/projectToolUtils.js");
 
 const projectRoot = path.join(root, "project");
 mkdirSync(projectRoot, { recursive: true });
@@ -32,9 +34,6 @@ upsertProject({ projectAlias: "shots", rootPath: projectRoot });
 const otherRoot = path.join(root, "other");
 mkdirSync(otherRoot, { recursive: true });
 upsertProject({ projectAlias: "other", rootPath: otherRoot });
-const budgetRoot = path.join(root, "budget");
-mkdirSync(budgetRoot, { recursive: true });
-upsertProject({ projectAlias: "budget", rootPath: budgetRoot });
 
 let sessionCounter = 0;
 function addSession(overrides: Record<string, unknown> = {}): string {
@@ -90,16 +89,17 @@ function makeHarness(options?: {
   limits?: Partial<screenshot.ScreenshotLimits>;
   captureBehavior?: "write" | "nowrite" | "garbage" | "wrongformat" | "oversize";
   failAfterWrite?: { code: string };
+  subscribeSessionExit?: (listener: (sessionId: string) => void) => () => void;
 }) {
   const clock = { ms: Date.parse("2026-08-22T10:00:00Z") };
   const windows = [...(options?.windows ?? [{ id: 11, pid: 4001 }])];
   let currentAllowed = [4001];
   let hexCounter = 0;
-  const launches: any[] = [];
+  const launches: screenshot.WorkerRequest[] = [];
   const allowedSetsHistory: number[][] = [];
   const limits = { ...screenshot.DEFAULT_SCREENSHOT_LIMITS, ...(options?.limits ?? {}) };
 
-  const launchWorker = async (request: any) => {
+  const launchWorker = async (request: screenshot.WorkerRequest) => {
     launches.push(request);
     if (request.op === "capabilities") {
       return {
@@ -156,10 +156,11 @@ function makeHarness(options?: {
       return currentAllowed;
     },
     now: () => clock.ms,
-    randomHex: () => {
+    randomHex: (bytes: number) => {
       hexCounter += 1;
-      return hexCounter.toString(16).padStart(8, "0");
+      return hexCounter.toString(16).padStart(bytes * 2, "0").slice(-bytes * 2);
     },
+    subscribeSessionExit: options?.subscribeSessionExit,
     limits
   });
 
@@ -219,6 +220,41 @@ test("capture with one eligible window publishes a validated file with matching 
   assert.ok(h.launches.some((l) => l.op === "capture" && Array.isArray(l.allowedPids) && l.allowedPids.includes(4001)));
 });
 
+test("capture rejects a session-directory symlink before launching the worker", async (t) => {
+  const sid = addSession();
+  const screenshotRoot = shotsDir();
+  const outside = path.join(root, `outside-${sid}`);
+  const sessionLink = shotsDir(sid);
+  mkdirSync(screenshotRoot, { recursive: true });
+  mkdirSync(outside, { recursive: true });
+  symlinkSync(outside, sessionLink, process.platform === "win32" ? "junction" : "dir");
+  t.after(() => {
+    if (existsSync(sessionLink)) unlinkSync(sessionLink);
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  let captureLaunched = false;
+  const sys = screenshot.createScreenshotSystem({
+    buildAllowedPids: async () => [4001],
+    launchWorker: async (request: screenshot.WorkerRequest) => {
+      if (request.op === "targets") {
+        return {
+          ok: true,
+          result: {
+            windows: [{ nativeWindowId: 11, pid: 4001, appName: "fixture.exe", title: "Fixture", width: 800, height: 600 }]
+          }
+        };
+      }
+      captureLaunched = true;
+      return { ok: false, error: { code: "output_write_failed", message: "must not launch" } };
+    }
+  });
+
+  await assert.rejects(() => sys.capture("shots", sid), /Path escapes project root/);
+  assert.equal(captureLaunched, false);
+  assert.deepEqual(readdirSync(outside), []);
+});
+
 test("capture with zero windows fails fast when no wait budget is given", async () => {
   const h = makeHarness({ windows: [] });
   const sid = addSession();
@@ -261,8 +297,41 @@ test("multiple eligible windows yield multiple_session_windows with opaque scope
     (caught) => caught
   );
   const token = (error as any).details.candidates[0].windowId as string;
+
   const result = await h.sys.capture("shots", sid, { windowId: token });
   assert.ok(result.screenshotId.endsWith(".png"));
+});
+
+test("project_screenshot schema rejects fields from a different operation", () => {
+  const parsed = screenshotTool.projectScreenshotInputSchema.safeParse({
+    operation: "list",
+    projectAlias: "shots",
+    executionSessionId: "exec_1000_abcdef",
+    screenshotId: "20260822T100000Z_abcdef12.png"
+  });
+  assert.equal(parsed.success, false);
+});
+
+test("rich screenshot errors preserve stable codes and candidates without leaking paths", () => {
+  const candidates = [{ windowId: "a".repeat(32), title: "Fixture", appName: "fixture.exe", width: 800, height: 600 }];
+  const projected = toolUtils.richToolErrorResult(
+    new screenshot.ScreenshotError(
+      screenshot.SCREENSHOT_ERROR_CODES.multipleSessionWindows,
+      "Several session-owned windows are eligible; pick a target.",
+      { candidates }
+    )
+  );
+  assert.equal(projected.isError, true);
+  assert.deepEqual(projected.structuredContent, {
+    error: {
+      code: screenshot.SCREENSHOT_ERROR_CODES.multipleSessionWindows,
+      message: "Several session-owned windows are eligible; pick a target.",
+      candidates
+    }
+  });
+
+  const pathFailure = toolUtils.richToolErrorResult(new Error(`EPERM: unlink '${projectRoot}\\secret.png'`));
+  assert.ok(!JSON.stringify(pathFailure).includes(projectRoot));
 });
 
 test("unknown, expired, and foreign tokens are rejected", async () => {
@@ -363,6 +432,32 @@ test("dead root PID surfaces root_pid_unavailable and never launches the worker"
     (error) => assertScreenshotError(error, screenshot.SCREENSHOT_ERROR_CODES.rootPidUnavailable)
   );
   assert.equal(calls, 0);
+});
+
+test("session process attestation rejects PID reuse and accepts the original process", () => {
+  const session = {
+    sessionId: "exec_1000_abcdef",
+    projectAlias: "shots",
+    status: "running" as const,
+    pid: 4001,
+    startedAtMs: 10_000
+  };
+  assert.deepEqual(
+    screenshot.attestSessionProcessSnapshot(session, {
+      rootPid: 4001,
+      rootStartedAtMs: 10_250,
+      allowedPids: [4001, 4002]
+    }),
+    [4001, 4002]
+  );
+  assert.throws(
+    () => screenshot.attestSessionProcessSnapshot(session, {
+      rootPid: 4001,
+      rootStartedAtMs: 60_000,
+      allowedPids: [4001, 5000]
+    }),
+    (error) => assertScreenshotError(error, screenshot.SCREENSHOT_ERROR_CODES.processIdentityMismatch)
+  );
 });
 
 test("the allowed PID set is rebuilt fresh for every capture (hot reload)", async () => {
@@ -502,10 +597,15 @@ test("list returns newest-first metadata with cursor pagination and page bounds"
   const page1 = await h.sys.list("shots", sid, { limit: 2 });
   assert.deepEqual(page1.items.map((item) => item.screenshotId), [ids[2], ids[1]]);
   assert.equal(page1.total, 3);
-  assert.equal(page1.nextCursor, ids[1]);
+  assert.notEqual(page1.nextCursor, ids[1]);
+  assert.ok(!page1.nextCursor?.includes(ids[1]));
   const page2 = await h.sys.list("shots", sid, { cursor: page1.nextCursor!, limit: 2 });
   assert.deepEqual(page2.items.map((item) => item.screenshotId), [ids[0]]);
   assert.equal(page2.nextCursor, null);
+  await assert.rejects(
+    () => h.sys.list("shots", sid, { cursor: "not-a-valid-cursor", limit: 2 }),
+    (error) => assertScreenshotError(error, screenshot.SCREENSHOT_ERROR_CODES.invalidCursor)
+  );
   // Page limit is clamped to the configured maximum.
   const clamped = await h.sys.list("shots", sid, { limit: 99999 });
   assert.equal(clamped.items.length, 3);
@@ -523,6 +623,20 @@ test("read revalidates stored bytes and detects tampering", async () => {
   await assert.rejects(
     () => h.sys.read("shots", sid, result.screenshotId),
     (error) => assertScreenshotError(error, screenshot.SCREENSHOT_ERROR_CODES.invalidImageData)
+  );
+});
+
+test("read rejects stored images whose dimensions exceed policy", async () => {
+  const h = makeHarness({ limits: { maxWidth: 100 } });
+  const sid = addSession();
+  const result = await h.sys.capture("shots", sid);
+  const oversizedDimensions = Buffer.from(pngImage);
+  oversizedDimensions.writeUInt32BE(101, 16);
+  writeFileSync(shotsDir(sid, result.screenshotId), oversizedDimensions);
+
+  await assert.rejects(
+    () => h.sys.read("shots", sid, result.screenshotId),
+    (error) => assertScreenshotError(error, screenshot.SCREENSHOT_ERROR_CODES.imageBoundsExceeded)
   );
 });
 
@@ -552,59 +666,31 @@ test("delete removes the file, audits, and reports not-found afterwards", async 
   assert.ok(auditEvents().some((event) => event.action === "delete" && event.screenshotId === result.screenshotId));
 });
 
-test("per-session retention evicts oldest beyond the configured count", async () => {
-  const h = makeHarness({ limits: { maxStoredFilesPerSession: 2 } });
+test("captures persist until explicit delete with no automatic deletion", async () => {
+  const h = makeHarness();
   const sid = addSession();
-  const ids: string[] = [];
-  for (let index = 0; index < 3; index += 1) {
+  const screenshotIds: string[] = [];
+  for (let index = 0; index < 25; index += 1) {
     h.advance(1000);
-    ids.push((await h.sys.capture("shots", sid)).screenshotId);
+    screenshotIds.push((await h.sys.capture("shots", sid)).screenshotId);
   }
-  const remaining = listSessionFiles(sid);
-  assert.equal(remaining.length, 2);
-  assert.ok(!remaining.includes(ids[0]), "oldest screenshot must be evicted");
-  assert.deepEqual(remaining, [ids[1], ids[2]]);
-  assert.ok(auditEvents().filter((event) => event.action === "retention_evict").length >= 1);
+
+  assert.deepEqual(listSessionFiles(sid), [...screenshotIds].sort());
 });
 
-test("per-project total-byte retention spans sessions and evicts oldest first", async () => {
-  // Dedicated project so the budget is not affected by files from other tests.
-  const h = makeHarness({
-    limits: { maxTotalBytesPerProject: pngImage.length * 2 - 1 }
-  });
-  const sidA = addSession({ projectAlias: "budget", pid: 4901 });
-  const sidB = addSession({ projectAlias: "budget", pid: 4902 });
-  await h.sys.capture("budget", sidA); // occupies the budget first
-  await h.sys.capture("budget", sidB);
-  // The second publication pushes the project over budget; the oldest file loses.
-  assert.deepEqual(listSessionFiles(sidA, budgetRoot), []);
-  assert.equal(listSessionFiles(sidB, budgetRoot).length, 1);
-});
-
-test("age-based retention deletes screenshots older than maxAgeDays on the next publish", async () => {
-  const h = makeHarness({ limits: { maxAgeDays: 7 } });
+test("concurrent captures all persist without pending files", async () => {
+  const h = makeHarness();
   const sid = addSession();
-  const old = await h.sys.capture("shots", sid);
-  h.advance(8 * 86400_000);
-  const fresh = await h.sys.capture("shots", sid);
-  assert.deepEqual(listSessionFiles(sid), [fresh.screenshotId]);
-  void old;
-});
-
-test("concurrent captures serialize per project and retention stays consistent", async () => {
-  const h = makeHarness({ limits: { maxStoredFilesPerSession: 2 } });
-  const sid = addSession();
-  h.advance(0);
   const results = await Promise.all([
     h.sys.capture("shots", sid),
-    (h.advance(1000), h.sys.capture("shots", sid)),
-    (h.advance(1000), h.sys.capture("shots", sid))
+    h.sys.capture("shots", sid),
+    h.sys.capture("shots", sid)
   ]);
-  const ids = new Set(results.map((result) => result.screenshotId));
-  assert.equal(ids.size, 3);
-  const remaining = listSessionFiles(sid);
-  assert.equal(remaining.length, 2);
-  assert.ok(remaining.every((name) => !name.startsWith("pending_")));
+  const screenshotIds = new Set(results.map((result) => result.screenshotId));
+  assert.equal(screenshotIds.size, 3);
+  const stored = listSessionFiles(sid);
+  assert.equal(stored.length, 3);
+  assert.ok(stored.every((name) => !name.startsWith("pending_")));
 });
 
 test("a new system instance invalidates all window tokens (restart semantics)", async () => {
@@ -614,6 +700,25 @@ test("a new system instance invalidates all window tokens (restart semantics)", 
   const secondInstance = makeHarness().sys;
   await assert.rejects(
     () => secondInstance.capture("shots", sid, { windowId: targets[0].windowId }),
+    (error) => assertScreenshotError(error, screenshot.SCREENSHOT_ERROR_CODES.windowTokenInvalid)
+  );
+});
+
+test("execution-session exit invalidates every token for that session", async () => {
+  let notifyExit: ((sessionId: string) => void) | null = null;
+  const h = makeHarness({
+    subscribeSessionExit: (listener) => {
+      notifyExit = listener;
+      return () => undefined;
+    }
+  });
+  const sid = addSession();
+  const targets = await h.sys.listTargets("shots", sid);
+  if (notifyExit === null) throw new Error("exit listener was not registered");
+  notifyExit(sid);
+
+  await assert.rejects(
+    () => h.sys.capture("shots", sid, { windowId: targets[0].windowId }),
     (error) => assertScreenshotError(error, screenshot.SCREENSHOT_ERROR_CODES.windowTokenInvalid)
   );
 });
@@ -640,6 +745,38 @@ test("capability projection follows permission and binding availability", async 
   const degraded = unavailable.getCapabilities({ permissionGranted: true });
   assert.deepEqual(degraded.operations, ["read", "list", "delete"]);
   assert.equal(degraded.captureAvailable, false);
+});
+
+test("read, list, and delete work through a fresh system instance after a Portus restart", async () => {
+  const h = makeHarness();
+  const sid = addSession();
+  const captured = await h.sys.capture("shots", sid);
+
+  upsertExecutionSession({
+    ...getExecutionSession(sid),
+    status: "completed",
+    exitCode: 0,
+    completedAt: "2026-08-22T10:05:00.000Z"
+  });
+
+  // A fresh instance simulates a Portus restart: in-memory tokens are gone,
+  // but persisted session records and managed files remain fully usable.
+  const restarted = makeHarness().sys;
+  await assert.rejects(
+    () => restarted.capture("shots", sid),
+    (error) => assertScreenshotError(error, screenshot.SCREENSHOT_ERROR_CODES.sessionNotRunning)
+  );
+
+  const listed = await restarted.list("shots", sid);
+  assert.equal(listed.total, 1);
+  assert.equal(listed.items[0].screenshotId, captured.screenshotId);
+
+  const readBack = await restarted.read("shots", sid, captured.screenshotId);
+  assert.equal(readBack.meta.sha256, captured.sha256);
+  assert.equal(readBack.data.equals(pngImage), true);
+
+  await restarted.deleteScreenshot("shots", sid, captured.screenshotId);
+  assert.deepEqual(listSessionFiles(sid), []);
 });
 
 test("audit events never contain PIDs, titles, native ids, or absolute paths", async () => {

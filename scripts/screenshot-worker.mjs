@@ -44,6 +44,7 @@ const MAX_PID = 4294967295;
 const MAX_DIMENSION = 7680;
 const MIN_JPEG_QUALITY = 50;
 const MAX_JPEG_QUALITY = 95;
+const MAX_IMAGE_BYTES = 64 * 1024 * 1024;
 
 const pidSchema = z.number().int().positive().max(MAX_PID);
 const dimensionSchema = z.number().int().min(1).max(MAX_DIMENSION);
@@ -72,6 +73,7 @@ const requestSchema = z.discriminatedUnion("op", [
       nativeWindowId: pidSchema,
       expectedPid: pidSchema,
       format: z.enum(["png", "jpeg"]),
+      maxBytes: z.number().int().positive().max(MAX_IMAGE_BYTES),
       jpegQuality: z.number().int().min(MIN_JPEG_QUALITY).max(MAX_JPEG_QUALITY).optional(),
       maxWidth: dimensionSchema.optional(),
       maxHeight: dimensionSchema.optional(),
@@ -88,14 +90,25 @@ export const ERROR_CODES = {
   inputTooLarge: "input_too_large",
   outputTooLarge: "output_too_large",
   bindingUnavailable: "screenshot_binding_unavailable",
+  unsupportedSessionWindowCapture: "unsupported_session_window_capture",
   windowNotFound: "window_not_found",
   windowNotOwned: "window_not_owned",
   windowIneligible: "window_ineligible",
   encodeFailed: "encode_failed",
   imageProcessingFailed: "image_processing_failed",
   outputWriteFailed: "output_write_failed",
+  imageBoundsExceeded: "image_bounds_exceeded",
   workerInternal: "worker_internal"
 };
+
+export function captureEnvironmentStatus(platform, environment) {
+  if (platform !== "linux") return { supported: true };
+  const sessionType = String(environment.XDG_SESSION_TYPE ?? "").trim().toLowerCase();
+  if (sessionType === "wayland" || (environment.WAYLAND_DISPLAY && !environment.DISPLAY)) {
+    return { supported: false, reason: ERROR_CODES.unsupportedSessionWindowCapture };
+  }
+  return { supported: true };
+}
 
 function sanitizeText(value, maxLength = MAX_TEXT_LENGTH) {
   const normalized = String(value ?? "")
@@ -264,13 +277,36 @@ async function encodeImage(bindings, image, request) {
  */
 export async function handleRequest(request, deps) {
   const loadBindings = deps?.loadBindings ?? loadDefaultBindings;
-  const platform = process.platform;
+  const platform = deps?.platform ?? process.platform;
+  const environment = deps?.environment ?? process.env;
+  const environmentStatus = captureEnvironmentStatus(platform, environment);
 
   try {
+    if (!environmentStatus.supported) {
+      if (request.op === "capabilities") {
+        return {
+          ok: true,
+          result: {
+            bindingLoaded: false,
+            captureAvailable: false,
+            platform,
+            formats: ["png", "jpeg"],
+            reason: environmentStatus.reason
+          }
+        };
+      }
+      return {
+        ok: false,
+        error: {
+          code: environmentStatus.reason,
+          message: "session-owned window capture is unsupported in this display environment"
+        }
+      };
+    }
+
     if (request.op === "capabilities") {
       try {
         const bindings = await loadBindings();
-        // Probe enumeration so degraded desktop sessions surface here rather than at first capture.
         bindings.Window.all();
         return {
           ok: true,
@@ -359,6 +395,12 @@ export async function handleRequest(request, deps) {
     const encodedResult = await encodeImage(bindings, image, request);
     if (encodedResult.error !== undefined) {
       return { ok: false, error: { code: encodedResult.error, message: "image encoding failed" } };
+    }
+    if (encodedResult.encoded.byteLength > request.maxBytes) {
+      return {
+        ok: false,
+        error: { code: ERROR_CODES.imageBoundsExceeded, message: "encoded image exceeds the byte limit" }
+      };
     }
 
     try {

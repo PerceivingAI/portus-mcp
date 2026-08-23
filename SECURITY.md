@@ -52,9 +52,10 @@ projectEdit
 projectPatch
 projectRun
 projectPolicy
+projectScreenshot
 ```
 
-Every MCP tool checks its corresponding permission at entry: `subagent_task` requires `subagentTask`, `subagent_context` requires `subagentContext`, `project_read` requires `projectRead`, and so on. `project_policy` requires `projectPolicy` for checks and native actions (`register_project`, `list_audit`, `read_audit`). `readGitIgnoredFiles` remains an internal constraint. Scoped `project_context.capabilities` is planning information: it positively lists effective tool authority and usable dependent features, while disabled entries are absent. The fixed registered catalog may therefore contain tools absent from `capabilities.availableTools`. This projection is not a security boundary; runtime permission, path, command, confirmation, and validation gates remain authoritative.
+Every MCP tool checks its corresponding permission at entry: `subagent_task` requires `subagentTask`, `subagent_context` requires `subagentContext`, `project_read` requires `projectRead`, `project_screenshot` requires `projectScreenshot`, and so on. Screenshot authority is independent from project execution, reading, and editing. `project_policy` requires `projectPolicy` for checks and native actions (`register_project`, `list_audit`, `read_audit`). `readGitIgnoredFiles` remains an internal constraint. Scoped `project_context.capabilities` is planning information; runtime permission, path, ownership, confirmation, and validation gates remain authoritative.
 
 Spawned-agent permissions include:
 
@@ -67,6 +68,14 @@ maxRuntimeSecs
 Direct tool permissions and spawned-agent permissions are separate and can be found on `portus-mcp.policy.json`.
 
 Portus ships with only `git` in `main_agent.permissions.allowedCommands`. Operators explicitly grant other device-installed executables; direct tool permissions and spawned-agent permissions remain separate. Git, shells, interpreters, and other granted commands can expose or change state beyond the narrower file-tool path policy. A project-root working directory is not a hard filesystem sandbox: allowlisting Bash, PowerShell, Python, Node.js, or another general-purpose interpreter grants the authority available to that executable under the Portus OS account. Add only commands the connected agent is intended to control.
+
+## Session-Owned Screenshot Boundary
+
+`project_screenshot` does not grant desktop, monitor, active-window, arbitrary-window, or screen-region capture. `targets` and `capture` require a running `project_run` execution session and accept only visible windows whose owner PID belongs to the freshly attested session process set. Native window handles and PIDs never leave the worker/runtime boundary.
+
+Every screenshot operation requires the same `projectAlias` and `executionSessionId`. Captures are stored only under `.portus-artifacts/screenshots/<executionSessionId>/` in that registered project. Portus generates filenames, validates canonical containment, creates temporary files exclusively, validates encoded bytes before publication and read, and returns base64 only in native MCP image blocks. Screenshots persist until an explicit `delete`; Portus performs no automatic count-, byte-, or age-based deletion.
+
+Window selection tokens are random, project/session scoped, short lived, and invalidated when the execution session exits or Portus restarts. Windows, macOS, and Linux X11 use the isolated child worker. Wayland fails closed when ownership cannot be attested. (`src/runtime/screenshotSystem.ts:78-1157`, `scripts/screenshot-worker.mjs:36-439`, `src/tools/projectScreenshot.ts:34-216`)
 
 ## Spawned Agents
 

@@ -13,6 +13,26 @@ export type MainAgentCommandConfig = {
 
 const safeCommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/);
 
+const screenshotLimitsSchema = z.object({
+  maxBytes: z.number().int().positive().max(64 * 1024 * 1024),
+  maxWidth: z.number().int().positive().max(7680),
+  maxHeight: z.number().int().positive().max(7680),
+  captureTimeoutMs: z.number().int().positive().max(120000),
+  maxWindowWaitMs: z.number().int().positive().max(600000),
+  windowTokenTtlMs: z.number().int().positive().max(600000),
+  maxListPageSize: z.number().int().positive().max(10000),
+  minJpegQuality: z.number().int().min(1).max(100),
+  maxJpegQuality: z.number().int().min(1).max(100)
+}).strict().superRefine((limits, context) => {
+  if (limits.minJpegQuality > limits.maxJpegQuality) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["minJpegQuality"],
+      message: "minJpegQuality must not exceed maxJpegQuality"
+    });
+  }
+});
+
 const policySchema = z.object({
   subagents: z.object({
     concurrency: z.object({
@@ -96,20 +116,7 @@ const policySchema = z.object({
       maxOutputBufferMb: z.number().positive(),
       maxBatchOutputChars: z.number().int().positive()
     }).strict(),
-    screenshot: z.object({
-      maxBytes: z.number().int().positive(),
-      maxWidth: z.number().int().positive(),
-      maxHeight: z.number().int().positive(),
-      maxStoredFilesPerSession: z.number().int().positive(),
-      maxTotalBytesPerProject: z.number().int().positive(),
-      maxAgeDays: z.number().int().min(0),
-      captureTimeoutMs: z.number().int().positive(),
-      maxWindowWaitMs: z.number().int().positive(),
-      windowTokenTtlMs: z.number().int().positive(),
-      maxListPageSize: z.number().int().positive(),
-      minJpegQuality: z.number().int().min(1).max(100),
-      maxJpegQuality: z.number().int().min(1).max(100)
-    }).strict()
+    screenshot: screenshotLimitsSchema
   }).strict(),
   audit: z.object({
     strictMode: z.boolean()

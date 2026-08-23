@@ -17,6 +17,7 @@ import {
   ERROR_CODES,
   MAX_INPUT_BYTES,
   WORKER_PROTOCOL_VERSION,
+  captureEnvironmentStatus,
   handleRequest,
   parseRequestObject
 } from "../scripts/screenshot-worker.mjs";
@@ -115,6 +116,7 @@ test("parse rejects jpeg quality outside bounds", () => {
       nativeWindowId: 1,
       expectedPid: 1,
       format: "jpeg",
+      maxBytes: 8 * 1024 * 1024,
       jpegQuality: quality,
       outPath: "C:\\tmp\\out.jpeg"
     });
@@ -130,6 +132,7 @@ test("parse accepts a valid capture request", () => {
     nativeWindowId: 7,
     expectedPid: 10,
     format: "png",
+    maxBytes: 8 * 1024 * 1024,
     maxWidth: 1920,
     maxHeight: 1080,
     outPath: path.join(tmpdir(), "capture.png")
@@ -210,6 +213,7 @@ function makeCaptureRequest(overrides: Record<string, unknown> = {}) {
     nativeWindowId: 9,
     expectedPid: 100,
     format: "png",
+    maxBytes: 8 * 1024 * 1024,
     outPath: path.join(tmpdir(), `capture-${Date.now()}-${Math.random().toString(16).slice(2)}.png`),
     ...overrides
   };
@@ -417,6 +421,70 @@ test("capabilities reports availability when bindings load", async () => {
   }
 });
 
+test("capture environment reports Wayland unsupported and keeps X11 available", () => {
+  assert.deepEqual(
+    captureEnvironmentStatus("linux", { XDG_SESSION_TYPE: "wayland", WAYLAND_DISPLAY: "wayland-0" }),
+    { supported: false, reason: ERROR_CODES.unsupportedSessionWindowCapture }
+  );
+  assert.deepEqual(
+    captureEnvironmentStatus("linux", { XDG_SESSION_TYPE: "x11", DISPLAY: ":0" }),
+    { supported: true }
+  );
+  assert.deepEqual(captureEnvironmentStatus("win32", {}), { supported: true });
+  assert.deepEqual(captureEnvironmentStatus("darwin", {}), { supported: true });
+});
+
+test("Wayland capability, target, and capture requests fail closed without loading native bindings", async () => {
+  let bindingLoads = 0;
+  const dependencies = {
+    platform: "linux",
+    environment: { XDG_SESSION_TYPE: "wayland", WAYLAND_DISPLAY: "wayland-0" },
+    loadBindings: async () => {
+      bindingLoads += 1;
+      return makeBindings([]);
+    }
+  };
+
+  const capabilities = await handleRequest(
+    { op: "capabilities", protocolVersion: WORKER_PROTOCOL_VERSION },
+    dependencies
+  );
+  assert.equal(capabilities.ok, true);
+  if (capabilities.ok) {
+    assert.equal(capabilities.result.captureAvailable, false);
+    assert.equal(capabilities.result.reason, ERROR_CODES.unsupportedSessionWindowCapture);
+  }
+
+  const targets = await handleRequest(
+    { op: "targets", protocolVersion: WORKER_PROTOCOL_VERSION, allowedPids: [100] },
+    dependencies
+  );
+  assert.equal(targets.ok, false);
+  if (!targets.ok) assert.equal(targets.error.code, ERROR_CODES.unsupportedSessionWindowCapture);
+
+  const capture = await handleRequest(
+    makeCaptureRequest({ outPath: path.join(tmpdir(), "wayland-never-written.png") }),
+    dependencies
+  );
+  assert.equal(capture.ok, false);
+  if (!capture.ok) assert.equal(capture.error.code, ERROR_CODES.unsupportedSessionWindowCapture);
+  assert.equal(bindingLoads, 0);
+});
+
+test("macOS and Linux X11 capability requests load bindings and report capture support", async () => {
+  for (const dependencies of [
+    { platform: "darwin", environment: {} },
+    { platform: "linux", environment: { XDG_SESSION_TYPE: "x11", DISPLAY: ":0" } }
+  ]) {
+    const outcome = await handleRequest(
+      { op: "capabilities", protocolVersion: WORKER_PROTOCOL_VERSION },
+      { ...dependencies, ...makeBindings([]) }
+    );
+    assert.equal(outcome.ok, true);
+    if (outcome.ok) assert.equal(outcome.result.captureAvailable, true);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Child-process contract: real worker over stdio
 // ---------------------------------------------------------------------------
@@ -566,6 +634,7 @@ test("worker contract: capture with an unknown window id fails closed", async ()
       nativeWindowId: 987654321,
       expectedPid: 1,
       format: "png",
+      maxBytes: 8 * 1024 * 1024,
       outPath: path.join(tmpdir(), "never-written.png")
     })
   );

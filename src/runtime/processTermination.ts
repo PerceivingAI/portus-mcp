@@ -82,12 +82,76 @@ function signalProcessGroup(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
-const POSIX_PROCESS_SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024;
+const PROCESS_SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024;
+const PROCESS_SNAPSHOT_TIMEOUT_MS = 3000;
 
 export type PosixProcessRow = {
   pid: number;
   parentPid: number;
 };
+
+export type PosixSessionProcessRow = PosixProcessRow & {
+  processGroupId: number;
+  startedAtMs: number;
+};
+
+export type SessionProcessSnapshot = {
+  rootPid: number;
+  rootStartedAtMs: number;
+  allowedPids: number[];
+};
+
+async function runBoundedSnapshotCommand(
+  application: string,
+  args: string[],
+  options: { env?: NodeJS.ProcessEnv; windowsHide?: boolean; description: string }
+): Promise<string> {
+  const child = spawn(application, args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: options.env,
+    windowsHide: options.windowsHide
+  });
+  const stdoutChunks: Buffer[] = [];
+  const stderrChunks: Buffer[] = [];
+  let totalBytes = 0;
+  let outputExceeded = false;
+  let timedOut = false;
+  let spawnError: Error | null = null;
+  const append = (chunks: Buffer[], chunk: Buffer) => {
+    if (outputExceeded) return;
+    totalBytes += chunk.length;
+    if (totalBytes > PROCESS_SNAPSHOT_MAX_BYTES) {
+      outputExceeded = true;
+      child.kill("SIGKILL");
+      return;
+    }
+    chunks.push(chunk);
+  };
+  child.stdout?.on("data", (chunk: Buffer) => append(stdoutChunks, chunk));
+  child.stderr?.on("data", (chunk: Buffer) => append(stderrChunks, chunk));
+  child.on("error", (error: Error) => {
+    spawnError = error;
+  });
+
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    child.kill("SIGKILL");
+  }, PROCESS_SNAPSHOT_TIMEOUT_MS);
+  let code: number | null;
+  try {
+    [code] = (await once(child, "close")) as [number | null, NodeJS.Signals | null];
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (spawnError) throw new Error(`${options.description} could not start`);
+  if (timedOut) throw new Error(`${options.description} timed out`);
+  if (outputExceeded) throw new Error(`${options.description} exceeded the output limit`);
+  if (code !== 0) {
+    const detail = Buffer.concat(stderrChunks).toString("utf8").replace(/[\r\n\t]+/g, " ").trim().slice(0, 500);
+    throw new Error(`${options.description} failed${detail ? `: ${detail}` : ""}`);
+  }
+  return Buffer.concat(stdoutChunks).toString("utf8").trim();
+}
 
 export function collectDescendantPids(rows: readonly PosixProcessRow[], rootPid: number): number[] {
   const childrenByParent = new Map<number, number[]>();
@@ -109,55 +173,59 @@ export function collectDescendantPids(rows: readonly PosixProcessRow[], rootPid:
   return descendants;
 }
 
+export function collectPosixSessionPids(rows: readonly PosixSessionProcessRow[], rootPid: number): number[] {
+  const root = rows.find((row) => row.pid === rootPid);
+  if (!root || root.processGroupId !== rootPid) return [];
+  return rows
+    .filter((row) => row.processGroupId === rootPid)
+    .map((row) => row.pid)
+    .sort((a, b) => a - b);
+}
+
 export async function getPosixDescendants(rootPid: number): Promise<number[]> {
   if (process.platform === "win32" || rootPid <= 0) return [];
-  const ps = spawn("ps", ["-e", "-o", "pid=,ppid="], {
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-  const stdoutChunks: Buffer[] = [];
-  const stderrChunks: Buffer[] = [];
-  let stdoutBytes = 0;
-  let stderrBytes = 0;
-  let outputExceeded = false;
-  const append = (chunks: Buffer[], chunk: Buffer, stream: "stdout" | "stderr") => {
-    if (outputExceeded) return;
-    if (stream === "stdout") stdoutBytes += chunk.length;
-    else stderrBytes += chunk.length;
-    if (stdoutBytes + stderrBytes > POSIX_PROCESS_SNAPSHOT_MAX_BYTES) {
-      outputExceeded = true;
-      ps.kill("SIGKILL");
-      return;
-    }
-    chunks.push(chunk);
-  };
-  ps.stdout?.on("data", (chunk: Buffer) => append(stdoutChunks, chunk, "stdout"));
-  ps.stderr?.on("data", (chunk: Buffer) => append(stderrChunks, chunk, "stderr"));
-
-  let snapshotTimedOut = false;
-  const snapshotTimeout = setTimeout(() => {
-    snapshotTimedOut = true;
-    ps.kill("SIGKILL");
-  }, 3000);
-  let code: number | null;
-  try {
-    [code] = (await once(ps, "close")) as [number | null, NodeJS.Signals | null];
-  } finally {
-    clearTimeout(snapshotTimeout);
-  }
-  if (snapshotTimedOut) throw new Error("POSIX process snapshot timed out");
-  if (outputExceeded) throw new Error("POSIX process snapshot exceeded the output limit");
-  if (code !== 0) {
-    const detail = Buffer.concat(stderrChunks).toString("utf8").replace(/[\r\n\t]+/g, " ").trim().slice(0, 500);
-    throw new Error(`Unable to inspect POSIX process descendants${detail ? `: ${detail}` : ""}`);
-  }
-
+  const text = await runBoundedSnapshotCommand(
+    "ps",
+    ["-e", "-o", "pid=,ppid="],
+    { description: "POSIX process snapshot" }
+  );
   const rows: PosixProcessRow[] = [];
-  for (const line of Buffer.concat(stdoutChunks).toString("utf8").split(/\r?\n/)) {
+  for (const line of text.split(/\r?\n/)) {
     const match = line.trim().match(/^(\d+)\s+(\d+)$/);
     if (!match) continue;
     rows.push({ pid: Number(match[1]), parentPid: Number(match[2]) });
   }
   return collectDescendantPids(rows, rootPid);
+}
+
+export async function getPosixSessionProcessSnapshot(rootPid: number): Promise<SessionProcessSnapshot | null> {
+  if (process.platform === "win32" || rootPid <= 0) return null;
+  const text = await runBoundedSnapshotCommand(
+    "ps",
+    ["-e", "-o", "pid=,ppid=,pgid=,lstart="],
+    {
+      description: "POSIX session process snapshot",
+      env: { ...process.env, LC_ALL: "C", LANG: "C" }
+    }
+  );
+  const rows: PosixSessionProcessRow[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/);
+    if (!match) continue;
+    const startedAtMs = Date.parse(match[4]);
+    if (!Number.isFinite(startedAtMs)) continue;
+    rows.push({
+      pid: Number(match[1]),
+      parentPid: Number(match[2]),
+      processGroupId: Number(match[3]),
+      startedAtMs
+    });
+  }
+  const root = rows.find((row) => row.pid === rootPid);
+  if (!root) return null;
+  const allowedPids = collectPosixSessionPids(rows, rootPid);
+  if (allowedPids.length === 0) return null;
+  return { rootPid, rootStartedAtMs: root.startedAtMs, allowedPids };
 }
 
 function signalProcess(pid: number, signal: NodeJS.Signals): void {
@@ -196,6 +264,7 @@ const WIN_PROCESS_TREE_CSHARP = `
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Diagnostics;
 
 public static class PortusWinProcessTree {
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
@@ -258,30 +327,68 @@ public static class PortusWinProcessTree {
         }
         return "[" + string.Join(",", descendants) + "]";
     }
+
+    public static string GetSessionSnapshot(uint rootPid) {
+        long startedAtMs = -1;
+        try {
+            Process root = Process.GetProcessById((int)rootPid);
+            startedAtMs = new DateTimeOffset(root.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds();
+        } catch {
+            return "-1|[]";
+        }
+        return startedAtMs.ToString() + "|" + GetDescendants(rootPid);
+    }
 }
 `;
 
-export async function getWindowsDescendants(rootPid: number): Promise<number[]> {
-  if (process.platform !== "win32" || rootPid <= 0) return [];
+async function runWindowsProcessTreeQuery(method: "GetDescendants" | "GetSessionSnapshot", rootPid: number): Promise<string | null> {
+  if (process.platform !== "win32" || rootPid <= 0) return null;
   try {
-    const psCmd = `Add-Type -TypeDefinition @'\n${WIN_PROCESS_TREE_CSHARP}\n'@ -Language CSharp\n[PortusWinProcessTree]::GetDescendants(${rootPid})`;
-    const ps = spawn("powershell.exe", ["-NoProfile", "-Command", psCmd], {
-      stdio: ["ignore", "pipe", "ignore"],
-      windowsHide: true
-    });
-    const chunks: Buffer[] = [];
-    ps.stdout?.on("data", (chunk: Buffer) => chunks.push(chunk));
-    const [code] = (await once(ps, "close", { signal: AbortSignal.timeout(3000) })) as [number | null, NodeJS.Signals | null];
-    if (code === 0) {
-      const text = Buffer.concat(chunks).toString("utf8").trim();
-      if (text.startsWith("[") && text.endsWith("]")) {
-        return JSON.parse(text) as number[];
-      }
-    }
+    const command = `Add-Type -TypeDefinition @'\n${WIN_PROCESS_TREE_CSHARP}\n'@ -Language CSharp\n[PortusWinProcessTree]::${method}(${rootPid})`;
+    return await runBoundedSnapshotCommand(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", command],
+      { description: "Windows process snapshot", windowsHide: true }
+    );
   } catch {
-    // Fallback if PowerShell snapshot is unavailable
+    return null;
   }
-  return [];
+}
+
+function parsePidArray(text: string): number[] | null {
+  let candidate: unknown;
+  try {
+    candidate = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(candidate)) return null;
+  const pids: number[] = [];
+  for (const value of candidate) {
+    if (!Number.isInteger(value) || typeof value !== "number" || value <= 0) return null;
+    pids.push(value);
+  }
+  return pids;
+}
+
+export async function getWindowsDescendants(rootPid: number): Promise<number[]> {
+  const text = await runWindowsProcessTreeQuery("GetDescendants", rootPid);
+  return text === null ? [] : (parsePidArray(text) ?? []);
+}
+
+export async function getWindowsSessionProcessSnapshot(rootPid: number): Promise<SessionProcessSnapshot | null> {
+  const text = await runWindowsProcessTreeQuery("GetSessionSnapshot", rootPid);
+  if (text === null) return null;
+  const separator = text.indexOf("|");
+  if (separator < 1) return null;
+  const rootStartedAtMs = Number(text.slice(0, separator));
+  const descendants = parsePidArray(text.slice(separator + 1));
+  if (!Number.isFinite(rootStartedAtMs) || rootStartedAtMs <= 0 || descendants === null) return null;
+  return {
+    rootPid,
+    rootStartedAtMs,
+    allowedPids: [rootPid, ...descendants]
+  };
 }
 
 export async function forceKillPid(pid: number): Promise<void> {

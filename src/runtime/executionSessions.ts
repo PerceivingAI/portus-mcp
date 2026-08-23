@@ -124,6 +124,24 @@ export type ExecutionSessionOwnership = {
   startedAtMs: number;
 };
 
+type ExecutionSessionExitListener = (sessionId: string) => void;
+const executionSessionExitListeners = new Set<ExecutionSessionExitListener>();
+
+export function subscribeExecutionSessionExit(listener: ExecutionSessionExitListener): () => void {
+  executionSessionExitListeners.add(listener);
+  return () => executionSessionExitListeners.delete(listener);
+}
+
+function notifyExecutionSessionExit(sessionId: string): void {
+  for (const listener of executionSessionExitListeners) {
+    try {
+      listener(sessionId);
+    } catch {
+      // Session cleanup must not fail because an observer failed.
+    }
+  }
+}
+
 /**
  * Narrow internal accessor for first-party screenshot ownership checks.
  * Exposes PID and start time to trusted runtime code without widening
@@ -390,6 +408,7 @@ async function handleProcessClosed(sessionId: string, exitCode: number | null, s
     reaped: true
   };
   upsertExecutionSession(rec);
+  notifyExecutionSessionExit(sessionId);
 
   stateStore.audit({
     tool: "project_run",
@@ -434,6 +453,7 @@ async function handleSessionTimeout(sessionId: string): Promise<void> {
     reaped: termination.confirmed
   };
   upsertExecutionSession(rec);
+  notifyExecutionSessionExit(sessionId);
 
   stateStore.audit({
     tool: "project_run",
@@ -452,6 +472,7 @@ export async function terminateExecutionSession(sessionId: string): Promise<Publ
       record.status = "stopped";
       record.completedAt = new Date().toISOString();
       upsertExecutionSession(record);
+      notifyExecutionSessionExit(sessionId);
     }
     return toPublicExecutionSession(record);
   }
@@ -483,6 +504,7 @@ export async function terminateExecutionSession(sessionId: string): Promise<Publ
     reaped: termination.confirmed
   };
   upsertExecutionSession(rec);
+  notifyExecutionSessionExit(sessionId);
 
   stateStore.audit({
     tool: "project_run",

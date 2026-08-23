@@ -1,6 +1,6 @@
 import { optionalEnv } from "../src/env.js";
 import { runProjectCommand } from "../src/runtime/commands.js";
-import { collectDescendantPids } from "../src/runtime/processTermination.js";
+import { collectDescendantPids, collectPosixSessionPids } from "../src/runtime/processTermination.js";
 import { assertProjectCommandStaysInProject, commandRequiresConfirmation } from "../src/tools/projects.js";
 import { toPublicAuditEvent, type PublicAuditEvent } from "../src/tools/config.js";
 import test, { after } from "node:test";
@@ -263,7 +263,6 @@ test("screenshot permission and limits parse strictly", () => {
     ["maxBytes", 0],
     ["maxBytes", 1.5],
     ["maxWidth", -1],
-    ["maxStoredFilesPerSession", 0],
     ["captureTimeoutMs", 0],
     ["windowTokenTtlMs", -5],
     ["minJpegQuality", 101],
@@ -280,6 +279,41 @@ test("screenshot permission and limits parse strictly", () => {
       new RegExp(`limits\\.screenshot\\.${field}`)
     );
   }
+
+  for (const [field, value] of [
+    ["maxBytes", 64 * 1024 * 1024 + 1],
+    ["maxWidth", 7681],
+    ["maxHeight", 7681],
+    ["maxWindowWaitMs", 600001],
+    ["maxListPageSize", 10001]
+  ] as Array<[string, number]>) {
+    assert.throws(
+      () => parsePolicyConfig({
+        ...selectedPolicy,
+        limits: {
+          ...selectedPolicy.limits,
+          screenshot: { ...selectedPolicy.limits.screenshot, [field]: value }
+        }
+      }),
+      new RegExp(`limits\\.screenshot\\.${field}`)
+    );
+  }
+
+  assert.throws(
+    () => parsePolicyConfig({
+      ...selectedPolicy,
+      limits: {
+        ...selectedPolicy.limits,
+        screenshot: {
+          ...selectedPolicy.limits.screenshot,
+          minJpegQuality: 96,
+          maxJpegQuality: 95
+        }
+      }
+    }),
+    /minJpegQuality/
+  );
+
 
   // Unknown fields inside limits.screenshot fail loading.
   assert.throws(
@@ -427,6 +461,16 @@ test("Process snapshots retain detached descendants by parent ancestry", () => {
     { pid: 103, parentPid: 102 },
     { pid: 200, parentPid: 1 }
   ], 100), [101, 102, 103]);
+});
+
+test("Screenshot ownership keeps the execution process group and excludes detached descendants", () => {
+  assert.deepEqual(collectPosixSessionPids([
+    { pid: 100, parentPid: 1, processGroupId: 100, startedAtMs: 1_000 },
+    { pid: 101, parentPid: 100, processGroupId: 100, startedAtMs: 1_100 },
+    { pid: 102, parentPid: 1, processGroupId: 100, startedAtMs: 1_200 },
+    { pid: 103, parentPid: 100, processGroupId: 103, startedAtMs: 1_300 },
+    { pid: 200, parentPid: 1, processGroupId: 200, startedAtMs: 900 }
+  ], 100), [100, 101, 102]);
 });
 
 test("Process tree termination reaps spawned descendant processes on timeout and confirms descendantsRemaining === 0", async () => {

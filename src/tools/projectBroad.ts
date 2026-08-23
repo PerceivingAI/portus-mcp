@@ -16,6 +16,7 @@ import { loadPolicyConfig, policyPermissions, type PortusPolicyConfig } from "..
 import { countChars, limitText } from "../runtime/outputLimits.js";
 import { runProjectCheck, runProjectScript } from "../runtime/checks.js";
 import { runProjectCommand } from "../runtime/commands.js";
+import type { ScreenshotCapabilities } from "../runtime/screenshotSystem.js";
 import {
   startExecutionSession,
   pollExecutionSession,
@@ -55,19 +56,25 @@ type EnabledToolCapability = {
   allowedCommands?: string[];
 };
 
+type ScreenshotToolCapability = Omit<ScreenshotCapabilities, "enabled"> & {
+  enabled: true;
+};
+
+type ProjectToolCapability = EnabledToolCapability | ScreenshotToolCapability;
+
 type EnabledFeature = {
   enabled: true;
 };
 
 type ProjectContextCapabilities = {
   complete: true;
-  availableTools: Record<string, EnabledToolCapability>;
+  availableTools: Record<string, ProjectToolCapability>;
   features: Record<string, EnabledFeature>;
 };
 
 function projectContextCapabilities(policy: PortusPolicyConfig): ProjectContextCapabilities {
   const permissions = policyPermissions(policy).main_agent;
-  const availableTools: Record<string, EnabledToolCapability> = {};
+  const availableTools: Record<string, ProjectToolCapability> = {};
   if (permissions.projectContext) availableTools.project_context = { enabled: true };
   if (permissions.projectRead) availableTools.project_read = { enabled: true };
   if (permissions.projectSearch) availableTools.project_search = { enabled: true };
@@ -85,9 +92,7 @@ function projectContextCapabilities(policy: PortusPolicyConfig): ProjectContextC
 
   const screenshotEntry = screenshotCapabilityEntry(policy);
   if (screenshotEntry) {
-    // Expanded metadata: scope, operations, platform, formats, and explicit
-    // capture-unavailability flags. PID/native-handle data never appears.
-    availableTools.project_screenshot = { enabled: true, ...screenshotEntry } as unknown as EnabledToolCapability;
+    availableTools.project_screenshot = { ...screenshotEntry, enabled: true };
   }
 
   const features: Record<string, EnabledFeature> = {};
