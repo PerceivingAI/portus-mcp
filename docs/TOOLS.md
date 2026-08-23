@@ -62,12 +62,12 @@ Enable the tool with `main_agent.permissions.projectScreenshot`. Every request u
 | Operation | Behavior |
 |---|---|
 | `targets` | Return only visible, non-minimized windows owned by the selected execution session. Results contain opaque, short-lived `windowId` tokens, never PIDs or native handles. |
-| `capture` | Capture the sole eligible window or a selected `windowId`; save PNG or JPEG under `.portus-artifacts/screenshots/<executionSessionId>/`; return metadata and a native MCP image block unless `returnImage=false`. |
+| `capture` | Capture the sole eligible window or a selected `windowId`; save PNG or JPEG under `.portus-artifacts/screenshots/<executionSessionId>/`; return metadata and a native MCP image block unless `returnImage=false`. Requires `closeSession: boolean` to explicitly declare whether the session process tree is terminated immediately after capture. |
 | `read` | Revalidate and return one managed screenshot from the same project/session, including a native image block unless `returnImage=false`. |
 | `list` | Return newest-first managed screenshot metadata using bounded, opaque cursor pagination. It does not limit the number of stored screenshots. |
 | `delete` | Explicitly remove one managed screenshot from the same project/session. No screenshot is deleted automatically. |
 
-Capture supports bounded `waitForWindowMs`, `format`, `jpegQuality`, `maxWidth`, and `maxHeight`. If several eligible windows exist and no `windowId` is supplied, the error is `multiple_session_windows` and includes scoped candidates. `capture` and `delete` require `confirm=true` when `main_agent.permissions.requireConfirmation=true`. Windows, macOS, and Linux X11 use the isolated npm-installed worker; Wayland fails closed with `unsupported_session_window_capture`. (`scripts/screenshot-worker.mjs:36-439`, `src/runtime/screenshotSystem.ts:322-1157`)
+Capture requires `closeSession: boolean` (to auto-close the GUI/session or leave it running), and supports bounded `waitForWindowMs`, `format`, `jpegQuality`, `maxWidth`, and `maxHeight`. If several eligible windows exist and no `windowId` is supplied, the error is `multiple_session_windows` and includes scoped candidates. `capture` and `delete` require `confirm=true` when `main_agent.permissions.requireConfirmation=true`. Windows, macOS, and Linux X11 use the isolated npm-installed worker; Wayland fails closed with `unsupported_session_window_capture`. (`scripts/screenshot-worker.mjs:36-439`, `src/runtime/screenshotSystem.ts:322-1157`)
 
 ### `project_patch` Input and Result Contract
 

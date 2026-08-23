@@ -50,7 +50,7 @@ function makeSystem(overrides: Partial<ScreenshotSystem> = {}): ScreenshotSystem
     ensureBindingAvailability: async () => true,
     refreshBindingAvailability: () => undefined,
     listTargets: async () => [{ windowId: "a".repeat(32), title: "Fixture", appName: "fixture", width: 800, height: 600 }],
-    capture: async () => ({
+    capture: async (_alias, _sid, options) => ({
       screenshotId,
       format: "png",
       width: 800,
@@ -58,7 +58,8 @@ function makeSystem(overrides: Partial<ScreenshotSystem> = {}): ScreenshotSystem
       bytes: imageBytes.length,
       sha256: "hash",
       capturedAt: "2026-08-22T10:00:00.000Z",
-      resized: false
+      resized: false,
+      sessionClosed: options?.closeSession ?? false
     }),
     read: async () => ({
       meta: {
@@ -125,7 +126,8 @@ test("capture returns one native image block and returnImage=false omits it", as
   const baseArguments = {
     operation: "capture",
     projectAlias: "fixture",
-    executionSessionId: "exec_1000_abcdef"
+    executionSessionId: "exec_1000_abcdef",
+    closeSession: false
   } as const;
 
   const withImage = await client.callTool({ name: "project_screenshot", arguments: baseArguments });
@@ -186,7 +188,7 @@ test("capture and delete confirmation follow the selected screenshot policy", as
   const scoped = { projectAlias: "fixture", executionSessionId: "exec_1000_abcdef" };
 
   for (const arguments_ of [
-    { operation: "capture", ...scoped },
+    { operation: "capture", ...scoped, closeSession: false },
     { operation: "delete", ...scoped, screenshotId }
   ]) {
     const denied = await client.callTool({ name: "project_screenshot", arguments: arguments_ });
@@ -196,7 +198,7 @@ test("capture and delete confirmation follow the selected screenshot policy", as
 
   structuredResult(await client.callTool({
     name: "project_screenshot",
-    arguments: { operation: "capture", ...scoped, confirm: true, returnImage: false }
+    arguments: { operation: "capture", ...scoped, closeSession: false, confirm: true, returnImage: false }
   }));
   structuredResult(await client.callTool({
     name: "project_screenshot",
@@ -225,6 +227,7 @@ test("multiple-window capture preserves its stable error code and opaque candida
       operation: "capture",
       projectAlias: "fixture",
       executionSessionId: "exec_1000_abcdef",
+      closeSession: false,
       returnImage: false
     }
   });
@@ -246,4 +249,56 @@ test("the dedicated screenshot permission gates every operation", async (t) => {
   });
   assert.equal(response.isError, true);
   assert.match(JSON.stringify(response.structuredContent), /projectScreenshot/);
+});
+
+test("capture requires explicit closeSession boolean", async (t) => {
+  let capturedCloseOption: boolean | undefined;
+  const system = makeSystem({
+    capture: async (_alias, _sid, options) => {
+      capturedCloseOption = options?.closeSession;
+      return {
+        screenshotId,
+        format: "png",
+        width: 800,
+        height: 600,
+        bytes: imageBytes.length,
+        sha256: "hash",
+        capturedAt: "2026-08-22T10:00:00.000Z",
+        resized: false,
+        sessionClosed: Boolean(options?.closeSession)
+      };
+    }
+  });
+  const client = await createHarness(t, policyWith(), system);
+  const scoped = { projectAlias: "fixture", executionSessionId: "exec_1000_abcdef" };
+
+  // Missing closeSession is rejected by schema
+  const missing = await client.callTool({
+    name: "project_screenshot",
+    arguments: { operation: "capture", ...scoped, returnImage: false }
+  });
+  assert.equal(missing.isError, true);
+
+  // Non-boolean closeSession is rejected by schema
+  const nonBoolean = await client.callTool({
+    name: "project_screenshot",
+    arguments: { operation: "capture", ...scoped, closeSession: "yes", returnImage: false }
+  });
+  assert.equal(nonBoolean.isError, true);
+
+  // closeSession: true is passed through and returned
+  const closed = structuredResult(await client.callTool({
+    name: "project_screenshot",
+    arguments: { operation: "capture", ...scoped, closeSession: true, returnImage: false }
+  }));
+  assert.equal(capturedCloseOption, true);
+  assert.equal(closed.sessionClosed, true);
+
+  // closeSession: false is passed through and returned
+  const kept = structuredResult(await client.callTool({
+    name: "project_screenshot",
+    arguments: { operation: "capture", ...scoped, closeSession: false, returnImage: false }
+  }));
+  assert.equal(capturedCloseOption, false);
+  assert.equal(kept.sessionClosed, false);
 });

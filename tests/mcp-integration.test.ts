@@ -1595,7 +1595,7 @@ test("project_screenshot enforces its permission and serves validated images wit
     );
     const unavailableCapture = await client.callTool({
       name: "project_screenshot",
-      arguments: { operation: "capture", projectAlias: "mcp", executionSessionId: runningSessionId, confirm: true }
+      arguments: { operation: "capture", projectAlias: "mcp", executionSessionId: runningSessionId, closeSession: false, confirm: true }
     });
     assert.equal(unavailableCapture.isError, true);
     assert.match(
@@ -1607,7 +1607,7 @@ test("project_screenshot enforces its permission and serves validated images wit
     assert.deepEqual(liveTargets.targets, []);
     const noWindowCapture = await client.callTool({
       name: "project_screenshot",
-      arguments: { operation: "capture", projectAlias: "mcp", executionSessionId: runningSessionId, confirm: true }
+      arguments: { operation: "capture", projectAlias: "mcp", executionSessionId: runningSessionId, closeSession: false, confirm: true }
     });
     assert.equal(noWindowCapture.isError, true);
     assert.match(JSON.stringify(noWindowCapture.structuredContent), /No eligible session window found/);
@@ -1617,7 +1617,7 @@ test("project_screenshot enforces its permission and serves validated images wit
   await terminateRunning();
   const captureAfterExit = await client.callTool({
     name: "project_screenshot",
-    arguments: { operation: "capture", projectAlias: "mcp", executionSessionId: runningSessionId, confirm: true }
+    arguments: { operation: "capture", projectAlias: "mcp", executionSessionId: runningSessionId, closeSession: false, confirm: true }
   });
   assert.equal(captureAfterExit.isError, true);
   assert.match(JSON.stringify(captureAfterExit.structuredContent), /not running/);

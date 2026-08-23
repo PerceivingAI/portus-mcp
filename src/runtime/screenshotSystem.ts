@@ -39,7 +39,7 @@ import { z } from "zod";
 import { ToolError } from "../errors.js";
 import { resolveProjectPath } from "../policy/pathPolicy.js";
 import { stateStore } from "../state/StateStore.js";
-import { getExecutionSessionOwnership, type ExecutionSessionOwnership } from "./executionSessions.js";
+import { getExecutionSessionOwnership, terminateExecutionSession, type ExecutionSessionOwnership } from "./executionSessions.js";
 import {
   getPosixSessionProcessSnapshot,
   getWindowsSessionProcessSnapshot,
@@ -510,6 +510,7 @@ export const defaultLaunchWorker: ScreenshotWorkerLauncher = (request, timeoutMs
 // ---- Screenshot system factory ----
 
 export type CaptureOptions = {
+  closeSession: boolean;
   windowId?: string;
   waitForWindowMs?: number;
   format?: ScreenshotFormat;
@@ -527,6 +528,7 @@ export type CaptureResult = {
   sha256: string;
   capturedAt: string;
   resized: boolean;
+  sessionClosed: boolean;
 };
 
 export type TargetCandidate = {
@@ -594,11 +596,13 @@ export function createScreenshotSystem(deps: {
   now?: () => number;
   randomHex?: (bytes: number) => string;
   subscribeSessionExit?: (listener: (sessionId: string) => void) => () => void;
+  terminateSession?: (sessionId: string) => Promise<unknown>;
 } = {}): ScreenshotSystem {
   const limits = deps.limits ?? DEFAULT_SCREENSHOT_LIMITS;
   const now = deps.now ?? Date.now;
   const launchWorker = deps.launchWorker ?? defaultLaunchWorker;
   const buildAllowedPids = deps.buildAllowedPids ?? defaultBuildAllowedPids;
+  const terminateSession = deps.terminateSession ?? terminateExecutionSession;
   const randomHex = deps.randomHex ?? ((bytes: number) => randomBytes(bytes).toString("hex"));
   const tokens = new WindowTokenStore(limits.windowTokenTtlMs, now, randomHex);
   deps.subscribeSessionExit?.((sessionId) => tokens.dropSession(sessionId));
@@ -774,9 +778,10 @@ export function createScreenshotSystem(deps: {
   async function capture(
     projectAlias: string,
     executionSessionId: string,
-    options: CaptureOptions = {}
+    options: Partial<CaptureOptions> = {}
   ): Promise<CaptureResult> {
     const session = requireLiveSession(projectAlias, executionSessionId);
+    const closeSession = Boolean(options.closeSession);
     const format: ScreenshotFormat = options.format ?? "png";
     if (format !== "png" && format !== "jpeg") {
       throw new ScreenshotError(SCREENSHOT_ERROR_CODES.invalidCaptureOptions, "Unsupported capture format.");
@@ -845,6 +850,7 @@ export function createScreenshotSystem(deps: {
       publishCapture(projectAlias, session.sessionId, {
         nativeWindowId,
         ownerPid,
+        closeSession,
         format,
         jpegQuality,
         maxWidth: options.maxWidth,
@@ -860,6 +866,7 @@ export function createScreenshotSystem(deps: {
     target: {
       nativeWindowId: number;
       ownerPid: number;
+      closeSession: boolean;
       format: ScreenshotFormat;
       jpegQuality?: number;
       maxWidth?: number;
@@ -926,18 +933,25 @@ export function createScreenshotSystem(deps: {
       renameSync(tempPath, finalPath);
       published = true;
 
-
       audit("capture", {
         projectAlias,
         sessionId,
         screenshotId: finalName,
         format: target.format,
-        bytes: bytes.length
+        bytes: bytes.length,
+        sessionClosed: target.closeSession
       });
       const capturedAtMs = capturedAtMsFromName(finalName);
       if (capturedAtMs === null) {
         throw new ScreenshotError(SCREENSHOT_ERROR_CODES.workerFailed, "Generated screenshot timestamp was invalid.");
       }
+
+      let sessionClosed = false;
+      if (target.closeSession) {
+        await terminateSession(sessionId);
+        sessionClosed = true;
+      }
+
       return {
         screenshotId: finalName,
         format: target.format,
@@ -946,7 +960,8 @@ export function createScreenshotSystem(deps: {
         bytes: bytes.length,
         sha256: sha256Hex(bytes),
         capturedAt: new Date(capturedAtMs).toISOString(),
-        resized: parsed.data.resized
+        resized: parsed.data.resized,
+        sessionClosed
       };
     } finally {
       if (!published) {

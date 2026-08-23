@@ -90,6 +90,7 @@ function makeHarness(options?: {
   captureBehavior?: "write" | "nowrite" | "garbage" | "wrongformat" | "oversize";
   failAfterWrite?: { code: string };
   subscribeSessionExit?: (listener: (sessionId: string) => void) => () => void;
+  terminateSession?: (sessionId: string) => Promise<unknown>;
 }) {
   const clock = { ms: Date.parse("2026-08-22T10:00:00Z") };
   const windows = [...(options?.windows ?? [{ id: 11, pid: 4001 }])];
@@ -149,6 +150,7 @@ function makeHarness(options?: {
     };
   };
 
+  const terminatedSessions: string[] = [];
   const sys = screenshot.createScreenshotSystem({
     launchWorker,
     buildAllowedPids: async () => {
@@ -161,6 +163,15 @@ function makeHarness(options?: {
       return hexCounter.toString(16).padStart(bytes * 2, "0").slice(-bytes * 2);
     },
     subscribeSessionExit: options?.subscribeSessionExit,
+    terminateSession: options?.terminateSession ?? (async (sessionId: string) => {
+      terminatedSessions.push(sessionId);
+      const rec = getExecutionSession(sessionId);
+      if (rec) {
+        rec.status = "stopped";
+        rec.completedAt = new Date().toISOString();
+        upsertExecutionSession(rec);
+      }
+    }),
     limits
   });
 
@@ -170,6 +181,7 @@ function makeHarness(options?: {
     clock,
     launches,
     allowedSetsHistory,
+    terminatedSessions,
     setWindows(list: FakeWindow[]) {
       windows.splice(0, windows.length, ...list);
     },
@@ -180,7 +192,7 @@ function makeHarness(options?: {
       clock.ms += ms;
     }
   };
-}
+};
 
 const shotsDir = (...parts: string[]) => path.join(projectRoot, ".portus-artifacts", "screenshots", ...parts);
 
@@ -792,6 +804,44 @@ test("audit events never contain PIDs, titles, native ids, or absolute paths", a
     assert.ok(!serialized.includes(secret), `audit leaked sensitive field: ${secret}`);
   }
   assert.ok(serialized.includes(`"${sid}"`));
+});
+
+test("capture with closeSession=true terminates the session and returns sessionClosed=true", async () => {
+  const h = makeHarness();
+  const sid = addSession({ pid: 4001 });
+
+  const result = await h.sys.capture("shots", sid, { closeSession: true });
+  assert.equal(result.sessionClosed, true);
+  assert.deepEqual(h.terminatedSessions, [sid]);
+  assert.equal(getExecutionSession(sid).status, "stopped");
+
+  // Persisted screenshot is still readable and deletable after termination
+  const readBack = await h.sys.read("shots", sid, result.screenshotId);
+  assert.equal(readBack.meta.sha256, result.sha256);
+  await h.sys.deleteScreenshot("shots", sid, result.screenshotId);
+  assert.deepEqual(listSessionFiles(sid), []);
+});
+
+test("capture with closeSession=false leaves the session running and returns sessionClosed=false", async () => {
+  const h = makeHarness();
+  const sid = addSession({ pid: 4001 });
+
+  const result = await h.sys.capture("shots", sid, { closeSession: false });
+  assert.equal(result.sessionClosed, false);
+  assert.deepEqual(h.terminatedSessions, []);
+  assert.equal(getExecutionSession(sid).status, "running");
+});
+
+test("failed capture with closeSession=true never terminates the session (capture-first invariant)", async () => {
+  const h = makeHarness({ failAfterWrite: { code: "output_write_failed" } });
+  const sid = addSession({ pid: 4001 });
+
+  await assert.rejects(
+    () => h.sys.capture("shots", sid, { closeSession: true }),
+    (error) => assertScreenshotError(error, "output_write_failed")
+  );
+  assert.deepEqual(h.terminatedSessions, []);
+  assert.equal(getExecutionSession(sid).status, "running");
 });
 
 

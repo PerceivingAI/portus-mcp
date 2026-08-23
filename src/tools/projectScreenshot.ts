@@ -44,6 +44,7 @@ export const projectScreenshotInputSchema = z.discriminatedUnion("operation", [
     operation: z.literal("capture"),
     projectAlias: projectAliasSchema,
     executionSessionId: executionSessionIdSchema,
+    closeSession: z.boolean(),
     windowId: z.string().regex(/^[0-9a-f]{32}$/).optional(),
     waitForWindowMs: z.number().int().min(0).max(600000).optional(),
     format: z.enum(["png", "jpeg"]).optional(),
@@ -145,6 +146,7 @@ export function registerScreenshotTool(
       if (operation === "capture") {
         requireConfirmationIfPolicyDemands(policy, "capture", args.confirm);
         const capture = await system.capture(projectAlias, executionSessionId, {
+          closeSession: args.closeSession,
           windowId: args.windowId,
           waitForWindowMs: args.waitForWindowMs,
           format: args.format,

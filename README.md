@@ -353,11 +353,12 @@ See `docs/TOOLS.md` for the current tool contract and `docs/BROAD_MOBILITY_SURFA
   "operation": "capture",
   "projectAlias": "app",
   "executionSessionId": "exec_1787430000000_a1b2c3d4",
+  "closeSession": true,
   "format": "png"
 }
 ```
 
-Operations are `targets`, `capture`, `read`, `list`, and `delete`. Capture and read return native MCP image content unless `returnImage=false`. Files are stored under `.portus-artifacts/screenshots/<executionSessionId>/` in the selected registered project and remain there until an explicit `delete` request. Portus does not capture desktops, monitors, active windows, arbitrary host windows, or screen regions.
+Operations are `targets`, `capture`, `read`, `list`, and `delete`. Capture requires `closeSession: boolean` to explicitly declare whether the execution session process tree should be terminated immediately following successful capture (`closeSession=true`) or remain open (`closeSession=false`). Capture and read return native MCP image content unless `returnImage=false`. Files are stored under `.portus-artifacts/screenshots/<executionSessionId>/` in the selected registered project and remain there until an explicit `delete` request. Portus does not capture desktops, monitors, active windows, arbitrary host windows, or screen regions.
 
 Windows, macOS, and Linux X11 use the npm-installed native worker. Wayland returns `unsupported_session_window_capture`.
 
