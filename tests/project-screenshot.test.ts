@@ -741,11 +741,7 @@ test("capability projection follows permission and binding availability", async 
   assert.equal(await h.sys.ensureBindingAvailability(), true);
   const granted = h.sys.getCapabilities({ permissionGranted: true });
   assert.equal(granted.enabled, true);
-  assert.equal(granted.scope, "execution_session_windows");
   assert.deepEqual(granted.operations, ["targets", "capture", "read", "list", "delete"]);
-  assert.equal(granted.desktopCapture, false);
-  assert.equal(granted.activeWindowCapture, false);
-  assert.equal(granted.regionCapture, false);
 
   const unavailable = screenshot.createScreenshotSystem({
     launchWorker: async () => ({ ok: true, result: { bindingLoaded: false, captureAvailable: false } })
@@ -753,7 +749,6 @@ test("capability projection follows permission and binding availability", async 
   assert.equal(await unavailable.ensureBindingAvailability(), false);
   const degraded = unavailable.getCapabilities({ permissionGranted: true });
   assert.deepEqual(degraded.operations, ["read", "list", "delete"]);
-  assert.equal(degraded.captureAvailable, false);
 });
 
 test("read, list, and delete work through a fresh system instance after a Portus restart", async () => {

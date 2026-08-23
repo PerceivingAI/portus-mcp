@@ -212,14 +212,15 @@ After discovery, ChatGPT should see the Portus MCP tool surface:
 
 ```text
 project_context
-project_read
-project_search
 project_edit
 project_patch
-project_run
 project_policy
-subagent_task
+project_read
+project_run
+project_screenshot
+project_search
 subagent_context
+subagent_task
 ```
 To verify registered projects, ask ChatGPT to call `project_context` with `include.projects=true` and no `projectAlias`.
 

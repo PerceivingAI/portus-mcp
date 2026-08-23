@@ -38,14 +38,7 @@ function makeSystem(overrides: Partial<ScreenshotSystem> = {}): ScreenshotSystem
   return {
     getCapabilities: () => ({
       enabled: true,
-      scope: "execution_session_windows",
-      operations: ["targets", "capture", "read", "list", "delete"],
-      platform: process.platform,
-      formats: ["png", "jpeg"],
-      captureAvailable: true,
-      desktopCapture: false,
-      activeWindowCapture: false,
-      regionCapture: false
+      operations: ["targets", "capture", "read", "list", "delete"]
     }),
     ensureBindingAvailability: async () => true,
     refreshBindingAvailability: () => undefined,

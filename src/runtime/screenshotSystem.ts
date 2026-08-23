@@ -553,15 +553,7 @@ export type ScreenshotOperation = "targets" | "capture" | "read" | "list" | "del
 
 export type ScreenshotCapabilities = {
   enabled: boolean;
-  scope?: "execution_session_windows";
   operations: ScreenshotOperation[];
-  platform: NodeJS.Platform;
-  formats: ScreenshotFormat[];
-  captureAvailable: boolean;
-  reason?: string;
-  desktopCapture: false;
-  activeWindowCapture: false;
-  regionCapture: false;
 };
 
 export type ScreenshotSystem = {
@@ -606,7 +598,6 @@ export function createScreenshotSystem(deps: {
   const randomHex = deps.randomHex ?? ((bytes: number) => randomBytes(bytes).toString("hex"));
   const tokens = new WindowTokenStore(limits.windowTokenTtlMs, now, randomHex);
   deps.subscribeSessionExit?.((sessionId) => tokens.dropSession(sessionId));
-  let bindingUnavailableReason: string | null = null;
   const projectLocks = new Map<string, Promise<unknown>>();
   let bindingAvailable: boolean | null = null;
   let bindingProbe: Promise<boolean> | null = null;
@@ -1101,27 +1092,13 @@ export function createScreenshotSystem(deps: {
     if (!input.permissionGranted) {
       return {
         enabled: false,
-        operations: [],
-        platform: process.platform,
-        formats: ["png", "jpeg"],
-        captureAvailable: false,
-        desktopCapture: false,
-        activeWindowCapture: false,
-        regionCapture: false
+        operations: []
       };
     }
     const captureReady = bindingAvailable === true;
     return {
       enabled: true,
-      scope: "execution_session_windows",
-      operations: captureReady ? ["targets", "capture", "read", "list", "delete"] : ["read", "list", "delete"],
-      platform: process.platform,
-      formats: ["png", "jpeg"],
-      captureAvailable: captureReady,
-      ...(bindingUnavailableReason ? { reason: bindingUnavailableReason } : {}),
-      desktopCapture: false,
-      activeWindowCapture: false,
-      regionCapture: false
+      operations: captureReady ? ["targets", "capture", "read", "list", "delete"] : ["read", "list", "delete"]
     };
   }
 
@@ -1130,37 +1107,29 @@ export function createScreenshotSystem(deps: {
       try {
         const outcome = await launchWorker({ op: "capabilities", protocolVersion: WORKER_PROTOCOL_VERSION }, 5000);
         if (!outcome.ok) {
-          bindingUnavailableReason = outcome.error.code;
           bindingAvailable = false;
           return false;
         }
         const parsed = capabilitiesResultSchema.safeParse(outcome.result);
         if (!parsed.success) {
-          bindingUnavailableReason = SCREENSHOT_ERROR_CODES.protocolError;
           bindingAvailable = false;
           return false;
         }
         bindingAvailable = parsed.data.captureAvailable;
-        bindingUnavailableReason = parsed.data.captureAvailable
-          ? null
-          : (parsed.data.reason ?? SCREENSHOT_ERROR_CODES.bindingUnavailable);
         return bindingAvailable;
       } catch {
         bindingAvailable = false;
-        bindingUnavailableReason = SCREENSHOT_ERROR_CODES.workerFailed;
         return false;
       }
     })();
     return bindingProbe;
   }
-
   return {
     getCapabilities,
     ensureBindingAvailability,
     refreshBindingAvailability: () => {
       bindingProbe = null;
       bindingAvailable = null;
-      bindingUnavailableReason = null;
     },
     listTargets,
     capture,

@@ -126,18 +126,10 @@ const expectedNames = [
 const capabilityManifestSchema = z.object({
   complete: z.literal(true),
   availableTools: z.record(
-    z.string(),
     z.object({
       enabled: z.literal(true),
       allowedCommands: z.array(z.string()).optional(),
-      scope: z.string().optional(),
-      operations: z.array(z.string()).optional(),
-      platform: z.string().optional(),
-      formats: z.array(z.string()).optional(),
-      captureAvailable: z.boolean().optional(),
-      desktopCapture: z.literal(false).optional(),
-      activeWindowCapture: z.literal(false).optional(),
-      regionCapture: z.literal(false).optional()
+      operations: z.array(z.string()).optional()
     }).strict()
   ),
   features: z.record(
