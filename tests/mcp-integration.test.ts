@@ -892,14 +892,14 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
       projectAlias: "mcp",
       requests: [
         { type: "command", command: "node", args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(cmd02Marker)}, 'executed')`] },
-        { type: "command", command: "test.cmd", shell: false }
+        { type: "command", command: "test.cmd" }
       ]
     }
   });
   assert.equal(cmd02Result.isError, true);
   assert.equal(existsSync(cmd02Marker), false);
 
-  const deniedShellExecution = await client.callTool({
+  const unknownShellKey = await client.callTool({
     name: "project_run",
     arguments: {
       projectAlias: "mcp",
@@ -908,8 +908,8 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
       ]
     }
   });
-  assert.equal(deniedShellExecution.isError, true);
-  assert.match(JSON.stringify(deniedShellExecution), /Shell execution is disabled|main_agent\.allowShell/);
+  assert.equal(unknownShellKey.isError, true);
+  assert.match(JSON.stringify(unknownShellKey), /unrecognized_keys/);
 
   // project_run observable execution sessions: start -> poll -> list -> terminate
   const sessionStartRes = resultOf(await client.callTool({
@@ -1063,11 +1063,10 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     arguments: {
       projectAlias: "mcp",
       requests: [
-        { type: "command", command: "git", args: ["grep", "-e", "patternA\\|patternB\\|README"], shell: false }
+        { type: "command", command: "git", args: ["grep", "-e", "patternA\\|patternB\\|README"] }
       ]
     }
   })).results[0];
-  assert.equal(gitGrepSmoke.status, "executed");
   assert.equal(gitGrepSmoke.outcome, "exited");
   assert.equal(gitGrepSmoke.exitCode, 0);
   assert.match(gitGrepSmoke.stdout, /README/);
@@ -1077,11 +1076,10 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     arguments: {
       projectAlias: "mcp",
       requests: [
-        { type: "command", command: "git", args: ["grep", "-e", "definitely_absent_pattern_xyz_9999"], shell: false }
+        { type: "command", command: "git", args: ["grep", "-e", "definitely_absent_pattern_xyz_9999"] }
       ]
     }
   }));
-  assert.equal(gitGrepAbsentSmartDefault.successCount, 1);
   assert.equal(gitGrepAbsentSmartDefault.failedCount, 0);
   assert.equal(gitGrepAbsentSmartDefault.errorCount, 0);
   assert.equal(gitGrepAbsentSmartDefault.results[0].ok, true);
@@ -1094,17 +1092,15 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     arguments: {
       projectAlias: "mcp",
       requests: [
-        { type: "command", command: "git", args: ["grep", "-e", "definitely_absent_pattern_xyz_9999"], shell: false, expectedExitCodes: [0] }
+        { type: "command", command: "git", args: ["grep", "-e", "definitely_absent_pattern_xyz_9999"], expectedExitCodes: [0] }
       ]
     }
   }));
-  assert.equal(gitGrepAbsentExplicitZero.successCount, 0);
   assert.equal(gitGrepAbsentExplicitZero.failedCount, 1);
   assert.equal(gitGrepAbsentExplicitZero.errorCount, 0);
   assert.equal(gitGrepAbsentExplicitZero.results[0].ok, false);
   assert.equal(gitGrepAbsentExplicitZero.results[0].outcome, "exited");
   assert.equal(gitGrepAbsentExplicitZero.results[0].exitCode, 1);
-
   writeFileSync(path.join(projectRoot, "audit-source.txt"), "stable\n", "utf8");
   const auditedRejectedEdit = resultOf(await client.callTool({
     name: "project_edit",

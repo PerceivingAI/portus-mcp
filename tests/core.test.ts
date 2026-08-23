@@ -347,26 +347,27 @@ test("allowShell comes exclusively from the supplied policy", () => {
   assert.equal(policyPermissions(deniedPolicy).main_agent.allowShell, false);
   assert.equal(policyPermissions(allowedPolicy).main_agent.allowShell, true);
 });
-
 test("Native argv execution: direct command receives literal metacharacters without shell parsing", async () => {
   const metaArg = "patternA\\|patternB\\|patternC";
-  const result = await runProjectCommand(projectRoot, "node", ["-e", "console.log(process.argv[1])", metaArg], 10000, false);
+  const result = await runProjectCommand(projectRoot, "node", ["-e", "console.log(process.argv[1])", metaArg], 10000, selectedPolicy);
   assert.equal(result.outcome, "exited");
   assert.equal(result.exitCode, 0);
   assert.equal(result.stdout.trim(), metaArg);
 });
 
-test("shell=true is rejected when selected policy disables shell execution", async () => {
-  const deniedPolicy = withMainAgentPermissions({ allowShell: false });
-  await assert.rejects(
-    async () => runProjectCommand(projectRoot, "node", ["-e", "console.log(1)"], 10000, true, deniedPolicy),
-    /Permission denied: main_agent.allowShell is false/
-  );
+test("Windows batch scripts reject execution when selected policy disables allowShell", async () => {
+  const deniedPolicy = withMainAgentPermissions({ allowShell: false, allowedCommands: ["npm"] });
+  if (process.platform === "win32") {
+    await assert.rejects(
+      async () => runProjectCommand(projectRoot, "npm", ["--version"], 10000, deniedPolicy),
+      /Windows batch scripts/
+    );
+  }
 });
 
-test("shell=true executes cross-platform shell operators when selected policy enables shell execution", async () => {
-  const allowedPolicy = withMainAgentPermissions({ allowShell: true });
-  const result = await runProjectCommand(projectRoot, "node", ["--version", "&&", "node", "--version"], 10000, true, allowedPolicy);
+test("commands execute with shell capabilities when policy enables allowShell", async () => {
+  const allowedPolicy = withMainAgentPermissions({ allowShell: true, allowedCommands: ["node"] });
+  const result = await runProjectCommand(projectRoot, "node", ["--version", "&&", "node", "--version"], 10000, allowedPolicy);
   assert.equal(result.outcome, "exited");
   assert.equal(result.exitCode, 0);
   const versionLines = result.stdout.trim().split(/\r?\n/);

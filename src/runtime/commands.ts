@@ -325,18 +325,14 @@ export async function runProjectCommand(
   command: string,
   args: string[],
   timeoutMs = 120000,
-  shell = false,
   policy: PortusPolicyConfig = loadPolicyConfig()
 ): Promise<ProjectCommandResult> {
   const allowShell = policyPermissions(policy).main_agent.allowShell;
-
-  if (shell && !allowShell) {
-    throw new Error("Permission denied: main_agent.allowShell is false");
-  }
-
   const isWin = process.platform === "win32";
-  if (!shell && isWin && /\.(cmd|bat)$/i.test(command)) {
-    throw new Error("Windows batch scripts (.cmd/.bat) require shell=true or package-script execution");
+  const isBatchScript = isWin && (/\.(cmd|bat)$/i.test(command) || ["npm", "npx", "pnpm", "yarn", "corepack", "gradlew"].includes(command.toLowerCase()));
+
+  if (isBatchScript && !allowShell) {
+    throw new Error("Windows batch scripts (.cmd/.bat) require allowShell: true in policy");
   }
 
   const env = { ...process.env };
@@ -346,11 +342,14 @@ export async function runProjectCommand(
   let execCommand = command;
   let execArgs = args;
   let shellOption = false;
-  if (shell) {
+
+  if (allowShell) {
     if (isWin) {
-      execCommand = "cmd.exe";
-      execArgs = ["/c", command, ...args];
-    } else {
+      if (isBatchScript || args.some((arg) => /[&|<>^%*?]/.test(arg))) {
+        execCommand = "cmd.exe";
+        execArgs = ["/c", command, ...args];
+      }
+    } else if (args.some((arg) => /[&|;<>`$]/.test(arg))) {
       shellOption = true;
     }
   }

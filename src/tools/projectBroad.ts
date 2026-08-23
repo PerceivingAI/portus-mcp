@@ -740,7 +740,6 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
       args: z.array(z.string().max(4096)).max(500).optional(),
       timeoutSecs: z.number().int().positive().max(3600).optional(),
       confirm: z.boolean().optional(),
-      shell: z.boolean().optional(),
       expectedExitCodes: z.array(z.number().int().min(0).max(255)).optional().describe("Allowed exit codes for successful completion, e.g. [0, 1]")
     }).strict()
   ]);
@@ -766,7 +765,6 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
       command: z.string().min(1),
       args: z.array(z.string()).optional(),
       timeoutSecs: z.number().int().positive().max(3600).optional(),
-      shell: z.boolean().optional(),
       confirm: z.boolean().optional()
     }).strict(),
     z.object({
@@ -809,13 +807,6 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
       if (sessionAction.type === "start") {
         assertMainAgentCommandAllowed(sessionAction.command, policy);
         assertProjectCommandStaysInProject(sessionAction.command, sessionAction.args ?? []);
-        const reqShell = sessionAction.shell ?? false;
-        if (reqShell && !permissions.allowShell) {
-          throw new Error(`Shell execution is disabled for project alias '${projectAlias}'`);
-        }
-        if (!reqShell && (sessionAction.command.endsWith(".cmd") || sessionAction.command.endsWith(".bat"))) {
-          throw new Error("Direct execution of Windows batch scripts is not allowed without shell=true");
-        }
         const requiresConfirmation = permissions.requireConfirmation && commandRequiresConfirmation(sessionAction.command, sessionAction.args ?? []);
         if (requiresConfirmation && !sessionAction.confirm) {
           throw new Error("Confirmation required: set confirm=true");
@@ -826,7 +817,6 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
           command: sessionAction.command,
           args: sessionAction.args,
           timeoutSecs: sessionAction.timeoutSecs,
-          shell: reqShell,
           policy
         });
         return {
@@ -873,13 +863,6 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
       } else if (req.type === "command") {
         assertMainAgentCommandAllowed(req.command, policy);
         assertProjectCommandStaysInProject(req.command, req.args ?? []);
-        const reqShell = req.shell ?? false;
-        if (reqShell && !permissions.allowShell) {
-          throw new Error(`Shell execution is disabled for project alias '${projectAlias}'`);
-        }
-        if (!reqShell && (req.command.endsWith(".cmd") || req.command.endsWith(".bat"))) {
-          throw new Error(`Direct execution of Windows batch scripts is not allowed without shell=true`);
-        }
         const requiresConfirmation = permissions.requireConfirmation && commandRequiresConfirmation(req.command, req.args ?? []);
         if (requiresConfirmation && !req.confirm) {
           throw new Error("Confirmation required: set confirm=true");
@@ -954,7 +937,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
           if (requiresConfirmation && !req.confirm) {
             throw new Error("Confirmation required: set confirm=true");
           }
-          const cmdRes = await runProjectCommand(projectRoot, req.command, req.args ?? [], itemTimeoutMs, req.shell ?? false, policy);
+          const cmdRes = await runProjectCommand(projectRoot, req.command, req.args ?? [], itemTimeoutMs, policy);
           stateStore.audit({ tool: "project_run", type: "command", projectAlias, command: req.command, args: req.args ?? [], outcome: cmdRes.outcome, exitCode: cmdRes.exitCode, confirm: req.confirm ?? false, batchIndex: index });
           const ok = cmdRes.outcome === "exited" && cmdRes.exitCode !== null && allowedExitCodes.includes(cmdRes.exitCode);
           itemResult = { ok, index, type: "command", requiresConfirmation, status: "executed", ...cmdRes };

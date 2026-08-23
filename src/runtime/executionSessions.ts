@@ -224,14 +224,11 @@ function closeExecutionOutput(entry: ActiveProcessEntry): Promise<void> {
 export async function startExecutionSession(options: StartExecutionSessionOptions): Promise<PublicExecutionSession> {
   const policy = options.policy ?? loadPolicyConfig();
   const allowShell = policyPermissions(policy).main_agent.allowShell;
-  const shell = options.shell ?? false;
-  if (shell && !allowShell) {
-    throw new Error("Permission denied: main_agent.allowShell is false");
-  }
-
   const isWin = process.platform === "win32";
-  if (!shell && isWin && /\.(cmd|bat)$/i.test(options.command)) {
-    throw new Error("Windows batch scripts (.cmd/.bat) require shell=true or package-script execution");
+  const isBatchScript = isWin && (/\.(cmd|bat)$/i.test(options.command) || ["npm", "npx", "pnpm", "yarn", "corepack", "gradlew"].includes(options.command.toLowerCase()));
+
+  if (isBatchScript && !allowShell) {
+    throw new Error("Windows batch scripts (.cmd/.bat) require allowShell: true in policy");
   }
 
   const sessionId = `exec_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
@@ -246,15 +243,17 @@ export async function startExecutionSession(options: StartExecutionSessionOption
   let execCommand = options.command;
   let execArgs = options.args ?? [];
   let shellOption = false;
-  if (shell) {
+
+  if (allowShell) {
     if (isWin) {
-      execCommand = "cmd.exe";
-      execArgs = ["/c", options.command, ...execArgs];
-    } else {
+      if (isBatchScript || (options.args ?? []).some((arg) => /[&|<>^%*?]/.test(arg))) {
+        execCommand = "cmd.exe";
+        execArgs = ["/c", options.command, ...execArgs];
+      }
+    } else if ((options.args ?? []).some((arg) => /[&|;<>`$]/.test(arg))) {
       shellOption = true;
     }
   }
-
   const timeoutMs = Math.min(Math.max(1, (options.timeoutSecs ?? 3600)) * 1000, DEFAULT_SESSION_TIMEOUT_MS);
   const startedAt = new Date().toISOString();
   const startedAtMs = performance.now();
@@ -276,7 +275,7 @@ export async function startExecutionSession(options: StartExecutionSessionOption
       projectAlias: options.projectAlias,
       command: options.command,
       args: options.args ?? [],
-      shell,
+      shell: shellOption,
       status: "failed",
       startedAt,
       completedAt: new Date().toISOString(),
@@ -309,7 +308,7 @@ export async function startExecutionSession(options: StartExecutionSessionOption
     projectAlias: options.projectAlias,
     command: options.command,
     args: options.args ?? [],
-    shell,
+    shell: shellOption,
     status: "running",
     pid: child.pid,
     startedAt,

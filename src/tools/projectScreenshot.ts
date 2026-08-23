@@ -13,7 +13,8 @@ import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { loadScreenshotLimits, policyPermissions, type PortusPolicyConfig } from "../policy/policyConfig.js";
-import { assertMainAgentPermission } from "../policy/permissionPolicy.js";
+import { assertMainAgentCommandAllowed, assertMainAgentPermission } from "../policy/permissionPolicy.js";
+import { getProject } from "../state/ProjectRegistry.js";
 import {
   SCREENSHOT_ERROR_CODES,
   ScreenshotError,
@@ -21,7 +22,7 @@ import {
   type ScreenshotCapabilities,
   type ScreenshotSystem
 } from "../runtime/screenshotSystem.js";
-import { subscribeExecutionSessionExit } from "../runtime/executionSessions.js";
+import { startExecutionSession, subscribeExecutionSessionExit, terminateExecutionSession } from "../runtime/executionSessions.js";
 import { richToolErrorResult, richToolSuccessResult, type RichToolResult } from "./projectToolUtils.js";
 
 const SCREENSHOT_TOOL_ANNOTATIONS: ToolAnnotations = {
@@ -35,10 +36,13 @@ const projectAliasSchema = z.string().min(1);
 const executionSessionIdSchema = z.string().min(1);
 
 export const projectScreenshotShape = {
-  operation: z.enum(["targets", "capture", "read", "list", "delete"]).describe("The screenshot operation to perform: targets (list eligible windows), capture (save screenshot of session window), read (retrieve image data/metadata), list (paginate saved screenshots), or delete (remove saved screenshot)."),
-  projectAlias: projectAliasSchema.describe("Registered project alias owning the execution session."),
-  executionSessionId: executionSessionIdSchema.describe("Running execution session identifier owning the target window or captures."),
-  closeSession: z.boolean().optional().describe("Required for capture: true to terminate the application session/window immediately after capture; false to leave it running."),
+  operation: z.enum(["targets", "capture", "read", "list", "delete"]).describe("The screenshot operation to perform: targets (list eligible windows), capture (launch and/or save screenshot of session window), read (retrieve image data/metadata), list (paginate saved screenshots), or delete (remove saved screenshot)."),
+  projectAlias: projectAliasSchema.describe("Registered project alias owning the execution session or command."),
+  command: z.string().min(1).optional().describe("For capture: executable to launch (e.g. 'npm', 'node', 'msedge'). Provide either command or executionSessionId."),
+  args: z.array(z.string()).optional().describe("For capture: command arguments when command is provided."),
+  shell: z.boolean().optional().describe("For capture: execute command through system shell (requires allowShell policy)."),
+  executionSessionId: executionSessionIdSchema.optional().describe("Running execution session identifier owning the target window or captures. Required for targets/read/list/delete; optional for capture when command is provided."),
+  closeSession: z.boolean().optional().describe("Required for capture: true to auto-terminate the session/process tree after capture; false to leave it running in background."),
   windowId: z.string().regex(/^[0-9a-f]{32}$/).optional().describe("For capture: opaque window token from targets. Optional for single-window sessions."),
   waitForWindowMs: z.number().int().min(0).max(600000).optional().describe("For capture: time in milliseconds to wait for an eligible session window to appear."),
   format: z.enum(["png", "jpeg"]).optional().describe("For capture: output image format (png or jpeg, default png)."),
@@ -65,7 +69,10 @@ export const discriminatedScreenshotSchema = z.discriminatedUnion("operation", [
   z.object({
     operation: z.literal("capture"),
     projectAlias: projectAliasSchema,
-    executionSessionId: executionSessionIdSchema,
+    command: z.string().min(1).optional(),
+    args: z.array(z.string()).optional(),
+    shell: z.boolean().optional(),
+    executionSessionId: executionSessionIdSchema.optional(),
     closeSession: z.boolean(),
     windowId: z.string().regex(/^[0-9a-f]{32}$/).optional(),
     waitForWindowMs: z.number().int().min(0).max(600000).optional(),
@@ -98,16 +105,22 @@ export const discriminatedScreenshotSchema = z.discriminatedUnion("operation", [
     confirm: z.boolean().optional()
   }).strict()
 ]).superRefine((input, context) => {
-  if (input.operation === "capture" && input.jpegQuality !== undefined && input.format !== "jpeg") {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["jpegQuality"],
-      message: "jpegQuality requires format=jpeg"
-    });
+  if (input.operation === "capture") {
+    if (!input.command && !input.executionSessionId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "capture requires either command or executionSessionId"
+      });
+    }
+    if (input.jpegQuality !== undefined && input.format !== "jpeg") {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["jpegQuality"],
+        message: "jpegQuality requires format=jpeg"
+      });
+    }
   }
 });
-
-// Shared per-process instance so capability projection and tool calls observe
 // the same binding-availability cache. Limits come from server-startup policy.
 let sharedSystem: ScreenshotSystem | null = null;
 
@@ -151,52 +164,91 @@ export function registerScreenshotTool(
     args: z.output<typeof discriminatedScreenshotSchema>
   ): Promise<RichToolResult> => {
       assertMainAgentPermission("projectScreenshot", policy);
-      const { operation, projectAlias, executionSessionId } = args;
-
-      if (operation === "targets") {
-        const targets = await system.listTargets(projectAlias, executionSessionId);
+      if (args.operation === "targets") {
+        const targets = await system.listTargets(args.projectAlias, args.executionSessionId);
         return {
           result: {
-            operation,
-            executionSessionId,
+            operation: args.operation,
+            executionSessionId: args.executionSessionId,
             targets,
             hint: targets.length > 1 ? "Several session-owned windows are eligible; pass one windowId to capture." : undefined
           }
         };
       }
 
-      if (operation === "capture") {
+      if (args.operation === "capture") {
         requireConfirmationIfPolicyDemands(policy, "capture", args.confirm);
-        const capture = await system.capture(projectAlias, executionSessionId, {
-          closeSession: args.closeSession,
-          windowId: args.windowId,
-          waitForWindowMs: args.waitForWindowMs,
-          format: args.format,
-          jpegQuality: args.jpegQuality,
-          maxWidth: args.maxWidth,
-          maxHeight: args.maxHeight
-        });
-        if (args.returnImage !== false) {
-          const { data } = await system.read(projectAlias, executionSessionId, capture.screenshotId, { audit: false });
-          return {
-            result: { operation, ...capture },
-            contentBlocks: [
-              {
-                type: "image" as const,
-                data: data.toString("base64"),
-                mimeType: capture.format === "png" ? "image/png" : "image/jpeg"
-              }
-            ]
-          };
+
+        let targetSessionId = args.executionSessionId;
+        let spawnedSessionId: string | null = null;
+
+        if (args.command) {
+          assertMainAgentCommandAllowed(args.command, policy);
+          const project = getProject(args.projectAlias);
+          const session = await startExecutionSession({
+            projectAlias: args.projectAlias,
+            rootPath: project.rootPath,
+            command: args.command,
+            args: args.args,
+            policy
+          });
+          targetSessionId = session.sessionId;
+          spawnedSessionId = session.sessionId;
         }
-        return { result: { operation, ...capture, returnImage: false } };
+
+        if (!targetSessionId) {
+          throw new ScreenshotError(
+            SCREENSHOT_ERROR_CODES.invalidCaptureOptions,
+            "capture requires either command or executionSessionId"
+          );
+        }
+
+        try {
+          const capture = await system.capture(args.projectAlias, targetSessionId, {
+            closeSession: args.closeSession,
+            windowId: args.windowId,
+            waitForWindowMs: args.waitForWindowMs ?? (args.command ? 5000 : 0),
+            format: args.format,
+            jpegQuality: args.jpegQuality,
+            maxWidth: args.maxWidth,
+            maxHeight: args.maxHeight
+          });
+
+          const resultPayload = {
+            operation: args.operation,
+            executionSessionId: targetSessionId,
+            ...capture
+          };
+
+          if (args.returnImage !== false) {
+            const { data } = await system.read(args.projectAlias, targetSessionId, capture.screenshotId, { audit: false });
+            return {
+              result: resultPayload,
+              contentBlocks: [
+                {
+                  type: "image" as const,
+                  data: data.toString("base64"),
+                  mimeType: capture.format === "png" ? "image/png" : "image/jpeg"
+                }
+              ]
+            };
+          }
+          return { result: { ...resultPayload, returnImage: false } };
+        } catch (error) {
+          if (spawnedSessionId && args.closeSession) {
+            try {
+              await terminateExecutionSession(spawnedSessionId);
+            } catch {}
+          }
+          throw error;
+        }
       }
 
-      if (operation === "read") {
+      if (args.operation === "read") {
         if (args.returnImage !== false) {
-          const { meta, data } = await system.read(projectAlias, executionSessionId, args.screenshotId);
+          const { meta, data } = await system.read(args.projectAlias, args.executionSessionId, args.screenshotId);
           return {
-            result: { operation, ...meta },
+            result: { operation: args.operation, ...meta },
             contentBlocks: [
               {
                 type: "image" as const,
@@ -206,27 +258,28 @@ export function registerScreenshotTool(
             ]
           };
         }
-        const { meta } = await system.read(projectAlias, executionSessionId, args.screenshotId);
-        return { result: { operation, ...meta, returnImage: false } };
+        const { meta } = await system.read(args.projectAlias, args.executionSessionId, args.screenshotId);
+        return { result: { operation: args.operation, ...meta, returnImage: false } };
       }
 
-      if (operation === "list") {
-        const page = await system.list(projectAlias, executionSessionId, {
+      if (args.operation === "list") {
+        const page = await system.list(args.projectAlias, args.executionSessionId, {
           cursor: args.cursor,
           limit: args.limit
         });
-        return { result: { operation, ...page } };
+        return { result: { operation: args.operation, ...page } };
       }
 
       requireConfirmationIfPolicyDemands(policy, "delete", args.confirm);
-      await system.deleteScreenshot(projectAlias, executionSessionId, args.screenshotId);
-      return { result: { operation, screenshotId: args.screenshotId, deleted: true } };
+      await system.deleteScreenshot(args.projectAlias, args.executionSessionId, args.screenshotId);
+      return { result: { operation: args.operation, screenshotId: args.screenshotId, deleted: true } };
+
   };
 
   server.registerTool(
     "project_screenshot",
     {
-      description: "Visual verification of GUI work: target, capture, read, list, or delete screenshots of windows owned by a selected running execution session. Storage is repository-local under .portus-artifacts/screenshots.",
+      description: "Visual verification of GUI work: launch and/or capture, read, list, or delete screenshots of application windows. operation=capture supports direct one-step launch (command/args) with auto-close (closeSession: true) or background retention (closeSession: false), as well as capturing pre-existing sessions (executionSessionId). Storage is repository-local under .portus-artifacts/screenshots.",
       inputSchema: projectScreenshotInputSchema,
       annotations: SCREENSHOT_TOOL_ANNOTATIONS
     },

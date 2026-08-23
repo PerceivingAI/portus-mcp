@@ -12,7 +12,7 @@ import type { ScreenshotSystem } from "../src/runtime/screenshotSystem.js";
 const isolatedRoot = mkdtempSync(path.join(tmpdir(), "portus-screenshot-tool-test-"));
 process.env.PORTUS_MCP_STATE_DIR = path.join(isolatedRoot, "state");
 process.env.PORTUS_MCP_POLICY_PATH = path.resolve("portus-mcp.policy.json");
-
+process.env.PORTUS_MCP_PROJECTS = `fixture=${path.resolve(".")}`;
 const { parsePolicyConfig } = await import("../src/policy/policyConfig.js");
 const { SCREENSHOT_ERROR_CODES, ScreenshotError } = await import("../src/runtime/screenshotSystem.js");
 const { registerScreenshotTool } = await import("../src/tools/projectScreenshot.js");
@@ -319,4 +319,73 @@ test("project_screenshot advertises full input schema properties to MCP clients"
   assert.ok(propertyKeys.includes("format"), "must include format");
   assert.ok(propertyKeys.includes("screenshotId"), "must include screenshotId");
   assert.ok(propertyKeys.length >= 10, `expected rich properties, got: ${propertyKeys.length}`);
+});
+
+test("capture supports direct command execution with auto-close (closeSession: true)", async (t) => {
+  let capturedSid = "";
+  let capturedClose = false;
+  const system = makeSystem({
+    capture: async (_alias, sid, options) => {
+      capturedSid = sid;
+      capturedClose = Boolean(options?.closeSession);
+      return {
+        screenshotId,
+        format: "png",
+        width: 800,
+        height: 600,
+        bytes: imageBytes.length,
+        sha256: "hash",
+        capturedAt: "2026-08-22T10:00:00.000Z",
+        resized: false,
+        sessionClosed: true
+      };
+    }
+  });
+  const client = await createHarness(t, policyWith(), system);
+  const response = await client.callTool({
+    name: "project_screenshot",
+    arguments: {
+      operation: "capture",
+      projectAlias: "fixture",
+      command: "git",
+      args: ["status"],
+      closeSession: true,
+      returnImage: false
+    }
+  });
+  const result = structuredResult(response);
+  assert.ok(capturedSid.startsWith("exec_"));
+  assert.equal(capturedClose, true);
+  assert.equal(result.sessionClosed, true);
+});
+
+test("capture with direct command rejects disallowed command under policy", async (t) => {
+  const client = await createHarness(t, policyWith(), makeSystem());
+  const response = await client.callTool({
+    name: "project_screenshot",
+    arguments: {
+      operation: "capture",
+      projectAlias: "fixture",
+      command: "forbidden-binary",
+      closeSession: true,
+      returnImage: false
+    }
+  });
+  assert.equal(response.isError, true);
+  assert.match(JSON.stringify(response.structuredContent), /allowedCommands/);
+});
+
+test("capture rejects when neither command nor executionSessionId is provided", async (t) => {
+  const client = await createHarness(t, policyWith(), makeSystem());
+  const response = await client.callTool({
+    name: "project_screenshot",
+    arguments: {
+      operation: "capture",
+      projectAlias: "fixture",
+      closeSession: true,
+      returnImage: false
+    }
+  });
+  assert.equal(response.isError, true);
+  assert.match(JSON.stringify(response.structuredContent), /either command or executionSessionId/);
 });
