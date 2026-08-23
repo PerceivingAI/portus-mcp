@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { PortusPolicyConfig } from "../src/policy/policyConfig.js";
 import type { ScreenshotSystem } from "../src/runtime/screenshotSystem.js";
 
@@ -38,7 +39,7 @@ function makeSystem(overrides: Partial<ScreenshotSystem> = {}): ScreenshotSystem
   return {
     getCapabilities: () => ({
       enabled: true,
-      operations: ["targets", "capture", "read", "list", "delete"]
+      operations: ["discover_running", "capture_launch", "capture_running", "read", "list", "delete"]
     }),
     ensureBindingAvailability: async () => true,
     refreshBindingAvailability: () => undefined,
@@ -98,7 +99,7 @@ async function createHarness(t: test.TestContext, policy: PortusPolicyConfig, sy
   return client;
 }
 
-function structuredResult(response: Awaited<ReturnType<Client["callTool"]>>): Record<string, unknown> {
+function structuredResult(response: CallToolResult): Record<string, unknown> {
   assert.equal(response.isError, undefined, JSON.stringify(response.structuredContent));
   const result = response.structuredContent?.result;
   assert.ok(result && typeof result === "object" && !Array.isArray(result));
@@ -107,7 +108,7 @@ function structuredResult(response: Awaited<ReturnType<Client["callTool"]>>): Re
 
 test.after(() => rmSync(isolatedRoot, { recursive: true, force: true }));
 
-test("capture returns one native image block and returnImage=false omits it", async (t) => {
+test("capture_running returns one native image block and returnImage=false omits it", async (t) => {
   let reads = 0;
   const system = makeSystem({
     read: async (...args) => {
@@ -117,7 +118,7 @@ test("capture returns one native image block and returnImage=false omits it", as
   });
   const client = await createHarness(t, policyWith(), system);
   const baseArguments = {
-    operation: "capture",
+    operation: "capture_running",
     projectAlias: "fixture",
     executionSessionId: "exec_1000_abcdef",
     closeSession: false
@@ -141,11 +142,46 @@ test("capture returns one native image block and returnImage=false omits it", as
   assert.equal(reads, 1, "metadata-only capture must not re-read image bytes");
 });
 
-test("targets, list, read, and delete dispatch only their operation fields", async (t) => {
+test("capture_launch returns one native image block and returnImage=false omits it", async (t) => {
+  let reads = 0;
+  const system = makeSystem({
+    read: async (...args) => {
+      reads += 1;
+      return makeSystem().read(...args);
+    }
+  });
+  const client = await createHarness(t, policyWith(), system);
+  const baseArguments = {
+    operation: "capture_launch",
+    projectAlias: "fixture",
+    command: "git",
+    args: ["status"],
+    closeSession: false
+  } as const;
+
+  const withImage = await client.callTool({ name: "project_screenshot", arguments: baseArguments });
+  const result = structuredResult(withImage);
+  assert.equal(result.screenshotId, screenshotId);
+  assert.equal("data" in result, false);
+  const imageBlocks = withImage.content?.filter((block) => block.type === "image") ?? [];
+  assert.equal(imageBlocks.length, 1);
+  assert.equal(imageBlocks[0].mimeType, "image/png");
+  assert.deepEqual(Buffer.from(imageBlocks[0].data, "base64"), imageBytes);
+
+  const withoutImage = await client.callTool({
+    name: "project_screenshot",
+    arguments: { ...baseArguments, returnImage: false }
+  });
+  structuredResult(withoutImage);
+  assert.equal(withoutImage.content?.some((block) => block.type === "image"), false);
+  assert.equal(reads, 1, "metadata-only capture must not re-read image bytes");
+});
+
+test("discover_running, list, read, and delete dispatch only their operation fields", async (t) => {
   const calls: string[] = [];
   const system = makeSystem({
     listTargets: async () => {
-      calls.push("targets");
+      calls.push("discover_running");
       return makeSystem().listTargets("fixture", "exec_1000_abcdef");
     },
     read: async (...args) => {
@@ -163,11 +199,11 @@ test("targets, list, read, and delete dispatch only their operation fields", asy
   const client = await createHarness(t, policyWith(), system);
   const scoped = { projectAlias: "fixture", executionSessionId: "exec_1000_abcdef" };
 
-  structuredResult(await client.callTool({ name: "project_screenshot", arguments: { operation: "targets", ...scoped } }));
+  structuredResult(await client.callTool({ name: "project_screenshot", arguments: { operation: "discover_running", ...scoped } }));
   structuredResult(await client.callTool({ name: "project_screenshot", arguments: { operation: "list", ...scoped, limit: 10 } }));
   structuredResult(await client.callTool({ name: "project_screenshot", arguments: { operation: "read", ...scoped, screenshotId, returnImage: false } }));
   structuredResult(await client.callTool({ name: "project_screenshot", arguments: { operation: "delete", ...scoped, screenshotId } }));
-  assert.deepEqual(calls, ["targets", "list", "read", "delete"]);
+  assert.deepEqual(calls, ["discover_running", "list", "read", "delete"]);
 
   const wrongVariant = await client.callTool({
     name: "project_screenshot",
@@ -176,12 +212,13 @@ test("targets, list, read, and delete dispatch only their operation fields", asy
   assert.equal(wrongVariant.isError, true);
 });
 
-test("capture and delete confirmation follow the selected screenshot policy", async (t) => {
+test("capture_launch, capture_running, and delete confirmation follow the selected screenshot policy", async (t) => {
   const client = await createHarness(t, policyWith({ confirmation: true }), makeSystem());
   const scoped = { projectAlias: "fixture", executionSessionId: "exec_1000_abcdef" };
 
   for (const arguments_ of [
-    { operation: "capture", ...scoped, closeSession: false },
+    { operation: "capture_launch", projectAlias: "fixture", command: "git", closeSession: false },
+    { operation: "capture_running", ...scoped, closeSession: false },
     { operation: "delete", ...scoped, screenshotId }
   ]) {
     const denied = await client.callTool({ name: "project_screenshot", arguments: arguments_ });
@@ -191,7 +228,11 @@ test("capture and delete confirmation follow the selected screenshot policy", as
 
   structuredResult(await client.callTool({
     name: "project_screenshot",
-    arguments: { operation: "capture", ...scoped, closeSession: false, confirm: true, returnImage: false }
+    arguments: { operation: "capture_launch", projectAlias: "fixture", command: "git", closeSession: false, confirm: true, returnImage: false }
+  }));
+  structuredResult(await client.callTool({
+    name: "project_screenshot",
+    arguments: { operation: "capture_running", ...scoped, closeSession: false, confirm: true, returnImage: false }
   }));
   structuredResult(await client.callTool({
     name: "project_screenshot",
@@ -199,7 +240,7 @@ test("capture and delete confirmation follow the selected screenshot policy", as
   }));
 });
 
-test("multiple-window capture preserves its stable error code and opaque candidates", async (t) => {
+test("multiple-window capture_running preserves its stable error code and opaque candidates", async (t) => {
   const candidates = [
     { windowId: "a".repeat(32), title: "First", appName: "fixture", width: 800, height: 600 },
     { windowId: "b".repeat(32), title: "Second", appName: "fixture", width: 640, height: 480 }
@@ -217,7 +258,7 @@ test("multiple-window capture preserves its stable error code and opaque candida
   const response = await client.callTool({
     name: "project_screenshot",
     arguments: {
-      operation: "capture",
+      operation: "capture_running",
       projectAlias: "fixture",
       executionSessionId: "exec_1000_abcdef",
       closeSession: false,
@@ -235,7 +276,7 @@ test("the dedicated screenshot permission gates every operation", async (t) => {
   const response = await client.callTool({
     name: "project_screenshot",
     arguments: {
-      operation: "targets",
+      operation: "discover_running",
       projectAlias: "fixture",
       executionSessionId: "exec_1000_abcdef"
     }
@@ -244,7 +285,7 @@ test("the dedicated screenshot permission gates every operation", async (t) => {
   assert.match(JSON.stringify(response.structuredContent), /projectScreenshot/);
 });
 
-test("capture requires explicit closeSession boolean", async (t) => {
+test("capture_running requires explicit closeSession boolean", async (t) => {
   let capturedCloseOption: boolean | undefined;
   const system = makeSystem({
     capture: async (_alias, _sid, options) => {
@@ -268,21 +309,21 @@ test("capture requires explicit closeSession boolean", async (t) => {
   // Missing closeSession is rejected by schema
   const missing = await client.callTool({
     name: "project_screenshot",
-    arguments: { operation: "capture", ...scoped, returnImage: false }
+    arguments: { operation: "capture_running", ...scoped, returnImage: false }
   });
   assert.equal(missing.isError, true);
 
   // Non-boolean closeSession is rejected by schema
   const nonBoolean = await client.callTool({
     name: "project_screenshot",
-    arguments: { operation: "capture", ...scoped, closeSession: "yes", returnImage: false }
+    arguments: { operation: "capture_running", ...scoped, closeSession: "yes", returnImage: false }
   });
   assert.equal(nonBoolean.isError, true);
 
   // closeSession: true is passed through and returned
   const closed = structuredResult(await client.callTool({
     name: "project_screenshot",
-    arguments: { operation: "capture", ...scoped, closeSession: true, returnImage: false }
+    arguments: { operation: "capture_running", ...scoped, closeSession: true, returnImage: false }
   }));
   assert.equal(capturedCloseOption, true);
   assert.equal(closed.sessionClosed, true);
@@ -290,10 +331,28 @@ test("capture requires explicit closeSession boolean", async (t) => {
   // closeSession: false is passed through and returned
   const kept = structuredResult(await client.callTool({
     name: "project_screenshot",
-    arguments: { operation: "capture", ...scoped, closeSession: false, returnImage: false }
+    arguments: { operation: "capture_running", ...scoped, closeSession: false, returnImage: false }
   }));
   assert.equal(capturedCloseOption, false);
   assert.equal(kept.sessionClosed, false);
+});
+
+test("capture_launch requires explicit closeSession boolean and command", async (t) => {
+  const client = await createHarness(t, policyWith(), makeSystem());
+
+  // Missing closeSession is rejected
+  const missingClose = await client.callTool({
+    name: "project_screenshot",
+    arguments: { operation: "capture_launch", projectAlias: "fixture", command: "git", returnImage: false }
+  });
+  assert.equal(missingClose.isError, true);
+
+  // Missing command is rejected
+  const missingCommand = await client.callTool({
+    name: "project_screenshot",
+    arguments: { operation: "capture_launch", projectAlias: "fixture", closeSession: true, returnImage: false }
+  });
+  assert.equal(missingCommand.isError, true);
 });
 
 test("project_screenshot advertises full input schema properties to MCP clients", async (t) => {
@@ -308,13 +367,14 @@ test("project_screenshot advertises full input schema properties to MCP clients"
   assert.ok(propertyKeys.includes("operation"), "must include operation");
   assert.ok(propertyKeys.includes("projectAlias"), "must include projectAlias");
   assert.ok(propertyKeys.includes("executionSessionId"), "must include executionSessionId");
+  assert.ok(propertyKeys.includes("command"), "must include command");
   assert.ok(propertyKeys.includes("closeSession"), "must include closeSession");
   assert.ok(propertyKeys.includes("format"), "must include format");
   assert.ok(propertyKeys.includes("screenshotId"), "must include screenshotId");
   assert.ok(propertyKeys.length >= 10, `expected rich properties, got: ${propertyKeys.length}`);
 });
 
-test("capture supports direct command execution with auto-close (closeSession: true)", async (t) => {
+test("capture_launch supports direct command execution with auto-close (closeSession: true)", async (t) => {
   let capturedSid = "";
   let capturedClose = false;
   const system = makeSystem({
@@ -338,7 +398,7 @@ test("capture supports direct command execution with auto-close (closeSession: t
   const response = await client.callTool({
     name: "project_screenshot",
     arguments: {
-      operation: "capture",
+      operation: "capture_launch",
       projectAlias: "fixture",
       command: "git",
       args: ["status"],
@@ -352,12 +412,12 @@ test("capture supports direct command execution with auto-close (closeSession: t
   assert.equal(result.sessionClosed, true);
 });
 
-test("capture with direct command rejects disallowed command under policy", async (t) => {
+test("capture_launch with direct command rejects disallowed command under policy", async (t) => {
   const client = await createHarness(t, policyWith(), makeSystem());
   const response = await client.callTool({
     name: "project_screenshot",
     arguments: {
-      operation: "capture",
+      operation: "capture_launch",
       projectAlias: "fixture",
       command: "forbidden-binary",
       closeSession: true,
@@ -368,17 +428,46 @@ test("capture with direct command rejects disallowed command under policy", asyn
   assert.match(JSON.stringify(response.structuredContent), /allowedCommands/);
 });
 
-test("capture rejects when neither command nor executionSessionId is provided", async (t) => {
+test("strict discriminated union rejects forbidden cross-operation fields", async (t) => {
   const client = await createHarness(t, policyWith(), makeSystem());
-  const response = await client.callTool({
+
+  // capture_running with command is rejected
+  const runningWithCommand = await client.callTool({
     name: "project_screenshot",
     arguments: {
-      operation: "capture",
+      operation: "capture_running",
       projectAlias: "fixture",
+      executionSessionId: "exec_1000_abcdef",
+      command: "git",
       closeSession: true,
       returnImage: false
     }
   });
-  assert.equal(response.isError, true);
-  assert.match(JSON.stringify(response.structuredContent), /either command or executionSessionId/);
+  assert.equal(runningWithCommand.isError, true);
+
+  // capture_launch with executionSessionId is rejected
+  const launchWithSid = await client.callTool({
+    name: "project_screenshot",
+    arguments: {
+      operation: "capture_launch",
+      projectAlias: "fixture",
+      command: "git",
+      executionSessionId: "exec_1000_abcdef",
+      closeSession: true,
+      returnImage: false
+    }
+  });
+  assert.equal(launchWithSid.isError, true);
+
+  // discover_running with closeSession is rejected
+  const discoverWithClose = await client.callTool({
+    name: "project_screenshot",
+    arguments: {
+      operation: "discover_running",
+      projectAlias: "fixture",
+      executionSessionId: "exec_1000_abcdef",
+      closeSession: true
+    }
+  });
+  assert.equal(discoverWithClose.isError, true);
 });

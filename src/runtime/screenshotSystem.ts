@@ -549,7 +549,13 @@ export type ScreenshotMeta = {
   sha256?: string;
 };
 
-export type ScreenshotOperation = "targets" | "capture" | "read" | "list" | "delete";
+export type ScreenshotOperation =
+  | "discover_running"
+  | "capture_launch"
+  | "capture_running"
+  | "read"
+  | "list"
+  | "delete";
 
 export type ScreenshotCapabilities = {
   enabled: boolean;
@@ -1092,7 +1098,9 @@ export function createScreenshotSystem(deps: {
     const captureReady = bindingAvailable === true;
     return {
       enabled: true,
-      operations: captureReady ? ["targets", "capture", "read", "list", "delete"] : ["read", "list", "delete"]
+      operations: captureReady
+        ? ["discover_running", "capture_launch", "capture_running", "read", "list", "delete"]
+        : ["read", "list", "delete"]
     };
   }
 

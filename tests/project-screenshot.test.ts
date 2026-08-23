@@ -737,7 +737,7 @@ test("capability projection follows binding availability", async () => {
   assert.equal(await h.sys.ensureBindingAvailability(), true);
   const granted = h.sys.getCapabilities();
   assert.equal(granted.enabled, true);
-  assert.deepEqual(granted.operations, ["targets", "capture", "read", "list", "delete"]);
+  assert.deepEqual(granted.operations, ["discover_running", "capture_launch", "capture_running", "read", "list", "delete"]);
 
   const unavailable = screenshot.createScreenshotSystem({
     launchWorker: async () => ({ ok: true, result: { bindingLoaded: false, captureAvailable: false } })

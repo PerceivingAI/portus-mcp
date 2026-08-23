@@ -36,24 +36,24 @@ const projectAliasSchema = z.string().min(1);
 const executionSessionIdSchema = z.string().min(1);
 
 export const projectScreenshotShape = {
-  operation: z.enum(["targets", "capture", "read", "list", "delete"]).describe("The screenshot operation to perform: targets (list eligible windows), capture (launch and/or save screenshot of session window), read (retrieve image data/metadata), list (paginate saved screenshots), or delete (remove saved screenshot)."),
+  operation: z.enum(["discover_running", "capture_launch", "capture_running", "read", "list", "delete"]).describe("The screenshot operation to perform: discover_running (list eligible windows for running session), capture_launch (launch command and save screenshot), capture_running (save screenshot of existing running session), read (retrieve image data/metadata), list (paginate saved screenshots), or delete (remove saved screenshot)."),
   projectAlias: projectAliasSchema.describe("Registered project alias owning the execution session or command."),
-  command: z.string().min(1).optional().describe("For capture: executable to launch (e.g. 'npm', 'node', 'msedge'). Provide either command or executionSessionId."),
-  args: z.array(z.string()).optional().describe("For capture: command arguments when command is provided."),
-  shell: z.boolean().optional().describe("For capture: execute command through system shell (requires allowShell policy)."),
-  executionSessionId: executionSessionIdSchema.optional().describe("Running execution session identifier owning the target window or captures. Required for targets/read/list/delete; optional for capture when command is provided."),
-  closeSession: z.boolean().optional().describe("Required for capture: true to auto-terminate the session/process tree after capture; false to leave it running in background."),
-  windowId: z.string().regex(/^[0-9a-f]{32}$/).optional().describe("For capture: opaque window token from targets. Optional for single-window sessions."),
-  waitForWindowMs: z.number().int().min(0).max(600000).optional().describe("For capture: time in milliseconds to wait for an eligible session window to appear."),
-  format: z.enum(["png", "jpeg"]).optional().describe("For capture: output image format (png or jpeg, default png)."),
-  jpegQuality: z.number().int().min(1).max(100).optional().describe("For capture: JPEG quality (1-100, requires format=jpeg)."),
-  maxWidth: z.number().int().min(1).max(7680).optional().describe("For capture: maximum image width in pixels."),
-  maxHeight: z.number().int().min(1).max(7680).optional().describe("For capture: maximum image height in pixels."),
+  command: z.string().min(1).optional().describe("For capture_launch: executable to launch (e.g. 'npm', 'node', 'msedge')."),
+  args: z.array(z.string()).optional().describe("For capture_launch: command arguments when command is provided."),
+  shell: z.boolean().optional().describe("For capture_launch: execute command through system shell (requires allowShell policy)."),
+  executionSessionId: executionSessionIdSchema.optional().describe("Running execution session identifier owning the target window or captures. Required for discover_running/capture_running/read/list/delete."),
+  closeSession: z.boolean().optional().describe("Required for capture_launch and capture_running: true to auto-terminate the session/process tree after capture; false to leave it running in background."),
+  windowId: z.string().regex(/^[0-9a-f]{32}$/).optional().describe("For capture_running: opaque window token from discover_running. Optional for single-window sessions."),
+  waitForWindowMs: z.number().int().min(0).max(600000).optional().describe("For capture_launch and capture_running: time in milliseconds to wait for an eligible session window to appear."),
+  format: z.enum(["png", "jpeg"]).optional().describe("For capture_launch/capture_running: output image format (png or jpeg, default png)."),
+  jpegQuality: z.number().int().min(1).max(100).optional().describe("For capture_launch/capture_running: JPEG quality (1-100, requires format=jpeg)."),
+  maxWidth: z.number().int().min(1).max(7680).optional().describe("For capture_launch/capture_running: maximum image width in pixels."),
+  maxHeight: z.number().int().min(1).max(7680).optional().describe("For capture_launch/capture_running: maximum image height in pixels."),
   screenshotId: z.string().min(1).max(64).optional().describe("For read/delete: identifier of the managed screenshot file."),
   cursor: z.string().min(1).max(128).optional().describe("For list: pagination cursor returned from a prior list request."),
   limit: z.number().int().min(1).max(10000).optional().describe("For list: maximum number of screenshots to return in one page."),
-  returnImage: z.boolean().optional().describe("For capture/read: whether to return the native image content block (default true)."),
-  confirm: z.boolean().optional().describe("For capture/delete: required when policy confirmation is enabled.")
+  returnImage: z.boolean().optional().describe("For capture_launch/capture_running/read: whether to return the native image content block (default true)."),
+  confirm: z.boolean().optional().describe("For capture_launch/capture_running/delete: required when policy confirmation is enabled.")
 };
 
 /** Top-level object schema advertised to MCP clients (ChatGPT / SDK tools/list). */
@@ -62,17 +62,29 @@ export const projectScreenshotInputSchema = z.object(projectScreenshotShape).str
 /** Strict discriminated union schema enforced during execution. */
 export const discriminatedScreenshotSchema = z.discriminatedUnion("operation", [
   z.object({
-    operation: z.literal("targets"),
+    operation: z.literal("discover_running"),
     projectAlias: projectAliasSchema,
     executionSessionId: executionSessionIdSchema
   }).strict(),
   z.object({
-    operation: z.literal("capture"),
+    operation: z.literal("capture_launch"),
     projectAlias: projectAliasSchema,
-    command: z.string().min(1).optional(),
+    command: z.string().min(1),
     args: z.array(z.string()).optional(),
     shell: z.boolean().optional(),
-    executionSessionId: executionSessionIdSchema.optional(),
+    closeSession: z.boolean(),
+    waitForWindowMs: z.number().int().min(0).max(600000).optional(),
+    format: z.enum(["png", "jpeg"]).optional(),
+    jpegQuality: z.number().int().min(1).max(100).optional(),
+    maxWidth: z.number().int().min(1).max(7680).optional(),
+    maxHeight: z.number().int().min(1).max(7680).optional(),
+    returnImage: z.boolean().optional(),
+    confirm: z.boolean().optional()
+  }).strict(),
+  z.object({
+    operation: z.literal("capture_running"),
+    projectAlias: projectAliasSchema,
+    executionSessionId: executionSessionIdSchema,
     closeSession: z.boolean(),
     windowId: z.string().regex(/^[0-9a-f]{32}$/).optional(),
     waitForWindowMs: z.number().int().min(0).max(600000).optional(),
@@ -105,13 +117,7 @@ export const discriminatedScreenshotSchema = z.discriminatedUnion("operation", [
     confirm: z.boolean().optional()
   }).strict()
 ]).superRefine((input, context) => {
-  if (input.operation === "capture") {
-    if (!input.command && !input.executionSessionId) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "capture requires either command or executionSessionId"
-      });
-    }
+  if (input.operation === "capture_launch" || input.operation === "capture_running") {
     if (input.jpegQuality !== undefined && input.format !== "jpeg") {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -144,7 +150,7 @@ export function screenshotCapabilityEntry(policy: PortusPolicyConfig): Screensho
 
 function requireConfirmationIfPolicyDemands(
   policy: PortusPolicyConfig,
-  operation: "capture" | "delete",
+  operation: "capture_launch" | "capture_running" | "delete",
   confirm: boolean | undefined
 ): void {
   if (policyPermissions(policy).main_agent.requireConfirmation && confirm !== true) {
@@ -164,50 +170,35 @@ export function registerScreenshotTool(
     args: z.output<typeof discriminatedScreenshotSchema>
   ): Promise<RichToolResult> => {
       assertMainAgentPermission("projectScreenshot", policy);
-      if (args.operation === "targets") {
+      if (args.operation === "discover_running") {
         const targets = await system.listTargets(args.projectAlias, args.executionSessionId);
         return {
           result: {
             operation: args.operation,
             executionSessionId: args.executionSessionId,
             targets,
-            hint: targets.length > 1 ? "Several session-owned windows are eligible; pass one windowId to capture." : undefined
+            hint: targets.length > 1 ? "Several session-owned windows are eligible; pass one windowId to capture_running." : undefined
           }
         };
       }
 
-      if (args.operation === "capture") {
-        requireConfirmationIfPolicyDemands(policy, "capture", args.confirm);
-
-        let targetSessionId = args.executionSessionId;
-        let spawnedSessionId: string | null = null;
-
-        if (args.command) {
-          assertMainAgentCommandAllowed(args.command, policy);
-          const project = getProject(args.projectAlias);
-          const session = await startExecutionSession({
-            projectAlias: args.projectAlias,
-            rootPath: project.rootPath,
-            command: args.command,
-            args: args.args,
-            policy
-          });
-          targetSessionId = session.sessionId;
-          spawnedSessionId = session.sessionId;
-        }
-
-        if (!targetSessionId) {
-          throw new ScreenshotError(
-            SCREENSHOT_ERROR_CODES.invalidCaptureOptions,
-            "capture requires either command or executionSessionId"
-          );
-        }
+      if (args.operation === "capture_launch") {
+        requireConfirmationIfPolicyDemands(policy, "capture_launch", args.confirm);
+        assertMainAgentCommandAllowed(args.command, policy);
+        const project = getProject(args.projectAlias);
+        const session = await startExecutionSession({
+          projectAlias: args.projectAlias,
+          rootPath: project.rootPath,
+          command: args.command,
+          args: args.args,
+          shell: args.shell,
+          policy
+        });
 
         try {
-          const capture = await system.capture(args.projectAlias, targetSessionId, {
+          const capture = await system.capture(args.projectAlias, session.sessionId, {
             closeSession: args.closeSession,
-            windowId: args.windowId,
-            waitForWindowMs: args.waitForWindowMs ?? (args.command ? 5000 : 0),
+            waitForWindowMs: args.waitForWindowMs ?? 5000,
             format: args.format,
             jpegQuality: args.jpegQuality,
             maxWidth: args.maxWidth,
@@ -216,12 +207,12 @@ export function registerScreenshotTool(
 
           const resultPayload = {
             operation: args.operation,
-            executionSessionId: targetSessionId,
+            executionSessionId: session.sessionId,
             ...capture
           };
 
           if (args.returnImage !== false) {
-            const { data } = await system.read(args.projectAlias, targetSessionId, capture.screenshotId, { audit: false });
+            const { data } = await system.read(args.projectAlias, session.sessionId, capture.screenshotId, { audit: false });
             return {
               result: resultPayload,
               contentBlocks: [
@@ -235,13 +226,47 @@ export function registerScreenshotTool(
           }
           return { result: { ...resultPayload, returnImage: false } };
         } catch (error) {
-          if (spawnedSessionId && args.closeSession) {
+          if (args.closeSession) {
             try {
-              await terminateExecutionSession(spawnedSessionId);
+              await terminateExecutionSession(session.sessionId);
             } catch {}
           }
           throw error;
         }
+      }
+
+      if (args.operation === "capture_running") {
+        requireConfirmationIfPolicyDemands(policy, "capture_running", args.confirm);
+        const capture = await system.capture(args.projectAlias, args.executionSessionId, {
+          closeSession: args.closeSession,
+          windowId: args.windowId,
+          waitForWindowMs: args.waitForWindowMs ?? 0,
+          format: args.format,
+          jpegQuality: args.jpegQuality,
+          maxWidth: args.maxWidth,
+          maxHeight: args.maxHeight
+        });
+
+        const resultPayload = {
+          operation: args.operation,
+          executionSessionId: args.executionSessionId,
+          ...capture
+        };
+
+        if (args.returnImage !== false) {
+          const { data } = await system.read(args.projectAlias, args.executionSessionId, capture.screenshotId, { audit: false });
+          return {
+            result: resultPayload,
+            contentBlocks: [
+              {
+                type: "image" as const,
+                data: data.toString("base64"),
+                mimeType: capture.format === "png" ? "image/png" : "image/jpeg"
+              }
+            ]
+          };
+        }
+        return { result: { ...resultPayload, returnImage: false } };
       }
 
       if (args.operation === "read") {
@@ -279,7 +304,7 @@ export function registerScreenshotTool(
   server.registerTool(
     "project_screenshot",
     {
-      description: "Take and manage screenshots of GUI applications.\n\nOperations:\n- capture: Launches an application to take its screenshot (pass command and args), or captures an already-running app (pass executionSessionId). Set closeSession: true to automatically close the application after taking the screenshot, or closeSession: false to keep it open.\n- read: Retrieve a captured screenshot image or metadata by screenshotId.\n- list: List captured screenshots for an executionSessionId.\n- targets: List window IDs when an application has multiple windows open.\n- delete: Delete a captured screenshot by screenshotId.",
+      description: "Take and manage screenshots of GUI applications.\n\nOperations:\n- discover_running: List eligible window IDs when an active session has one or more windows open.\n- capture_launch: Launches a command/application and captures its GUI window (pass command, optional args/shell, closeSession). Set closeSession: true to terminate after capture, or false to keep running.\n- capture_running: Captures an already-running execution session (pass executionSessionId, optional windowId, closeSession). Set closeSession: true to terminate after capture, or false to keep running.\n- read: Retrieve a captured screenshot image or metadata by screenshotId.\n- list: List captured screenshots for an executionSessionId.\n- delete: Delete a captured screenshot by screenshotId.",
       inputSchema: projectScreenshotInputSchema,
       annotations: SCREENSHOT_TOOL_ANNOTATIONS
     },
