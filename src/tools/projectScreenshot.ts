@@ -279,7 +279,7 @@ export function registerScreenshotTool(
   server.registerTool(
     "project_screenshot",
     {
-      description: "Visual verification of GUI work: launch and/or capture, read, list, or delete screenshots of application windows. operation=capture supports direct one-step launch (command/args) with auto-close (closeSession: true) or background retention (closeSession: false), as well as capturing pre-existing sessions (executionSessionId). Storage is repository-local under .portus-artifacts/screenshots.",
+      description: "Take and manage screenshots of GUI applications.\n\nOperations:\n- capture: Launches an application to take its screenshot (pass command and args), or captures an already-running app (pass executionSessionId). Set closeSession: true to automatically close the application after taking the screenshot, or closeSession: false to keep it open.\n- read: Retrieve a captured screenshot image or metadata by screenshotId.\n- list: List captured screenshots for an executionSessionId.\n- targets: List window IDs when an application has multiple windows open.\n- delete: Delete a captured screenshot by screenshotId.",
       inputSchema: projectScreenshotInputSchema,
       annotations: SCREENSHOT_TOOL_ANNOTATIONS
     },
