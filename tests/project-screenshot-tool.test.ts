@@ -302,3 +302,21 @@ test("capture requires explicit closeSession boolean", async (t) => {
   assert.equal(capturedCloseOption, false);
   assert.equal(kept.sessionClosed, false);
 });
+
+test("project_screenshot advertises full input schema properties to MCP clients", async (t) => {
+  const client = await createHarness(t, policyWith(), makeSystem());
+  const tools = await client.listTools();
+  const screenshotToolDef = tools.tools.find((tool) => tool.name === "project_screenshot");
+  assert.ok(screenshotToolDef, "project_screenshot must be registered");
+  assert.equal(screenshotToolDef.inputSchema.type, "object");
+  const rawSchema = screenshotToolDef.inputSchema as { properties?: Record<string, unknown> };
+  const properties = rawSchema.properties ?? {};
+  const propertyKeys = Object.keys(properties);
+  assert.ok(propertyKeys.includes("operation"), "must include operation");
+  assert.ok(propertyKeys.includes("projectAlias"), "must include projectAlias");
+  assert.ok(propertyKeys.includes("executionSessionId"), "must include executionSessionId");
+  assert.ok(propertyKeys.includes("closeSession"), "must include closeSession");
+  assert.ok(propertyKeys.includes("format"), "must include format");
+  assert.ok(propertyKeys.includes("screenshotId"), "must include screenshotId");
+  assert.ok(propertyKeys.length >= 10, `expected rich properties, got: ${propertyKeys.length}`);
+});

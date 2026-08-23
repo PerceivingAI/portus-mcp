@@ -186,3 +186,34 @@ Subagent execution, context, lifecycle, and cleanup are managed via `subagent_ta
 Surface tests must establish that default discovery is exactly ten tools, obsolete names are absent, schemas reject unknown or bypass-looking fields, and broad workflows preserve permission, path, Git-ignore, confirmation, limit, audit, ordering, and safe-error behavior. Screenshot regressions additionally cover process ownership, unrelated-window exclusion, native image results, repository confinement, explicit-delete persistence, and platform capability behavior.
 
 See `docs/BROAD_MOBILITY_SURFACE.md` for the architecture decision and full cutover rationale.
+
+## Tool Registration & Schema Advertisement Contract
+
+When registering tools on the MCP server (`server.registerTool` or `registerStrictProjectTool`), adhere to the following schema conventions to ensure full JSON Schema advertisement across all MCP clients:
+
+### 1. Root Schema Must Be a `ZodObject`
+`@modelcontextprotocol/sdk` normalizes `inputSchema` during `tools/list` by inspecting `schema.shape` (`normalizeObjectSchema()`).
+- **Rule**: `inputSchema` passed to `server.registerTool` **MUST** be a top-level `z.object(shape).strict()` or a raw `ZodRawShape`.
+- **Pitfall to Avoid**: **NEVER** pass top-level `z.discriminatedUnion()`, `z.union()`, or `z.object().superRefine()` directly as the registered `inputSchema`. These types lack a direct top-level `.shape` property, causing the SDK to fall back to `EMPTY_OBJECT_JSON_SCHEMA` (`{ "type": "object", "properties": {} }`), which renders in client frontends (such as ChatGPT) as `tool_name = () => any`.
+
+### 2. Pattern for Multi-Operation / Discriminated Tools
+For tools supporting multiple operations (like `project_screenshot` or discriminated action tools):
+
+1. **Advertised Schema (for MCP Discovery)**:
+   Define a comprehensive `ZodObject` shape containing all possible operation fields, with `operation: z.enum([...])` and explicit field `.describe(...)` annotations. Register this as `inputSchema`.
+
+2. **Execution Schema (for Runtime Validation)**:
+   Define a separate `z.discriminatedUnion("operation", [...])` enforcing per-operation required/prohibited fields and refinements.
+
+3. **Handler Validation**:
+   In the registered tool handler, validate incoming `args` against the discriminated schema before dispatching:
+   ```typescript
+   async (args): Promise<CallToolResult> => {
+     try {
+       const validated = discriminatedSchema.parse(args);
+       return richToolSuccessResult(await execute(validated));
+     } catch (error) {
+       return richToolErrorResult(error);
+     }
+   }
+   ```

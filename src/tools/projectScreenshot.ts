@@ -34,7 +34,29 @@ const SCREENSHOT_TOOL_ANNOTATIONS: ToolAnnotations = {
 const projectAliasSchema = z.string().min(1);
 const executionSessionIdSchema = z.string().min(1);
 
-export const projectScreenshotInputSchema = z.discriminatedUnion("operation", [
+export const projectScreenshotShape = {
+  operation: z.enum(["targets", "capture", "read", "list", "delete"]).describe("The screenshot operation to perform: targets (list eligible windows), capture (save screenshot of session window), read (retrieve image data/metadata), list (paginate saved screenshots), or delete (remove saved screenshot)."),
+  projectAlias: projectAliasSchema.describe("Registered project alias owning the execution session."),
+  executionSessionId: executionSessionIdSchema.describe("Running execution session identifier owning the target window or captures."),
+  closeSession: z.boolean().optional().describe("Required for capture: true to terminate the application session/window immediately after capture; false to leave it running."),
+  windowId: z.string().regex(/^[0-9a-f]{32}$/).optional().describe("For capture: opaque window token from targets. Optional for single-window sessions."),
+  waitForWindowMs: z.number().int().min(0).max(600000).optional().describe("For capture: time in milliseconds to wait for an eligible session window to appear."),
+  format: z.enum(["png", "jpeg"]).optional().describe("For capture: output image format (png or jpeg, default png)."),
+  jpegQuality: z.number().int().min(1).max(100).optional().describe("For capture: JPEG quality (1-100, requires format=jpeg)."),
+  maxWidth: z.number().int().min(1).max(7680).optional().describe("For capture: maximum image width in pixels."),
+  maxHeight: z.number().int().min(1).max(7680).optional().describe("For capture: maximum image height in pixels."),
+  screenshotId: z.string().min(1).max(64).optional().describe("For read/delete: identifier of the managed screenshot file."),
+  cursor: z.string().min(1).max(128).optional().describe("For list: pagination cursor returned from a prior list request."),
+  limit: z.number().int().min(1).max(10000).optional().describe("For list: maximum number of screenshots to return in one page."),
+  returnImage: z.boolean().optional().describe("For capture/read: whether to return the native image content block (default true)."),
+  confirm: z.boolean().optional().describe("For capture/delete: required when policy confirmation is enabled.")
+};
+
+/** Top-level object schema advertised to MCP clients (ChatGPT / SDK tools/list). */
+export const projectScreenshotInputSchema = z.object(projectScreenshotShape).strict();
+
+/** Strict discriminated union schema enforced during execution. */
+export const discriminatedScreenshotSchema = z.discriminatedUnion("operation", [
   z.object({
     operation: z.literal("targets"),
     projectAlias: projectAliasSchema,
@@ -126,7 +148,7 @@ export function registerScreenshotTool(
   system: ScreenshotSystem = getScreenshotSystem(policy)
 ): void {
   const execute = async (
-    args: z.output<typeof projectScreenshotInputSchema>
+    args: z.output<typeof discriminatedScreenshotSchema>
   ): Promise<RichToolResult> => {
       assertMainAgentPermission("projectScreenshot", policy);
       const { operation, projectAlias, executionSessionId } = args;
@@ -210,7 +232,8 @@ export function registerScreenshotTool(
     },
     async (args): Promise<CallToolResult> => {
       try {
-        return richToolSuccessResult(await execute(args));
+        const validated = discriminatedScreenshotSchema.parse(args);
+        return richToolSuccessResult(await execute(validated));
       } catch (error) {
         return richToolErrorResult(error);
       }

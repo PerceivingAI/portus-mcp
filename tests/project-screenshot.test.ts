@@ -315,7 +315,7 @@ test("multiple eligible windows yield multiple_session_windows with opaque scope
 });
 
 test("project_screenshot schema rejects fields from a different operation", () => {
-  const parsed = screenshotTool.projectScreenshotInputSchema.safeParse({
+  const parsed = screenshotTool.discriminatedScreenshotSchema.safeParse({
     operation: "list",
     projectAlias: "shots",
     executionSessionId: "exec_1000_abcdef",
