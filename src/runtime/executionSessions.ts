@@ -116,6 +116,32 @@ export function getExecutionSession(sessionId: string): ExecutionSessionRecord {
   return record;
 }
 
+export type ExecutionSessionOwnership = {
+  sessionId: string;
+  projectAlias: string;
+  status: ExecutionSessionStatus;
+  pid?: number;
+  startedAtMs: number;
+};
+
+/**
+ * Narrow internal accessor for first-party screenshot ownership checks.
+ * Exposes PID and start time to trusted runtime code without widening
+ * `PublicExecutionSession`. Returns null instead of throwing for unknown ids.
+ */
+export function getExecutionSessionOwnership(sessionId: string): ExecutionSessionOwnership | null {
+  const record = readSessionRecords().find((item) => item.sessionId === sessionId);
+  if (!record) return null;
+  return {
+    sessionId: record.sessionId,
+    projectAlias: record.projectAlias,
+    status: record.status,
+    ...(record.pid ? { pid: record.pid } : {}),
+    startedAtMs: new Date(record.startedAt).getTime()
+  };
+}
+
+
 export function upsertExecutionSession(record: ExecutionSessionRecord): ExecutionSessionRecord {
   const records = readSessionRecords().filter((item) => item.sessionId !== record.sessionId);
   records.push(record);

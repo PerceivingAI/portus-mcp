@@ -164,6 +164,65 @@ test("MCP tools use their matching selected-policy permission", async (t) => {
   }
 });
 
+test("project_screenshot gates on its dedicated projectScreenshot permission", async (t) => {
+  const { upsertExecutionSession } = await import("../src/runtime/executionSessions.js");
+  let activePolicy = selectedPolicy;
+  const client = await withClient(t, () => activePolicy);
+  const projectAlias = "screenshot-gates";
+  upsertProject({ projectAlias, rootPath: projectRoot });
+
+  // Persisted (completed) session so list is otherwise permitted.
+  const sessionId = "exec_42_cafecafe";
+  upsertExecutionSession({
+    sessionId,
+    projectAlias,
+    command: "node",
+    args: [],
+    shell: false,
+    status: "completed",
+    startedAt: "2026-08-22T10:00:00.000Z",
+    completedAt: "2026-08-22T10:01:00.000Z",
+    timeoutMs: 600000,
+    exitCode: 0,
+    signal: null,
+    executionError: null,
+    stdoutPath: path.join(stateDir, "stdout.log"),
+    stderrPath: path.join(stateDir, "stderr.log"),
+    stdoutBytes: 0,
+    stderrBytes: 0,
+    lifecycle: {
+      processStarted: true,
+      processExited: true,
+      killAttempted: false,
+      killSucceeded: false,
+      waitAttempted: true,
+      reaped: true
+    }
+  } as any);
+
+  const arguments_ = { operation: "list" as const, projectAlias, executionSessionId: sessionId };
+
+  // Shipped default keeps the permission off.
+  assert.equal(selectedPolicy.main_agent.permissions.projectScreenshot, false);
+  const denied = await client.callTool({ name: "project_screenshot", arguments: arguments_ });
+  assert.equal(denied.isError, true);
+  assert.match(JSON.stringify(denied.structuredContent), /main_agent\.projectScreenshot/);
+
+  // Granting the dedicated permission admits the operation.
+  activePolicy = withMainAgentPermissions({ projectScreenshot: true });
+  const allowed = await client.callTool({ name: "project_screenshot", arguments: arguments_ });
+  assert.equal(allowed.isError, undefined, JSON.stringify(allowed.structuredContent));
+
+  // Cross-session access stays denied under the granted permission.
+  activePolicy = withMainAgentPermissions({ projectScreenshot: true });
+  const crossSession = await client.callTool({
+    name: "project_screenshot",
+    arguments: { operation: "list", projectAlias: "other-project", executionSessionId: sessionId }
+  });
+  assert.equal(crossSession.isError, true);
+  assert.match(JSON.stringify(crossSession.structuredContent), /belongs to a different project|Unknown project alias/);
+});
+
 test("ignored-file authorization does not widen default root search", async (t) => {
   const ignoredAccessPolicy = withMainAgentPermissions({ readGitIgnoredFiles: true });
   const client = await withClient(t, () => ignoredAccessPolicy);

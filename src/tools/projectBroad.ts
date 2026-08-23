@@ -23,6 +23,7 @@ import {
   listExecutionSessions
 } from "../runtime/executionSessions.js";
 import { registerStrictProjectTool, safeError, safeRelativePath } from "./projectToolUtils.js";
+import { screenshotCapabilityEntry } from "./projectScreenshot.js";
 import { editBatchModeSchema, editOperationSchema, executeProjectEditBatch } from "./projectEdit.js";
 import { patchInputSchema, synthesizeUnifiedDiff } from "./patchSynthesizer.js";
 import type { SkillRegistrySnapshot } from "../skills/SkillRegistry.js";
@@ -81,6 +82,13 @@ function projectContextCapabilities(policy: PortusPolicyConfig): ProjectContextC
   if (permissions.projectPolicy) availableTools.project_policy = { enabled: true };
   if (permissions.subagentTask) availableTools.subagent_task = { enabled: true };
   if (permissions.subagentContext) availableTools.subagent_context = { enabled: true };
+
+  const screenshotEntry = screenshotCapabilityEntry(policy);
+  if (screenshotEntry) {
+    // Expanded metadata: scope, operations, platform, formats, and explicit
+    // capture-unavailability flags. PID/native-handle data never appears.
+    availableTools.project_screenshot = { enabled: true, ...screenshotEntry } as unknown as EnabledToolCapability;
+  }
 
   const features: Record<string, EnabledFeature> = {};
   if (permissions.projectRun && permissions.allowShell) features.shell = { enabled: true };

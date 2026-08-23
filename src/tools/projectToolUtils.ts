@@ -55,3 +55,45 @@ export function registerStrictProjectTool<T extends z.ZodRawShape>(
     }
   });
 }
+
+export type RichToolResult = {
+  result: unknown;
+  /** Extra native content blocks (e.g. images) appended after the metadata text block. */
+  contentBlocks?: CallToolResult["content"];
+};
+
+/**
+ * Variant of registerStrictProjectTool whose handler may attach native
+ * content blocks (such as image blocks). The structured envelope always
+ * carries metadata only; large payloads travel solely in content blocks and
+ * are never duplicated into JSON or structured content.
+ */
+export function registerStrictProjectToolWithContent<T extends z.ZodRawShape>(
+  server: McpServer,
+  name: string,
+  description: string,
+  shape: T,
+  annotations: ToolAnnotations,
+  handler: (args: z.output<z.ZodObject<T, "strict">>) => Promise<RichToolResult>
+): void {
+  const inputSchema = z.object(shape).strict();
+  server.registerTool(name, { description, inputSchema, annotations }, async (args): Promise<CallToolResult> => {
+    try {
+      const { result, contentBlocks } = await handler(args);
+      return {
+        structuredContent: { result },
+        content: [
+          { type: "text", text: JSON.stringify(result, null, 2) },
+          ...(contentBlocks ?? [])
+        ]
+      };
+    } catch (error) {
+      const message = asErrorMessage(error);
+      return {
+        isError: true,
+        structuredContent: { error: message },
+        content: [{ type: "text", text: JSON.stringify({ error: message }, null, 2) }]
+      };
+    }
+  });
+}

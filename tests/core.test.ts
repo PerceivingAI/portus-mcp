@@ -175,6 +175,45 @@ test("complete policy validation rejects every formerly defaulted field when omi
           process: withoutKey(selectedPolicy.limits.process, "maxBatchOutputChars")
         }
       }
+    },
+    {
+      path: "main_agent.permissions.projectScreenshot",
+      value: {
+        ...selectedPolicy,
+        main_agent: {
+          permissions: withoutKey(selectedPolicy.main_agent.permissions, "projectScreenshot")
+        }
+      }
+    },
+    {
+      path: "limits.screenshot.maxBytes",
+      value: {
+        ...selectedPolicy,
+        limits: {
+          ...selectedPolicy.limits,
+          screenshot: withoutKey(selectedPolicy.limits.screenshot, "maxBytes")
+        }
+      }
+    },
+    {
+      path: "limits.screenshot.windowTokenTtlMs",
+      value: {
+        ...selectedPolicy,
+        limits: {
+          ...selectedPolicy.limits,
+          screenshot: withoutKey(selectedPolicy.limits.screenshot, "windowTokenTtlMs")
+        }
+      }
+    },
+    {
+      path: "limits.screenshot.minJpegQuality",
+      value: {
+        ...selectedPolicy,
+        limits: {
+          ...selectedPolicy.limits,
+          screenshot: withoutKey(selectedPolicy.limits.screenshot, "minJpegQuality")
+        }
+      }
     }
   ];
 
@@ -208,6 +247,58 @@ test("text-edit range limit rejects invalid values and unknown fields", () => {
     }),
     /limits\.textEdit/
   );
+});
+
+test("screenshot permission and limits parse strictly", () => {
+  // The shipped default keeps the screenshot permission off...
+  assert.equal(selectedPolicy.main_agent.permissions.projectScreenshot, false);
+  // ...and it is never inferred from other project permissions.
+  for (const key of ["projectRead", "projectEdit", "projectRun"] as const) {
+    const policy = withMainAgentPermissions({ [key]: true } as any);
+    assert.equal(parsePolicyConfig(policy).main_agent.permissions.projectScreenshot, false);
+  }
+
+  // Invalid screenshot limit values fail loading.
+  for (const [field, value] of [
+    ["maxBytes", 0],
+    ["maxBytes", 1.5],
+    ["maxWidth", -1],
+    ["maxStoredFilesPerSession", 0],
+    ["captureTimeoutMs", 0],
+    ["windowTokenTtlMs", -5],
+    ["minJpegQuality", 101],
+    ["maxJpegQuality", 0]
+  ] as Array<[string, number]>) {
+    assert.throws(
+      () => parsePolicyConfig({
+        ...selectedPolicy,
+        limits: {
+          ...selectedPolicy.limits,
+          screenshot: { ...selectedPolicy.limits.screenshot, [field]: value }
+        }
+      }),
+      new RegExp(`limits\\.screenshot\\.${field}`)
+    );
+  }
+
+  // Unknown fields inside limits.screenshot fail loading.
+  assert.throws(
+    () => parsePolicyConfig({
+      ...selectedPolicy,
+      limits: {
+        ...selectedPolicy.limits,
+        screenshot: { ...selectedPolicy.limits.screenshot, unknownLimit: 1 }
+      }
+    }),
+    /limits\.screenshot/
+  );
+
+  // The complete defaults load and expose the documented values.
+  const limits = selectedPolicy.limits.screenshot;
+  assert.equal(limits.maxBytes, 8388608);
+  assert.equal(limits.maxWidth, 3840);
+  assert.equal(limits.maxHeight, 2160);
+  assert.equal(limits.maxListPageSize, 100);
 });
 
 

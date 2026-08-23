@@ -118,6 +118,7 @@ const expectedNames = [
   "project_policy",
   "project_read",
   "project_run",
+  "project_screenshot",
   "project_search",
   "subagent_context",
   "subagent_task"
@@ -129,7 +130,15 @@ const capabilityManifestSchema = z.object({
     z.string(),
     z.object({
       enabled: z.literal(true),
-      allowedCommands: z.array(z.string()).optional()
+      allowedCommands: z.array(z.string()).optional(),
+      scope: z.string().optional(),
+      operations: z.array(z.string()).optional(),
+      platform: z.string().optional(),
+      formats: z.array(z.string()).optional(),
+      captureAvailable: z.boolean().optional(),
+      desktopCapture: z.literal(false).optional(),
+      activeWindowCapture: z.literal(false).optional(),
+      regionCapture: z.literal(false).optional()
     }).strict()
   ),
   features: z.record(

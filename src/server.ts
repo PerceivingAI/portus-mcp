@@ -9,6 +9,7 @@ import { loadPolicyConfig, type PortusPolicyConfig } from "./policy/policyConfig
 import { registerBroadProjectTools } from "./tools/projectBroad.js";
 import { registerSubagentTools } from "./tools/subagents.js";
 import { registerBroadPolicyTools } from "./tools/config.js";
+import { probeScreenshotBinding, registerScreenshotTool } from "./tools/projectScreenshot.js";
 import { readSessionEvents } from "./state/SessionEvents.js";
 import { connectedSkillInstructions, loadSkillRegistry } from "./skills/SkillRegistry.js";
 import type { SkillRegistrySnapshot } from "./skills/SkillRegistry.js";
@@ -30,6 +31,8 @@ export function createMcpServer(
   registerBroadProjectTools(server, skillRegistry, policy);
   registerBroadPolicyTools(server, policy);
   registerSubagentTools(server, skillRegistry, policy);
+  registerScreenshotTool(server, policy);
+  probeScreenshotBinding(policy);
 
   return server;
 }

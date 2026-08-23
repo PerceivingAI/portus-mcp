@@ -23,6 +23,8 @@
     "@modelcontextprotocol/sdk": "^1.20.2",
     "dotenv": "^16.4.7",
     "just-bash": "^2.14.5",
+    "node-screenshots": "0.2.8",
+    "sharp": "0.35.3",
     "yaml": "^2.9.0",
     "zod": "^3.25.76"
   },

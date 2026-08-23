@@ -18,6 +18,7 @@
       "node_modules",
       "dist",
       ".portus-mcp",
+      ".portus-artifacts",
       "target",
       ".flue",
       "coverage",

@@ -13,7 +13,14 @@ const skillsDir = path.join(root, "skills");
 const configPath = path.join(root, "config.json");
 const dotenvPath = path.join(root, "missing.env");
 const connectedAllowedCommands = ["git"];
-after(() => rmSync(root, { recursive: true, force: true }));
+after(() => {
+  try {
+    rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
+  } catch {
+    // Windows can hold directory handles briefly after spawned children exit.
+    // Leaving an empty .portus-mcp-test-* temp root must not fail the file.
+  }
+});
 
 
 mkdirSync(projectRoot, { recursive: true });
@@ -166,6 +173,7 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
     "project_policy",
     "project_read",
     "project_run",
+    "project_screenshot",
     "project_search",
     "subagent_context",
     "subagent_task"
@@ -1411,4 +1419,139 @@ test("skill frontmatter parser enforces the Agent Skills metadata contract", () 
   ].join("\n"), "valid-skill"), /Map keys must be unique/);
 });
 
+
+
+test("project_screenshot enforces its permission and serves validated images without base64 duplication", async (t) => {
+  const { upsertExecutionSession } = await import("../src/runtime/executionSessions.js");
+  const { createHash } = await import("node:crypto");
+  const sharpModule: any = await import("sharp");
+  const pngImage = await sharpModule.default({
+    create: { width: 32, height: 24, channels: 3, background: { r: 5, g: 6, b: 7 } }
+  })
+    .png()
+    .toBuffer();
+
+  // Policy override enabling the screenshot permission while keeping the
+  // shipped requireConfirmation=true behavior.
+  const previousPolicyPath = process.env.PORTUS_MCP_POLICY_PATH;
+  const overridePath = path.join(root, "policy-screenshot-enabled.json");
+  writeFileSync(
+    overridePath,
+    JSON.stringify({
+      ...selectedPolicy,
+      main_agent: {
+        ...selectedPolicy.main_agent,
+        permissions: { ...selectedPolicy.main_agent.permissions, projectScreenshot: true }
+      }
+    }, null, 2),
+    "utf8"
+  );
+  process.env.PORTUS_MCP_POLICY_PATH = overridePath;
+  t.after(() => {
+    if (previousPolicyPath === undefined) delete process.env.PORTUS_MCP_POLICY_PATH;
+    else process.env.PORTUS_MCP_POLICY_PATH = previousPolicyPath;
+  });
+
+  // Seed a persisted session and one managed screenshot file.
+  const sessionId = "exec_77_aabbccdd";
+  upsertExecutionSession({
+    sessionId,
+    projectAlias: "mcp",
+    command: "node",
+    args: [],
+    shell: false,
+    status: "completed",
+    pid: 41234,
+    startedAt: "2026-08-22T10:00:00.000Z",
+    completedAt: "2026-08-22T10:01:00.000Z",
+    timeoutMs: 600000,
+    exitCode: 0,
+    signal: null,
+    executionError: null,
+    stdoutPath: path.join(stateDir, "stdout.log"),
+    stderrPath: path.join(stateDir, "stderr.log"),
+    stdoutBytes: 0,
+    stderrBytes: 0,
+    lifecycle: {
+      processStarted: true,
+      processExited: true,
+      killAttempted: false,
+      killSucceeded: false,
+      waitAttempted: true,
+      reaped: true
+    }
+  } as any);
+  const shotName = "20260101T000000Z_cafef00d.png";
+  const shotDir = path.join(projectRoot, ".portus-artifacts", "screenshots", sessionId);
+  mkdirSync(shotDir, { recursive: true });
+  writeFileSync(path.join(shotDir, shotName), pngImage);
+
+  const server = createHttpServer("/mcp");
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  t.after(() => server.close());
+  const address = server.address() as any;
+  assert(address && typeof address === "object" && "port" in address);
+  const client = new Client({ name: "portus-screenshot-test", version: "0.1.1" });
+  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`));
+  await client.connect(transport);
+  t.after(async () => client.close());
+
+  // Strict schema: unknown field is rejected.
+  const bad = await client.callTool({
+    name: "project_screenshot",
+    arguments: { operation: "list", projectAlias: "mcp", executionSessionId: sessionId, bogusField: 1 }
+  });
+  assert.equal(bad.isError, true);
+
+  // List returns validated metadata only.
+  const listed = resultOf(await client.callTool({
+    name: "project_screenshot",
+    arguments: { operation: "list", projectAlias: "mcp", executionSessionId: sessionId }
+  }));
+  assert.equal(listed.total, 1);
+  assert.equal(listed.items[0].screenshotId, shotName);
+  assert.equal(listed.items[0].width, 32);
+
+  // Read returns a native image block; metadata never carries base64.
+  const readResponse = await client.callTool({
+    name: "project_screenshot",
+    arguments: { operation: "read", projectAlias: "mcp", executionSessionId: sessionId, screenshotId: shotName }
+  });
+  assert.equal(readResponse.isError, undefined, JSON.stringify(readResponse.structuredContent));
+  const meta = (readResponse.structuredContent as any).result;
+  assert.equal(meta.screenshotId, shotName);
+  assert.equal(meta.sha256, createHash("sha256").update(pngImage).digest("hex"));
+  assert.ok(!meta.data, "structured content must not carry image bytes");
+  const base64Prefix = pngImage.toString("base64").slice(0, 40);
+  const structuredText = JSON.stringify(readResponse.structuredContent);
+  assert.ok(!structuredText.includes(base64Prefix), "structured content leaked base64");
+  const blocks = readResponse.content ?? [];
+  assert.equal(blocks[0].type, "text");
+  assert.ok(!blocks[0].text.includes(base64Prefix), "text block leaked base64");
+  const imageBlock = blocks.find((block: any) => block.type === "image") as any;
+  assert.ok(imageBlock, "expected a native image content block");
+  assert.equal(imageBlock.mimeType, "image/png");
+  assert.equal(Buffer.from(imageBlock.data, "base64").equals(pngImage), true);
+
+  // returnImage=false omits native image content entirely.
+  const noImage = resultOf(await client.callTool({
+    name: "project_screenshot",
+    arguments: { operation: "read", projectAlias: "mcp", executionSessionId: sessionId, screenshotId: shotName, returnImage: false }
+  }));
+  assert.equal(noImage.returnImage, false);
+
+  // Delete requires confirmation under the shipped requireConfirmation=true.
+  const deniedDelete = await client.callTool({
+    name: "project_screenshot",
+    arguments: { operation: "delete", projectAlias: "mcp", executionSessionId: sessionId, screenshotId: shotName }
+  });
+  assert.equal(deniedDelete.isError, true);
+  assert.match(JSON.stringify(deniedDelete.structuredContent), /Confirmation required/);
+  const confirmedDelete = resultOf(await client.callTool({
+    name: "project_screenshot",
+    arguments: { operation: "delete", projectAlias: "mcp", executionSessionId: sessionId, screenshotId: shotName, confirm: true }
+  }));
+  assert.equal(confirmedDelete.deleted, true);
+  assert.equal(existsSync(path.join(shotDir, shotName)), false);
+});
 

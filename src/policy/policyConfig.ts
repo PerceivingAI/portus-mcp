@@ -46,6 +46,7 @@ const policySchema = z.object({
       projectPatch: z.boolean(),
       projectRun: z.boolean(),
       projectPolicy: z.boolean(),
+      projectScreenshot: z.boolean(),
       readGitIgnoredFiles: z.boolean(),
       requireConfirmation: z.boolean(),
       allowShell: z.boolean(),
@@ -94,6 +95,20 @@ const policySchema = z.object({
     process: z.object({
       maxOutputBufferMb: z.number().positive(),
       maxBatchOutputChars: z.number().int().positive()
+    }).strict(),
+    screenshot: z.object({
+      maxBytes: z.number().int().positive(),
+      maxWidth: z.number().int().positive(),
+      maxHeight: z.number().int().positive(),
+      maxStoredFilesPerSession: z.number().int().positive(),
+      maxTotalBytesPerProject: z.number().int().positive(),
+      maxAgeDays: z.number().int().min(0),
+      captureTimeoutMs: z.number().int().positive(),
+      maxWindowWaitMs: z.number().int().positive(),
+      windowTokenTtlMs: z.number().int().positive(),
+      maxListPageSize: z.number().int().positive(),
+      minJpegQuality: z.number().int().min(1).max(100),
+      maxJpegQuality: z.number().int().min(1).max(100)
     }).strict()
   }).strict(),
   audit: z.object({
@@ -146,6 +161,11 @@ export function policyPermissions(policy = loadPolicyConfig()): PermissionConfig
       maxRuntimeSecs: policy.subagents.lifecycle.maxRuntimeSecs
     }
   };
+}
+
+/** Strict, policy-derived limits for the screenshot system (`limits.screenshot`). */
+export function loadScreenshotLimits(policy: PortusPolicyConfig = loadPolicyConfig()) {
+  return policy.limits.screenshot;
 }
 
 export function loadSubagentCommandConfig(policy = loadPolicyConfig()): SubagentCommandConfig {

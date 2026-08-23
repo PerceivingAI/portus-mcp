@@ -18,6 +18,7 @@ export type MainAgentPermissionConfig = {
   projectPatch: boolean;
   projectRun: boolean;
   projectPolicy: boolean;
+  projectScreenshot: boolean;
   readGitIgnoredFiles: boolean;
   requireConfirmation: boolean;
   allowShell: boolean;

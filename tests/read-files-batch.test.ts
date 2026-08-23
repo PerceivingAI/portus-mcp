@@ -37,13 +37,13 @@ const basePolicy = {
     lifecycle: { queuedTaskTtlSecs: 300, projectLockTimeoutSecs: 1800, maxRuntimeSecs: 900, startupWatchdogMs: 15000, forcedCloseGraceMs: 8000, killEscalationDelayMs: 1200, queueDrainDelayMs: 50 },
     permissions: { networkAccess: true, allowedCommands: ["git"] }
   },
-  main_agent: { permissions: { subagentTask: false, subagentContext: false, projectContext: true, projectRead: true, projectSearch: true, projectEdit: false, projectPatch: false, projectRun: false, projectPolicy: true, readGitIgnoredFiles: false, requireConfirmation: false, allowShell: false, allowedCommands: ["git"] } },
+  main_agent: { permissions: { subagentTask: false, subagentContext: false, projectContext: true, projectRead: true, projectSearch: true, projectEdit: false, projectPatch: false, projectRun: false, projectPolicy: true, projectScreenshot: false, readGitIgnoredFiles: false, requireConfirmation: false, allowShell: false, allowedCommands: ["git"] } },
   pathPolicy: { blockedPatterns: [".env"] },
   limits: {
     fileRead: { maxChars: 500000 }, fileWrite: { maxChars: 1000000 }, patch: { maxChars: 1000000 },
     textEdit: { maxOperationChars: 200000, maxSearchOrMarkerChars: 20000, maxRangeLines: 2000 }, search: { maxScanEntries: 100000, maxTextFileChars: 200000, maxRegexExecutionMs: 120000, maxBatchMatches: 5000, maxBatchOutputChars: 500000 },
     skills: { maxReadChars: 200000 }, subagentOutput: { maxStdoutChars: 200000, maxStderrChars: 200000 },
-    sessionEvents: { maxEvents: 500, maxChunkChars: 4000 }, audit: { maxEvents: 1000 }, process: { maxOutputBufferMb: 10, maxBatchOutputChars: 1000000 }
+    sessionEvents: { maxEvents: 500, maxChunkChars: 4000 }, audit: { maxEvents: 1000 }, process: { maxOutputBufferMb: 10, maxBatchOutputChars: 1000000 }, screenshot: { maxBytes: 8388608, maxWidth: 3840, maxHeight: 2160, maxStoredFilesPerSession: 20, maxTotalBytesPerProject: 104857600, maxAgeDays: 7, captureTimeoutMs: 10000, maxWindowWaitMs: 30000, windowTokenTtlMs: 30000, maxListPageSize: 100, minJpegQuality: 50, maxJpegQuality: 95 }
   },
   audit: { strictMode: false }
 };

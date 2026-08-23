@@ -55,7 +55,7 @@ const basePolicy = {
       readGitIgnoredFiles: false,
       projectPatch: true,
       projectRun: false,
-      projectPolicy: true,
+      projectPolicy: true, projectScreenshot: false,
       requireConfirmation: false,
       allowShell: false,
       allowedCommands: ["git"]
@@ -72,7 +72,7 @@ const basePolicy = {
     subagentOutput: { maxStdoutChars: 200000, maxStderrChars: 200000 },
     sessionEvents: { maxEvents: 500, maxChunkChars: 4000 },
     audit: { maxEvents: 1000 },
-    process: { maxOutputBufferMb: 10, maxBatchOutputChars: 1000000 }
+    process: { maxOutputBufferMb: 10, maxBatchOutputChars: 1000000 }, screenshot: { maxBytes: 8388608, maxWidth: 3840, maxHeight: 2160, maxStoredFilesPerSession: 20, maxTotalBytesPerProject: 104857600, maxAgeDays: 7, captureTimeoutMs: 10000, maxWindowWaitMs: 30000, windowTokenTtlMs: 30000, maxListPageSize: 100, minJpegQuality: 50, maxJpegQuality: 95 }
   },
   audit: { strictMode: false }
 };
