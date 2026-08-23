@@ -13,7 +13,10 @@ import {
 import { loadPolicyConfig } from "../src/policy/policyConfig.js";
 
 const root = mkdtempSync(path.join(process.cwd(), ".portus-exec-test-"));
-after(() => rmSync(root, { recursive: true, force: true }));
+const stateDir = path.join(root, "state");
+process.env.PORTUS_MCP_STATE_DIR = stateDir;
+process.env.PORTUS_MCP_PROJECTS = `test=${root}`;
+after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
 const selectedPolicy = loadPolicyConfig();
 const withMainAgentPermissions = (

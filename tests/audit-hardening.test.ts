@@ -1,6 +1,6 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -12,6 +12,7 @@ const projectRoot = path.join(root, "project");
 const configPath = path.join(root, "config.json");
 const policyPath = path.join(root, "policy.json");
 const dotenvPath = path.join(root, "missing.env");
+after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
 mkdirSync(projectRoot, { recursive: true });
 function writePolicy(strictMode: boolean): void {

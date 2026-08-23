@@ -18,7 +18,7 @@ process.env.PORTUS_MCP_STATE_DIR = stateDir;
 // The shipped policy is valid today; path-policy containment checks load it.
 process.env.PORTUS_MCP_POLICY_PATH = path.join(root, "policy.json");
 writeFileSync(path.join(root, "policy.json"), readFileSync(path.resolve("portus-mcp.policy.json"), "utf8"));
-after(() => rmSync(root, { recursive: true, force: true }));
+after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
 // Stateful modules are imported only after the isolated environment paths are installed.
 const projectRoot = path.join(root, "project");

@@ -1,4 +1,4 @@
-import { copyFileSync, createWriteStream, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, createWriteStream, existsSync, mkdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { ChildProcess, spawn } from "node:child_process";
 import { loadAgentProviderConfig, loadConfig } from "../config.js";
@@ -178,6 +178,7 @@ async function startSessionExecution(input: RunFlueTaskInput, record: SessionRec
   });
   const flueCli = path.resolve(optionalEnv("PORTUS_MCP_FLUE_CLI_PATH", path.join(flueWorkspace, "node_modules", "@flue", "cli", "dist", "flue.js")));
   if (!existsSync(flueCli)) {
+    flueProjectAgent.cleanup();
     const failed: SessionRecord = {
       ...record,
       status: "failed",
@@ -214,7 +215,7 @@ async function startSessionExecution(input: RunFlueTaskInput, record: SessionRec
     "--workspace",
     flueProjectAgent.workspaceDir,
     "--output",
-    path.join(flueWorkspace, ".portus-mcp", "flue-builds", record.sessionId),
+    path.join(stateStore.root, "flue-builds", record.sessionId),
     "--payload",
     JSON.stringify({
       task: input.task,
@@ -291,7 +292,7 @@ function prepareProjectFlueSubagent(params: {
   if (!existsSync(fluePackagesPath)) {
     throw new Error(`Flue SDK packages do not exist: ${fluePackagesPath}`);
   }
-  const workspaceDir = path.join(params.flueWorkspace, ".portus-mcp", "flue-workspaces", params.sessionId);
+  const workspaceDir = path.join(stateStore.root, "flue-workspaces", params.sessionId);
   const internalAgentsDir = path.join(workspaceDir, "agents");
   mkdirSync(internalAgentsDir, { recursive: true });
   const agentName = `portus-${params.sessionId}`;
@@ -317,10 +318,15 @@ function prepareProjectFlueSubagent(params: {
     workspaceDir,
     cleanup: () => {
       try {
-        rmSync(workspaceDir, { force: true, recursive: true });
-      } catch {
-        // best effort
-      }
+        if (existsSync(flueLinkPath)) unlinkSync(flueLinkPath);
+      } catch {}
+      try {
+        const justBashLinkPath = path.join(internalNodeModulesDir, "just-bash");
+        if (existsSync(justBashLinkPath)) unlinkSync(justBashLinkPath);
+      } catch {}
+      try {
+        rmSync(workspaceDir, { force: true, recursive: true, maxRetries: 20, retryDelay: 100 });
+      } catch {}
     }
   };
 }

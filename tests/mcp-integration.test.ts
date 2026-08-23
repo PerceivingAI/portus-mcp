@@ -13,13 +13,8 @@ const skillsDir = path.join(root, "skills");
 const configPath = path.join(root, "config.json");
 const dotenvPath = path.join(root, "missing.env");
 const connectedAllowedCommands = ["git"];
-after(() => {
-  try {
-    rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
-  } catch {
-    // Windows can hold directory handles briefly after spawned children exit.
-    // Leaving an empty .portus-mcp-test-* temp root must not fail the file.
-  }
+after(async () => {
+  rmSync(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
 });
 
 
@@ -154,7 +149,11 @@ function assertPublicSession(session: any): void {
 test("MCP endpoint exposes and executes core tool surface", async (t) => {
   const server = createHttpServer("/mcp");
   await new Promise<void>((resolve) => server.listen(0, resolve));
-  t.after(() => server.close());
+  t.after(async () => {
+    await client.close();
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  });
 
   const address = server.address();
   assert.equal(typeof address, "object");
@@ -163,8 +162,6 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   const client = new Client({ name: "portus-agents-test", version: "0.1.1" });
   const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`));
   await client.connect(transport);
-  t.after(async () => client.close());
-
   const tools = await client.listTools();
   const toolNames = tools.tools.map((tool) => tool.name).sort();
   assert.deepEqual(toolNames, [
@@ -1490,15 +1487,16 @@ test("project_screenshot enforces its permission and serves validated images wit
 
   const server = createHttpServer("/mcp");
   await new Promise<void>((resolve) => server.listen(0, resolve));
-  t.after(() => server.close());
+  t.after(async () => {
+    await client.close();
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  });
   const address = server.address() as any;
   assert(address && typeof address === "object" && "port" in address);
   const client = new Client({ name: "portus-screenshot-test", version: "0.1.1" });
   const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`));
   await client.connect(transport);
-  t.after(async () => client.close());
-
-  // Strict schema: unknown field is rejected.
   const bad = await client.callTool({
     name: "project_screenshot",
     arguments: { operation: "list", projectAlias: "mcp", executionSessionId: sessionId, bogusField: 1 }
