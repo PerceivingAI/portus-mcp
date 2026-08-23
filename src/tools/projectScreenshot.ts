@@ -139,7 +139,7 @@ export function probeScreenshotBinding(policy: PortusPolicyConfig): void {
 
 export function screenshotCapabilityEntry(policy: PortusPolicyConfig): ScreenshotCapabilities | null {
   if (!policyPermissions(policy).main_agent.projectScreenshot) return null;
-  return getScreenshotSystem(policy).getCapabilities({ permissionGranted: true });
+  return getScreenshotSystem(policy).getCapabilities();
 }
 
 function requireConfirmationIfPolicyDemands(

@@ -557,7 +557,7 @@ export type ScreenshotCapabilities = {
 };
 
 export type ScreenshotSystem = {
-  getCapabilities(input: { permissionGranted: boolean }): ScreenshotCapabilities;
+  getCapabilities(): ScreenshotCapabilities;
   /** Probes (once per generation) whether the native binding supports capture. */
   ensureBindingAvailability(): Promise<boolean>;
   refreshBindingAvailability(): void;
@@ -1088,13 +1088,7 @@ export function createScreenshotSystem(deps: {
     });
   }
 
-  function getCapabilities(input: { permissionGranted: boolean }): ScreenshotCapabilities {
-    if (!input.permissionGranted) {
-      return {
-        enabled: false,
-        operations: []
-      };
-    }
+  function getCapabilities(): ScreenshotCapabilities {
     const captureReady = bindingAvailable === true;
     return {
       enabled: true,

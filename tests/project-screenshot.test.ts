@@ -732,14 +732,10 @@ test("execution-session exit invalidates every token for that session", async ()
   );
 });
 
-test("capability projection follows permission and binding availability", async () => {
+test("capability projection follows binding availability", async () => {
   const h = makeHarness();
-  const denied = h.sys.getCapabilities({ permissionGranted: false });
-  assert.equal(denied.enabled, false);
-  assert.deepEqual(denied.operations, []);
-
   assert.equal(await h.sys.ensureBindingAvailability(), true);
-  const granted = h.sys.getCapabilities({ permissionGranted: true });
+  const granted = h.sys.getCapabilities();
   assert.equal(granted.enabled, true);
   assert.deepEqual(granted.operations, ["targets", "capture", "read", "list", "delete"]);
 
@@ -747,7 +743,7 @@ test("capability projection follows permission and binding availability", async 
     launchWorker: async () => ({ ok: true, result: { bindingLoaded: false, captureAvailable: false } })
   });
   assert.equal(await unavailable.ensureBindingAvailability(), false);
-  const degraded = unavailable.getCapabilities({ permissionGranted: true });
+  const degraded = unavailable.getCapabilities();
   assert.deepEqual(degraded.operations, ["read", "list", "delete"]);
 });
 
