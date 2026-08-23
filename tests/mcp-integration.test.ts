@@ -1565,15 +1565,11 @@ test("project_screenshot enforces its permission and serves validated images wit
   assert.equal(confirmedDelete.deleted, true);
   assert.equal(existsSync(path.join(shotDir, shotName)), false);
 
-  // End-to-end ownership pipeline against a REAL execution session: a plain
-  // node child owns no GUI windows, so targets must return zero candidates —
-  // any entry here would be an unrelated-desktop-window leak — and capture
-  // must fail closed with the stable zero-candidate error.
   const started = resultOf(await client.callTool({
     name: "project_run",
     arguments: {
       projectAlias: "mcp",
-      sessionAction: { type: "start", command: "node", args: ["-e", "setTimeout(() => {}, 10000)"], confirm: true }
+      sessionAction: { type: "start", command: "node", args: ["-e", "require('node:net').createServer().listen(0)"], confirm: true }
     }
   }));
   const runningSessionId = started.session.sessionId as string;
@@ -1586,18 +1582,36 @@ test("project_screenshot enforces its permission and serves validated images wit
     }).catch(() => undefined);
   t.after(terminateRunning);
 
-  const liveTargets = resultOf(await client.callTool({
+  // A plain node child owns no GUI windows. Desktop runners return an empty
+  // target list; headless runners return a stable capture-unavailable error.
+  const liveTargetsResponse = await client.callTool({
     name: "project_screenshot",
     arguments: { operation: "targets", projectAlias: "mcp", executionSessionId: runningSessionId }
-  }));
-  assert.deepEqual(liveTargets.targets, []);
-
-  const noWindowCapture = await client.callTool({
-    name: "project_screenshot",
-    arguments: { operation: "capture", projectAlias: "mcp", executionSessionId: runningSessionId, confirm: true }
   });
-  assert.equal(noWindowCapture.isError, true);
-  assert.match(JSON.stringify(noWindowCapture.structuredContent), /No eligible session window found/);
+  if (liveTargetsResponse.isError) {
+    assert.match(
+      JSON.stringify(liveTargetsResponse.structuredContent),
+      /screenshot_binding_unavailable|unsupported_session_window_capture/
+    );
+    const unavailableCapture = await client.callTool({
+      name: "project_screenshot",
+      arguments: { operation: "capture", projectAlias: "mcp", executionSessionId: runningSessionId, confirm: true }
+    });
+    assert.equal(unavailableCapture.isError, true);
+    assert.match(
+      JSON.stringify(unavailableCapture.structuredContent),
+      /screenshot_binding_unavailable|unsupported_session_window_capture/
+    );
+  } else {
+    const liveTargets = resultOf(liveTargetsResponse);
+    assert.deepEqual(liveTargets.targets, []);
+    const noWindowCapture = await client.callTool({
+      name: "project_screenshot",
+      arguments: { operation: "capture", projectAlias: "mcp", executionSessionId: runningSessionId, confirm: true }
+    });
+    assert.equal(noWindowCapture.isError, true);
+    assert.match(JSON.stringify(noWindowCapture.structuredContent), /No eligible session window found/);
+  }
 
   // After the session exits: capture denied, list still allowed (empty).
   await terminateRunning();

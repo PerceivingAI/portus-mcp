@@ -8,35 +8,29 @@
  */
 
 const scenario = process.argv[2] ?? "";
-const write = (text) => process.stdout.write(text);
+const finish = (text, code) => {
+  process.stdout.write(text, () => {
+    process.exitCode = code;
+  });
+};
 const okEnvelope = JSON.stringify({ ok: true, result: { fixture: "ok" } });
 
 if (scenario === "ok") {
-  write(okEnvelope);
-  process.exit(0);
-}
-
-if (scenario.startsWith("delay:")) {
+  finish(okEnvelope, 0);
+} else if (scenario.startsWith("delay:")) {
   const ms = Number.parseInt(scenario.slice("delay:".length), 10);
-  setTimeout(() => {
-    write(okEnvelope);
-    process.exit(0);
-  }, Number.isFinite(ms) ? ms : 5000);
+  setTimeout(() => finish(okEnvelope, 0), Number.isFinite(ms) ? ms : 5000);
 } else if (scenario === "partial") {
   // Truncated JSON envelope, then a clean exit: parent must detect malformed output.
-  write('{"ok":true,"result":{"fix');
-  process.exit(0);
+  finish('{"ok":true,"result":{"fix', 0);
 } else if (scenario === "oversize") {
-  write(
-    JSON.stringify({ ok: true, result: { blob: "x".repeat(300 * 1024) } })
-  );
-  process.exit(0);
+  finish(JSON.stringify({ ok: true, result: { blob: "x".repeat(300 * 1024) } }), 0);
 } else if (scenario === "crash") {
   // Abnormal termination with no output at all.
   process.abort();
 } else if (scenario === "capture-file-omission") {
-  // Claims a successful capture result but never wrote any image file.
-  write(
+  // Claims a successful capture result but never writes an image file.
+  finish(
     JSON.stringify({
       ok: true,
       result: {
@@ -48,20 +42,18 @@ if (scenario.startsWith("delay:")) {
         bytes: 12345,
         resized: false
       }
-    })
+    }),
+    0
   );
-  process.exit(0);
 } else if (scenario === "prefix-noise") {
   // Diagnostics-style noise before the single-line envelope: parent must reject.
-  write("bootstrapping native subsystem...\n");
-  write(`${okEnvelope}\n`);
-  process.exit(0);
+  finish(`bootstrapping native subsystem...\n${okEnvelope}\n`, 0);
 } else {
-  write(
+  finish(
     JSON.stringify({
       ok: false,
       error: { code: "worker_internal", message: `unknown fixture scenario: ${scenario}` }
-    })
+    }),
+    3
   );
-  process.exit(3);
 }

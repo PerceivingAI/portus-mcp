@@ -177,10 +177,19 @@ async function loadBindingsOrUnavailable(loadBindings) {
   }
 }
 
+function enumerateWindowsOrUnavailable(Window) {
+  try {
+    return Window.all();
+  } catch (error) {
+    diag(`window enumeration unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    throw new BindingUnavailableError("native window enumeration is unavailable");
+  }
+}
+
 function enumerateEligibleWindows(Window, allowedPids) {
   const allowed = new Set(allowedPids);
   const eligible = [];
-  for (const window of Window.all()) {
+  for (const window of enumerateWindowsOrUnavailable(Window)) {
     const pid = safeInteger(window.pid());
     if (pid === null || !allowed.has(pid)) {
       continue;
@@ -204,7 +213,7 @@ function enumerateEligibleWindows(Window, allowedPids) {
 
 function findFreshWindow(Window, allowedPids, nativeWindowId) {
   const allowed = new Set(allowedPids);
-  for (const window of Window.all()) {
+  for (const window of enumerateWindowsOrUnavailable(Window)) {
     if (safeInteger(window.id()) !== nativeWindowId) {
       continue;
     }

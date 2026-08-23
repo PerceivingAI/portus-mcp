@@ -608,7 +608,7 @@ test("worker contract: capabilities succeeds with the real native binding", asyn
   }
 });
 
-test("worker contract: targets with an impossible PID set returns an empty eligible list", async () => {
+test("worker contract: impossible PID targets return empty on a desktop and binding_unavailable when headless", async () => {
   const result = await runProcess(
     workerPath,
     [],
@@ -619,8 +619,12 @@ test("worker contract: targets with an impossible PID set returns an empty eligi
     })
   );
   const envelope = parseEnvelope(result.stdout);
-  assert.equal(envelope.ok, true);
-  assert.deepEqual(envelope.result.windows, []);
+  if (envelope.ok) {
+    assert.deepEqual(envelope.result.windows, []);
+  } else {
+    assert.equal(result.code, 2);
+    assert.equal(envelope.error.code, ERROR_CODES.bindingUnavailable);
+  }
 });
 
 test("worker contract: capture with an unknown window id fails closed", async () => {
@@ -638,10 +642,14 @@ test("worker contract: capture with an unknown window id fails closed", async ()
       outPath: path.join(tmpdir(), "never-written.png")
     })
   );
-  assert.equal(result.code, 3);
   const envelope = parseEnvelope(result.stdout);
   assert.equal(envelope.ok, false);
-  assert.equal(envelope.error.code, ERROR_CODES.windowNotFound);
+  if (envelope.error.code === ERROR_CODES.bindingUnavailable) {
+    assert.equal(result.code, 2);
+  } else {
+    assert.equal(result.code, 3);
+    assert.equal(envelope.error.code, ERROR_CODES.windowNotFound);
+  }
   assert.ok(!existsSync(path.join(tmpdir(), "never-written.png")));
 });
 
