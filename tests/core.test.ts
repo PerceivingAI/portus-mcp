@@ -43,6 +43,8 @@ process.env.PORTUS_MCP_CONFIG_PATH = configPath;
 delete process.env.PORTUS_MCP_POLICY_PATH;
 process.env.PORTUS_MCP_STATE_DIR = stateDir;
 process.env.PORTUS_MCP_DEFAULT_PROVIDER = "cerebras";
+process.env.PORTUS_MCP_CEREBRAS_MODEL = "llama3.1-8b";
+process.env.CEREBRAS_API_KEY = "test-key";
 process.env.PORTUS_MCP_PROJECTS = `test=${projectRoot}`;
 
 // Stateful modules are loaded only after this test installs its isolated environment paths.
