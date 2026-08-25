@@ -18,11 +18,19 @@ mkdirSync(projectRoot, { recursive: true });
 
 function writeDefaultFakeFlue(): void {
   writeFileSync(fakeFluePath, `
+import { once } from "node:events";
+import { createServer } from "node:net";
 const payloadIndex = process.argv.indexOf("--payload");
 const payload = payloadIndex >= 0 ? JSON.parse(process.argv[payloadIndex + 1]) : {};
 if (payload.task.includes("FAIL")) {
   console.error("fake failure");
   process.exit(7);
+}
+if (payload.task.includes("BLOCK")) {
+  console.log("started block");
+  const server = createServer();
+  server.listen(0);
+  await once(server, "close");
 }
 if (payload.task.includes("SLEEP")) {
   console.log("started sleep");
@@ -439,11 +447,19 @@ await new Promise(() => {});
   writeDefaultFakeFlue();
 });
 
-test("termination outcome follows verification rather than the action exit status", async () => {
+test("termination outcome follows verification rather than the action exit status", async (t) => {
   writeDefaultFakeFlue();
-  const started = await runFlueTask({ projectAlias: "agent", task: "SLEEP TASK", agentTemplate: "ephemeral-project-subagent" });
+  const started = await runFlueTask({ projectAlias: "agent", task: "BLOCK TASK", agentTemplate: "ephemeral-project-subagent" });
   const originalPath = process.env.PATH;
   const originalKill = process.kill;
+  t.after(async () => {
+    process.env.PATH = originalPath;
+    process.kill = originalKill;
+    if (getSession(started.sessionId).status === "running") {
+      await stopFlueTask(started.sessionId);
+    }
+  });
+
   if (process.platform === "win32") {
     const failingBin = path.join(root, "failing-bin");
     mkdirSync(failingBin, { recursive: true });
@@ -456,7 +472,6 @@ test("termination outcome follows verification rather than the action exit statu
       readSessionEvents({ sessionId: started.sessionId }).events.some((event) => event.type === "termination_failed"),
       false
     );
-    process.env.PATH = originalPath;
     return;
   }
 
@@ -471,8 +486,6 @@ test("termination outcome follows verification rather than the action exit statu
     () => runFlueTask({ projectAlias: "agent", task: "LOCK MUST REMAIN", agentTemplate: "ephemeral-project-subagent" }),
     /Project lock active/
   );
-  process.kill = originalKill;
-  await stopFlueTask(started.sessionId);
 });
 
 test("stopping running session releases lock for subsequent sessions", async () => {
