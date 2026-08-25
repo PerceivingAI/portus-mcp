@@ -181,18 +181,11 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   const editTool = tools.tools.find((tool) => tool.name === "project_edit");
   assert.deepEqual(Object.keys(editTool?.inputSchema.properties ?? {}).sort(), ["batchMode", "continueOnFailure", "dryRun", "operations", "projectAlias"]);
   assert.match(readTool?.description ?? "", /skill rootAlias returned by project_context/);
-  assert.match(contextTool?.description ?? "", /catalog-provided skill rootAlias/);
-  for (const reason of [
-    "occurrence_mismatch",
-    "stale_file",
-    "invalid_range",
-    "conflicting_base_hash",
-    "unsupported_batch_mode",
-    "batch_rejected",
-    "batch_failed",
-    "prior_operation_failed"
-  ]) {
-    assert.match(editTool?.description ?? "", new RegExp(`\\b${reason}\\b`));
+  for (const section of ["projects:", "skills:", "status:", "capabilities:", "tree:", "files:", "paths:", "scripts:"]) {
+    assert.equal(contextTool?.description?.includes(section), true);
+  }
+  for (const instruction of ["Batch modes:", "staged:", "ordered:", "dryRun:", "continueOnFailure:"]) {
+    assert.equal(editTool?.description?.includes(instruction), true);
   }
   const includeProperties = ((contextTool?.inputSchema.properties?.include as { properties?: Record<string, unknown> } | undefined)?.properties) ?? {};
   assert.equal("skills" in includeProperties, true);
