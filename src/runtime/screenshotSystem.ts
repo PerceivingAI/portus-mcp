@@ -80,6 +80,7 @@ export const SCREENSHOT_ERROR_CODES = {
   unknownSession: "unknown_session",
   sessionProjectMismatch: "session_project_mismatch",
   confirmationRequired: "confirmation_required",
+  appNotFound: "app_not_found",
   sessionNotRunning: "session_not_running",
   rootPidUnavailable: "root_pid_unavailable",
   processIdentityMismatch: "process_identity_mismatch",
@@ -550,6 +551,7 @@ export type ScreenshotMeta = {
 };
 
 export type ScreenshotOperation =
+  | "app_discovery"
   | "discover_running"
   | "capture_launch"
   | "capture_running"
@@ -1099,8 +1101,8 @@ export function createScreenshotSystem(deps: {
     return {
       enabled: true,
       operations: captureReady
-        ? ["discover_running", "capture_launch", "capture_running", "read", "list", "delete"]
-        : ["read", "list", "delete"]
+        ? ["app_discovery", "discover_running", "capture_launch", "capture_running", "read", "list", "delete"]
+        : ["app_discovery", "read", "list", "delete"]
     };
   }
 

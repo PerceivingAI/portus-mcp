@@ -333,6 +333,59 @@ test("screenshot permission and limits parse strictly", () => {
   assert.equal(limits.maxListPageSize, 100);
 });
 
+test("app discovery policy requires grouped commands and aliases", () => {
+  const { screenshot: _screenshot, ...withoutScreenshot } = selectedPolicy;
+  assert.deepEqual(
+    parsePolicyConfig(withoutScreenshot).screenshot.appDiscovery,
+    { commands: [], aliases: {} }
+  );
+  assert.ok(selectedPolicy.screenshot.appDiscovery.commands.includes("chrome.exe"));
+
+  assert.throws(
+    () => parsePolicyConfig({
+      ...selectedPolicy,
+      screenshot: { appDiscovery: ["chrome.exe"] }
+    }),
+    /screenshot\.appDiscovery/
+  );
+
+  for (const commands of [
+    ["C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"],
+    ["../chrome"],
+    Array.from({ length: 33 }, (_, index) => `app-${index}`)
+  ]) {
+    assert.throws(
+      () => parsePolicyConfig({
+        ...selectedPolicy,
+        screenshot: { appDiscovery: { commands, aliases: {} } }
+      }),
+      /screenshot\.appDiscovery\.commands/
+    );
+  }
+
+  for (const aliases of [
+    { "../helium": "C:\\Apps\\Helium\\chrome.exe" },
+    { helium: "" },
+    Object.fromEntries(Array.from({ length: 33 }, (_, index) => [`app-${index}`, `/apps/${index}`]))
+  ]) {
+    assert.throws(
+      () => parsePolicyConfig({
+        ...selectedPolicy,
+        screenshot: { appDiscovery: { commands: [], aliases } }
+      }),
+      /screenshot\.appDiscovery\.aliases/
+    );
+  }
+
+  assert.throws(
+    () => parsePolicyConfig({
+      ...selectedPolicy,
+      screenshot: { ...selectedPolicy.screenshot, unknownField: true }
+    }),
+    /screenshot/
+  );
+});
+
 
 test("requireConfirmation comes exclusively from the supplied policy", () => {
   const requiredPolicy = withMainAgentPermissions({ requireConfirmation: true });

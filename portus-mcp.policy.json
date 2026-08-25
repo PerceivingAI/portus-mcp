@@ -50,6 +50,12 @@
       "Bitwarden"
     ]
   },
+  "screenshot": {
+    "appDiscovery": {
+      "commands": ["chrome.exe", "msedge.exe", "brave.exe", "firefox.exe", "google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "brave-browser", "firefox", "helium-browser"],
+      "aliases": {}
+    }
+  },
   "limits": {
     "fileRead": {
       "maxChars": 500000

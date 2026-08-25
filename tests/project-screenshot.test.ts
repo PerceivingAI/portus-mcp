@@ -737,14 +737,14 @@ test("capability projection follows binding availability", async () => {
   assert.equal(await h.sys.ensureBindingAvailability(), true);
   const granted = h.sys.getCapabilities();
   assert.equal(granted.enabled, true);
-  assert.deepEqual(granted.operations, ["discover_running", "capture_launch", "capture_running", "read", "list", "delete"]);
+  assert.deepEqual(granted.operations, ["app_discovery", "discover_running", "capture_launch", "capture_running", "read", "list", "delete"]);
 
   const unavailable = screenshot.createScreenshotSystem({
     launchWorker: async () => ({ ok: true, result: { bindingLoaded: false, captureAvailable: false } })
   });
   assert.equal(await unavailable.ensureBindingAvailability(), false);
   const degraded = unavailable.getCapabilities();
-  assert.deepEqual(degraded.operations, ["read", "list", "delete"]);
+  assert.deepEqual(degraded.operations, ["app_discovery", "read", "list", "delete"]);
 });
 
 test("read, list, and delete work through a fresh system instance after a Portus restart", async () => {

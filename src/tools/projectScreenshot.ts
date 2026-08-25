@@ -15,6 +15,7 @@ import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/
 import { loadScreenshotLimits, policyPermissions, type PortusPolicyConfig } from "../policy/policyConfig.js";
 import { assertMainAgentCommandAllowed, assertMainAgentPermission } from "../policy/permissionPolicy.js";
 import { getProject } from "../state/ProjectRegistry.js";
+import { createAppDiscovery, type AppDiscovery } from "../runtime/appDiscovery.js";
 import {
   SCREENSHOT_ERROR_CODES,
   ScreenshotError,
@@ -36,7 +37,7 @@ const projectAliasSchema = z.string().min(1);
 const executionSessionIdSchema = z.string().min(1);
 
 export const projectScreenshotShape = {
-  operation: z.enum(["discover_running", "capture_launch", "capture_running", "read", "list", "delete"]).describe("The screenshot operation to perform: discover_running (list eligible windows for running session), capture_launch (launch command and save screenshot), capture_running (save screenshot of existing running session), read (retrieve image data/metadata), list (paginate saved screenshots), or delete (remove saved screenshot)."),
+  operation: z.enum(["app_discovery", "discover_running", "capture_launch", "capture_running", "read", "list", "delete"]).describe("The screenshot operation to perform: app_discovery (list configured apps found on this machine), discover_running (list eligible windows for running session), capture_launch (launch command and save screenshot), capture_running (save screenshot of existing running session), read (retrieve image data/metadata), list (paginate saved screenshots), or delete (remove saved screenshot)."),
   projectAlias: projectAliasSchema.describe("Registered project alias owning the execution session or command."),
   command: z.string().min(1).optional().describe("For capture_launch: executable to launch (e.g. 'npm', 'node', 'msedge')."),
   args: z.array(z.string()).optional().describe("For capture_launch: command arguments when command is provided."),
@@ -61,6 +62,10 @@ export const projectScreenshotInputSchema = z.object(projectScreenshotShape).str
 
 /** Strict discriminated union schema enforced during execution. */
 export const discriminatedScreenshotSchema = z.discriminatedUnion("operation", [
+  z.object({
+    operation: z.literal("app_discovery"),
+    projectAlias: projectAliasSchema
+  }).strict(),
   z.object({
     operation: z.literal("discover_running"),
     projectAlias: projectAliasSchema,
@@ -161,15 +166,29 @@ function requireConfirmationIfPolicyDemands(
   }
 }
 
+export type ScreenshotToolDependencies = {
+  system?: ScreenshotSystem;
+  appDiscovery?: AppDiscovery;
+  startSession?: typeof startExecutionSession;
+};
+
 export function registerScreenshotTool(
   server: McpServer,
   policy: PortusPolicyConfig,
-  system: ScreenshotSystem = getScreenshotSystem(policy)
+  dependencies: ScreenshotToolDependencies = {}
 ): void {
+  const system = dependencies.system ?? getScreenshotSystem(policy);
+  const appDiscovery = dependencies.appDiscovery ?? createAppDiscovery();
+  const startSession = dependencies.startSession ?? startExecutionSession;
   const execute = async (
     args: z.output<typeof discriminatedScreenshotSchema>
   ): Promise<RichToolResult> => {
       assertMainAgentPermission("projectScreenshot", policy);
+      if (args.operation === "app_discovery") {
+        getProject(args.projectAlias);
+        const apps = await appDiscovery.discover(policy.screenshot.appDiscovery);
+        return { result: { operation: args.operation, apps } };
+      }
       if (args.operation === "discover_running") {
         const targets = await system.listTargets(args.projectAlias, args.executionSessionId);
         return {
@@ -184,12 +203,33 @@ export function registerScreenshotTool(
 
       if (args.operation === "capture_launch") {
         requireConfirmationIfPolicyDemands(policy, "capture_launch", args.confirm);
-        assertMainAgentCommandAllowed(args.command, policy);
+        const resolution = await appDiscovery.resolveConfigured(args.command, policy.screenshot.appDiscovery);
+        let executablePath: string | undefined;
+        if (resolution.configured) {
+          if (args.shell === true) {
+            throw new ScreenshotError(
+              SCREENSHOT_ERROR_CODES.invalidCaptureOptions,
+              "Configured apps must be launched directly without a shell."
+            );
+          }
+          if (resolution.executablePath === null) {
+            throw new ScreenshotError(
+              SCREENSHOT_ERROR_CODES.appNotFound,
+              `Configured app could not be found: ${args.command}`,
+              { command: args.command }
+            );
+          }
+          executablePath = resolution.executablePath;
+        } else {
+          assertMainAgentCommandAllowed(args.command, policy);
+        }
+
         const project = getProject(args.projectAlias);
-        const session = await startExecutionSession({
+        const session = await startSession({
           projectAlias: args.projectAlias,
           rootPath: project.rootPath,
           command: args.command,
+          executablePath,
           args: args.args,
           shell: args.shell,
           policy
@@ -304,7 +344,7 @@ export function registerScreenshotTool(
   server.registerTool(
     "project_screenshot",
     {
-      description: "Take and manage screenshots of GUI applications.\n\nOperations:\n- discover_running: List eligible window IDs when an active session has one or more windows open.\n- capture_launch: Launches a command/application and captures its GUI window (pass command, optional args/shell, closeSession). Set closeSession: true to terminate after capture, or false to keep running.\n- capture_running: Captures an already-running execution session (pass executionSessionId, optional windowId, closeSession). Set closeSession: true to terminate after capture, or false to keep running.\n- read: Retrieve a captured screenshot image or metadata by screenshotId.\n- list: List captured screenshots for an executionSessionId.\n- delete: Delete a captured screenshot by screenshotId.",
+      description: "Take and manage screenshots of GUI applications.\n\nOperations:\n- app_discovery: List configured, usable app names as one deduplicated list without exposing executable paths; aliases override duplicate commands.\n- discover_running: List eligible window IDs when an active session has one or more windows open.\n- capture_launch: Launches a command/application and captures its GUI window (pass command, optional args/shell, closeSession). Configured commands are resolved automatically; aliases use their configured absolute path without fallback. Set closeSession: true to terminate after capture, or false to keep running.\n- capture_running: Captures an already-running execution session (pass executionSessionId, optional windowId, closeSession). Set closeSession: true to terminate after capture, or false to keep running.\n- read: Retrieve a captured screenshot image or metadata by screenshotId.\n- list: List captured screenshots for an executionSessionId.\n- delete: Delete a captured screenshot by screenshotId.",
       inputSchema: projectScreenshotInputSchema,
       annotations: SCREENSHOT_TOOL_ANNOTATIONS
     },

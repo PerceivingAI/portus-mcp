@@ -138,11 +138,31 @@ projectPolicy
 projectScreenshot
 ```
 
-Each tool maps 1:1 to its permission flag: `subagent_task` requires `subagentTask`, `subagent_context` requires `subagentContext`, `project_read` requires `projectRead`, `project_screenshot` requires `projectScreenshot`, and so on. The two subagent permissions are independent, allowing lifecycle control and read-only session inspection to be granted separately. `projectScreenshot` independently gates `discover_running`, `capture_launch`, `capture_running`, `read`, `list`, and `delete`; it is never inferred from `projectRun`, `projectRead`, or `projectEdit`. `project_policy` requires `projectPolicy` for checks and its native actions (`list_audit` and `read_audit`). (`src/policy/policyConfig.ts:46-129`, `src/tools/projectScreenshot.ts`)
+Each tool maps 1:1 to its permission flag: `subagent_task` requires `subagentTask`, `subagent_context` requires `subagentContext`, `project_read` requires `projectRead`, `project_screenshot` requires `projectScreenshot`, and so on. The two subagent permissions are independent, allowing lifecycle control and read-only session inspection to be granted separately. `projectScreenshot` independently gates `app_discovery`, `discover_running`, `capture_launch`, `capture_running`, `read`, `list`, and `delete`; it is never inferred from `projectRun`, `projectRead`, or `projectEdit`. `project_policy` requires `projectPolicy` for checks and its native actions (`list_audit` and `read_audit`). (`src/policy/policyConfig.ts`, `src/tools/projectScreenshot.ts`)
 
 Portus ships with only `git` in `main_agent.permissions.allowedCommands`. Add direct connected-agent executables under that field; spawned subagents use the separate `subagents.permissions.allowedCommands`. Command entries are executable names containing only letters, digits, `.`, `_`, and `-`; arguments and shell command strings do not belong in the allowlist. On Windows, an invocation ending in `.exe`, `.cmd`, or `.bat` can match its configured basename. (`portus-mcp.policy.json:18-37`, `src/policy/policyConfig.ts:15-53`, `src/policy/permissionPolicy.ts:13-18`)
 
 `allowShell` controls whether Portus permits command execution through the platform shell and Windows batch scripts (`.cmd`/`.bat`). When enabled in operator policy (`allowShell: true`), Portus automatically executes allowed batch scripts (such as `npm`, `npx`, `pnpm`) and shell syntax through `cmd.exe /c` on Windows without requiring agent-side permission flags. Direct binaries (`.exe` on Windows, native binaries on POSIX) continue to run directly. When disabled (`allowShell: false`), batch scripts and shell syntax are strictly rejected. (`src/runtime/commands.ts:325-365`, `src/runtime/executionSessions.ts:225-256`)
+
+`screenshot.appDiscovery` is an optional `capture_launch` shortcut configuration for GUI applications. It is not a global command permission or a restriction on which applications an operator may use:
+
+```json
+{
+  "screenshot": {
+    "appDiscovery": {
+      "commands": ["msedge.exe", "notepad.exe"],
+      "aliases": {
+        "chrome": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        "helium": "C:\\Helium\\Application\\chrome.exe"
+      }
+    }
+  }
+}
+```
+
+`commands` preserves automatic resolution through `PATH`, Windows App Paths, and known installation locations. `aliases` maps an agent-facing name to an explicit absolute executable path. Alias names override duplicate command names; an invalid alias path is omitted from `app_discovery` and returns `app_not_found` when launched directly, without falling back to command discovery. Matching and deduplication are case-insensitive on Windows and exact on Linux.
+
+`app_discovery` returns one flat list of usable names and never exposes which entries are commands or aliases. A matching `capture_launch.command` is directly authorized by this operator-controlled configuration without consulting `main_agent.permissions.allowedCommands`. This authorization is confined to `project_screenshot.capture_launch`; it does not authorize the command through `project_run` or another tool. Commands absent from both groups keep the existing `allowedCommands`-controlled launch behavior. Missing configuration defaults to empty `commands` and `aliases`. (`src/runtime/appDiscovery.ts`, `src/tools/projectScreenshot.ts`)
 
 After alias selection, scoped `project_context` projects the selected complete policy into `capabilities`: `complete: true`, exact authorized tool names under `availableTools`, and only enabled dependent `features`. Disabled entries are omitted, not reported as `enabled: false`. `subagent_task` and `subagent_context` appear independently according to `subagentTask` and `subagentContext`; `project_run.allowedCommands` appears only when `projectRun` is enabled; `shell` additionally requires `allowShell`; ignored-file and protected-operation features appear only when their permissions and applicable operations make them usable. The project alias supplies project context but never changes permissions. This report grants permission to attempt an operation, not proof that an executable is installed or that request-specific checks will pass. (`src/tools/projectBroad.ts:60-87`, `src/tools/subagents.ts:206-216`)
 

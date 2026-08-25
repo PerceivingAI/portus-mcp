@@ -76,6 +76,31 @@ test("Execution sessions: start, poll incremental chunks with cursor, and comple
   assert.equal(list.some((s) => s.sessionId === session.sessionId), true);
 });
 
+test("Execution sessions spawn a resolved executable while preserving the logical command", async () => {
+  const session = await startExecutionSession({
+    projectAlias: "test",
+    rootPath: root,
+    command: "chrome.exe",
+    executablePath: process.execPath,
+    args: ["-e", "console.log('resolved-launch')"],
+    timeoutSecs: 60,
+    policy: withMainAgentPermissions({ allowedCommands: ["chrome.exe"] })
+  });
+
+  assert.equal(session.command, "chrome.exe");
+  const deadline = Date.now() + 5000;
+  let pollResult = pollExecutionSession({ sessionId: session.sessionId, cursor: 0 });
+  while (pollResult.status === "running" && Date.now() < deadline) {
+    await delay(20);
+    pollResult = pollExecutionSession({ sessionId: session.sessionId, cursor: 0 });
+  }
+
+  assert.equal(pollResult.status, "completed");
+  assert.equal(pollResult.exitCode, 0);
+  assert.match(pollResult.stdoutChunk, /resolved-launch/);
+  assert.equal(getExecutionSession(session.sessionId).command, "chrome.exe");
+});
+
 test("Execution sessions flush short-lived output before finalization", async () => {
   const testPolicy = withMainAgentPermissions({
     allowedCommands: ["node"]

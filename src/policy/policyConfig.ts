@@ -33,6 +33,23 @@ const screenshotLimitsSchema = z.object({
   }
 });
 
+const appDiscoverySchema = z.object({
+  commands: z.array(safeCommandNameSchema).max(32),
+  aliases: z.record(safeCommandNameSchema, z.string().min(1).max(32767)).superRefine((aliases, context) => {
+    if (Object.keys(aliases).length > 32) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [],
+        message: "aliases must contain at most 32 entries"
+      });
+    }
+  })
+}).strict();
+
+const screenshotConfigSchema = z.object({
+  appDiscovery: appDiscoverySchema
+}).strict();
+
 const policySchema = z.object({
   subagents: z.object({
     concurrency: z.object({
@@ -76,6 +93,7 @@ const policySchema = z.object({
   pathPolicy: z.object({
     blockedPatterns: z.array(z.string().min(1))
   }).strict(),
+  screenshot: screenshotConfigSchema.default({ appDiscovery: { commands: [], aliases: {} } }),
   limits: z.object({
     fileRead: z.object({
       maxChars: z.number().int().positive()

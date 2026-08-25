@@ -57,6 +57,8 @@ export type StartExecutionSessionOptions = {
   projectAlias: string;
   rootPath: string;
   command: string;
+  /** Trusted, already-resolved executable used for spawning while `command` remains the public identity. */
+  executablePath?: string;
   args?: string[];
   timeoutSecs?: number;
   shell?: boolean;
@@ -225,7 +227,17 @@ export async function startExecutionSession(options: StartExecutionSessionOption
   const policy = options.policy ?? loadPolicyConfig();
   const allowShell = policyPermissions(policy).main_agent.allowShell;
   const isWin = process.platform === "win32";
-  const isBatchScript = isWin && (/\.(cmd|bat)$/i.test(options.command) || ["npm", "npx", "pnpm", "yarn", "corepack", "gradlew"].includes(options.command.toLowerCase()));
+  if (options.executablePath !== undefined) {
+    if (!path.isAbsolute(options.executablePath)) {
+      throw new Error("Resolved execution-session executable path must be absolute");
+    }
+    if (options.shell === true) {
+      throw new Error("Resolved execution-session executables cannot run through a shell");
+    }
+  }
+  const isBatchScript = options.executablePath === undefined
+    && isWin
+    && (/\.(cmd|bat)$/i.test(options.command) || ["npm", "npx", "pnpm", "yarn", "corepack", "gradlew"].includes(options.command.toLowerCase()));
 
   if (isBatchScript && !allowShell) {
     throw new Error("Windows batch scripts (.cmd/.bat) require allowShell: true in policy");
@@ -240,11 +252,11 @@ export async function startExecutionSession(options: StartExecutionSessionOption
   delete env.GIT_DIR;
   delete env.GIT_WORK_TREE;
 
-  let execCommand = options.command;
+  let execCommand = options.executablePath ?? options.command;
   let execArgs = options.args ?? [];
   let shellOption = false;
 
-  if (allowShell) {
+  if (options.executablePath === undefined && allowShell) {
     if (isWin) {
       if (isBatchScript || (options.args ?? []).some((arg) => /[&|<>^%*?]/.test(arg))) {
         execCommand = "cmd.exe";

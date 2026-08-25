@@ -347,7 +347,7 @@ See `docs/TOOLS.md` for the current tool contract and `docs/BROAD_MOBILITY_SURFA
 
 ## Session-owned screenshots
 
-`project_screenshot` captures visible application windows owned by a running `project_run` execution session (`capture_running`) or launches a command directly and captures its window (`capture_launch`). Enable `main_agent.permissions.projectScreenshot` in the selected policy. (`src/tools/projectScreenshot.ts`, `src/runtime/screenshotSystem.ts`)
+`project_screenshot` can list configured GUI applications installed on the host (`app_discovery`), capture visible application windows owned by a running `project_run` execution session (`capture_running`), or launch a command directly and capture its window (`capture_launch`). Configured apps are resolved to their installed executable path inside `capture_launch`; the agent supplies only the configured command name and optional launch arguments. Enable `main_agent.permissions.projectScreenshot` in the selected policy. (`src/tools/projectScreenshot.ts`, `src/runtime/appDiscovery.ts`, `src/runtime/screenshotSystem.ts`)
 
 ```json
 {
@@ -359,7 +359,7 @@ See `docs/TOOLS.md` for the current tool contract and `docs/BROAD_MOBILITY_SURFA
 }
 ```
 
-Operations are `discover_running`, `capture_launch`, `capture_running`, `read`, `list`, and `delete`. Capture operations require `closeSession: boolean` to explicitly declare whether the execution session process tree should be terminated immediately following successful capture (`closeSession=true`) or remain open (`closeSession=false`). Captures and read return native MCP image content unless `returnImage=false`. Files are stored under `.portus-artifacts/screenshots/<executionSessionId>/` in the selected registered project and remain there until an explicit `delete` request. Portus does not capture desktops, monitors, active windows, arbitrary host windows, or screen regions.
+Operations are `app_discovery`, `discover_running`, `capture_launch`, `capture_running`, `read`, `list`, and `delete`. `screenshot.appDiscovery.commands` contains names resolved through normal discovery; `screenshot.appDiscovery.aliases` maps agent-facing names to absolute executable paths. `app_discovery` returns one flat, deduplicated list of usable names without launching apps or exposing paths, and aliases win name collisions. A matching `capture_launch.command` is authorized by that operator-controlled shortcut configuration and launched directly without consulting `main_agent.permissions.allowedCommands`; commands absent from it retain the existing allowlist-controlled launch behavior. Capture operations require `closeSession: boolean` to explicitly declare whether the execution session process tree should be terminated immediately following successful capture (`closeSession=true`) or remain open (`closeSession=false`). Captures and read return native MCP image content unless `returnImage=false`. Files are stored under `.portus-artifacts/screenshots/<executionSessionId>/` in the selected registered project and remain there until an explicit `delete` request.
 
 Windows, macOS, and Linux X11 use the npm-installed native worker. Wayland returns `unsupported_session_window_capture`.
 

@@ -9,6 +9,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { PortusPolicyConfig } from "../src/policy/policyConfig.js";
 import type { ScreenshotSystem } from "../src/runtime/screenshotSystem.js";
+import type { AppDiscovery, AppDiscoveryConfig } from "../src/runtime/appDiscovery.js";
+import type { PublicExecutionSession, StartExecutionSessionOptions } from "../src/runtime/executionSessions.js";
+import type { ScreenshotToolDependencies } from "../src/tools/projectScreenshot.js";
 
 const isolatedRoot = mkdtempSync(path.join(tmpdir(), "portus-screenshot-tool-test-"));
 process.env.PORTUS_MCP_STATE_DIR = path.join(isolatedRoot, "state");
@@ -22,15 +25,24 @@ const basePolicy = parsePolicyConfig(JSON.parse(readFileSync("portus-mcp.policy.
 const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const screenshotId = "20260822T100000Z_abcdef12.png";
 
-function policyWith(options: { permission?: boolean; confirmation?: boolean } = {}): PortusPolicyConfig {
+function policyWith(options: {
+  permission?: boolean;
+  confirmation?: boolean;
+  allowedCommands?: string[];
+  appDiscovery?: AppDiscoveryConfig;
+} = {}): PortusPolicyConfig {
   return parsePolicyConfig({
     ...basePolicy,
     main_agent: {
       permissions: {
         ...basePolicy.main_agent.permissions,
         projectScreenshot: options.permission ?? true,
-        requireConfirmation: options.confirmation ?? false
+        requireConfirmation: options.confirmation ?? false,
+        allowedCommands: options.allowedCommands ?? basePolicy.main_agent.permissions.allowedCommands
       }
+    },
+    screenshot: {
+      appDiscovery: options.appDiscovery ?? basePolicy.screenshot.appDiscovery
     }
   });
 }
@@ -39,7 +51,7 @@ function makeSystem(overrides: Partial<ScreenshotSystem> = {}): ScreenshotSystem
   return {
     getCapabilities: () => ({
       enabled: true,
-      operations: ["discover_running", "capture_launch", "capture_running", "read", "list", "delete"]
+      operations: ["app_discovery", "discover_running", "capture_launch", "capture_running", "read", "list", "delete"]
     }),
     ensureBindingAvailability: async () => true,
     refreshBindingAvailability: () => undefined,
@@ -85,9 +97,36 @@ function makeSystem(overrides: Partial<ScreenshotSystem> = {}): ScreenshotSystem
   };
 }
 
-async function createHarness(t: test.TestContext, policy: PortusPolicyConfig, system: ScreenshotSystem) {
+function runningSession(options: StartExecutionSessionOptions): PublicExecutionSession {
+  return {
+    sessionId: "exec_1000_browser",
+    projectAlias: options.projectAlias,
+    command: options.command,
+    args: options.args ?? [],
+    status: "running",
+    startedAt: "2026-08-22T10:00:00.000Z",
+    elapsedMs: 0,
+    stdoutBytes: 0,
+    stderrBytes: 0,
+    lifecycle: {
+      processStarted: true,
+      processExited: false,
+      killAttempted: false,
+      killSucceeded: false,
+      waitAttempted: false,
+      reaped: false
+    }
+  };
+}
+
+async function createHarness(
+  t: test.TestContext,
+  policy: PortusPolicyConfig,
+  system: ScreenshotSystem,
+  dependencies: Omit<ScreenshotToolDependencies, "system"> = {}
+) {
   const server = new McpServer({ name: "screenshot-tool-unit", version: "0.1.1" });
-  registerScreenshotTool(server, policy, system);
+  registerScreenshotTool(server, policy, { system, ...dependencies });
   const client = new Client({ name: "screenshot-tool-unit-client", version: "0.1.1" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
@@ -107,6 +146,155 @@ function structuredResult(response: CallToolResult): Record<string, unknown> {
 }
 
 test.after(() => rmSync(isolatedRoot, { recursive: true, force: true }));
+
+test("app_discovery returns configured app names without launching or exposing paths", async (t) => {
+  const appDiscovery: AppDiscovery = {
+    discover: async (commands) => {
+      assert.deepEqual(commands, {
+        commands: ["chrome.exe", "msedge.exe"],
+        aliases: { helium: "C:\\Apps\\Helium\\chrome.exe" }
+      });
+      return ["chrome.exe", "helium"];
+    },
+    resolveConfigured: async () => {
+      throw new Error("app_discovery must not resolve a capture command");
+    }
+  };
+  const client = await createHarness(
+    t,
+    policyWith({
+      appDiscovery: {
+        commands: ["chrome.exe", "msedge.exe"],
+        aliases: { helium: "C:\\Apps\\Helium\\chrome.exe" }
+      }
+    }),
+    makeSystem(),
+    { appDiscovery }
+  );
+
+  const result = structuredResult(await client.callTool({
+    name: "project_screenshot",
+    arguments: { operation: "app_discovery", projectAlias: "fixture" }
+  }));
+  assert.deepEqual(result.apps, ["chrome.exe", "helium"]);
+  assert.equal(JSON.stringify(result).includes("Program Files"), false);
+});
+
+test("capture_launch resolves configured apps without requiring allowedCommands and preserves the logical command", async (t) => {
+  const executablePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+  let started: StartExecutionSessionOptions | undefined;
+  const appDiscovery: AppDiscovery = {
+    discover: async () => [],
+    resolveConfigured: async (command, commands) => {
+      assert.equal(command, "CHROME.EXE");
+      assert.deepEqual(commands, { commands: ["chrome.exe"], aliases: {} });
+      return { configured: true, executablePath };
+    }
+  };
+  const client = await createHarness(
+    t,
+    policyWith({
+      allowedCommands: ["git"],
+      appDiscovery: { commands: ["chrome.exe"], aliases: {} }
+    }),
+    makeSystem(),
+    {
+      appDiscovery,
+      startSession: async (options) => {
+        started = options;
+        return runningSession(options);
+      }
+    }
+  );
+
+  structuredResult(await client.callTool({
+    name: "project_screenshot",
+    arguments: {
+      operation: "capture_launch",
+      projectAlias: "fixture",
+      command: "CHROME.EXE",
+      args: ["https://example.com"],
+      closeSession: false,
+      returnImage: false
+    }
+  }));
+  assert.equal(started?.command, "CHROME.EXE");
+  assert.equal(started?.executablePath, executablePath);
+});
+
+test("capture_launch preserves the existing path for commands outside appDiscovery", async (t) => {
+  let started: StartExecutionSessionOptions | undefined;
+  const appDiscovery: AppDiscovery = {
+    discover: async () => [],
+    resolveConfigured: async () => ({ configured: false })
+  };
+  const client = await createHarness(
+    t,
+    policyWith({
+      allowedCommands: ["git"],
+      appDiscovery: { commands: ["chrome.exe"], aliases: {} }
+    }),
+    makeSystem(),
+    {
+      appDiscovery,
+      startSession: async (options) => {
+        started = options;
+        return runningSession(options);
+      }
+    }
+  );
+
+  structuredResult(await client.callTool({
+    name: "project_screenshot",
+    arguments: {
+      operation: "capture_launch",
+      projectAlias: "fixture",
+      command: "git",
+      args: ["status"],
+      closeSession: false,
+      returnImage: false
+    }
+  }));
+  assert.equal(started?.command, "git");
+  assert.equal(started?.executablePath, undefined);
+});
+
+test("capture_launch returns app_not_found and does not launch when configured resolution fails", async (t) => {
+  let launchAttempted = false;
+  const appDiscovery: AppDiscovery = {
+    discover: async () => [],
+    resolveConfigured: async () => ({ configured: true, executablePath: null })
+  };
+  const client = await createHarness(
+    t,
+    policyWith({
+      allowedCommands: ["git"],
+      appDiscovery: { commands: ["chrome.exe"], aliases: {} }
+    }),
+    makeSystem(),
+    {
+      appDiscovery,
+      startSession: async (options) => {
+        launchAttempted = true;
+        return runningSession(options);
+      }
+    }
+  );
+
+  const response = await client.callTool({
+    name: "project_screenshot",
+    arguments: {
+      operation: "capture_launch",
+      projectAlias: "fixture",
+      command: "chrome.exe",
+      closeSession: false,
+      returnImage: false
+    }
+  });
+  assert.equal(response.isError, true);
+  assert.match(JSON.stringify(response.structuredContent), /app_not_found/);
+  assert.equal(launchAttempted, false);
+});
 
 test("capture_running returns one native image block and returnImage=false omits it", async (t) => {
   let reads = 0;

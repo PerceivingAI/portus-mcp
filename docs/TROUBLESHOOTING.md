@@ -103,6 +103,8 @@ main_agent.permissions.projectScreenshot=true
 
 Restart Portus after changing the policy. `discover_running` and `capture_running` require a running execution session created by `project_run.sessionAction.type="start"`; `capture_launch` spawns its own session directly. A manually launched application outside Portus has no screenshot ownership identity.
 
+`app_not_found` means `capture_launch.command` matched `screenshot.appDiscovery`, but its command could not be resolved or its alias path was not an executable file. Call `app_discovery` to list usable configured names. An invalid alias never falls back to a duplicate command entry.
+
 `screenshot_binding_unavailable` means the npm-installed native package could not load. Re-run `npm install` on the target machine. Linux X11 additionally requires `libxcb`, `libxrandr`, and D-Bus runtime libraries. `unsupported_session_window_capture` is the expected fail-closed result on unsupported Wayland capture.
 
 `session_window_not_found` means the running session currently owns no visible, non-minimized top-level window. `multiple_session_windows` returns opaque candidates; retry `capture_running` with one candidate `windowId`. Window tokens expire after `limits.screenshot.windowTokenTtlMs`, so call `discover_running` again after expiry or application hot reload.

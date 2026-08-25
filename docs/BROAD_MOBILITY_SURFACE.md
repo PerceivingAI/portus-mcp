@@ -32,7 +32,7 @@ The adapters divide work by intent:
 | `project_patch` | Patch preparation or application, including preconditions and dry runs. |
 | `project_run` | Approved checks, package scripts, or allowlisted device-installed commands. |
 | `project_policy` | Ordered permission, path-decision, and safe read-only effective-configuration checks, or one native audit action. |
-| `project_screenshot` | Session-owned GUI target discovery, PNG/JPEG capture, managed read/list, and explicit delete under a dedicated permission. |
+| `project_screenshot` | Configured application discovery, session-owned GUI target discovery, direct launch and PNG/JPEG capture, managed read/list, and explicit delete under a dedicated permission. |
 | `subagent_task` | Subagent lifecycle management using discriminated action union (`start`, `stop`, `cleanup`). |
 | `subagent_context` | Batch read subagent status, events, stdout/stderr logs, and collected results. |
 
