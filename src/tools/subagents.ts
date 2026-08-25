@@ -86,7 +86,7 @@ export function registerSubagentTools(server: McpServer, registry: SkillRegistry
   registerTool(
     server,
     "subagent_task",
-    "Manage subagent task lifecycles through batched action requests (start, stop, cleanup).",
+    "Manage subagent task lifecycles. Batch multiple actions in one call when needed.\n\nActions:\n- start: Start a subagent task for a registered project.\n- stop: Stop tasks selected by sessionId or projectAlias.\n- cleanup: Remove completed task state selected by sessionId, projectAlias, or age. Use dryRun to preview cleanup.",
     {
       actions: z.array(subagentTaskActionSchema).min(1)
     },
@@ -206,7 +206,7 @@ export function registerSubagentTools(server: McpServer, registry: SkillRegistry
   registerTool(
     server,
     "subagent_context",
-    "Inspect subagent state, outputs, events, capabilities, and listings through batched read requests.",
+    "Inspect subagent sessions without changing them. Batch multiple requests in one call when needed.\n\nRequests:\n- list: List sessions, optionally filtered by project, status, activity, or age.\n- status: Read one session's current state.\n- output: Read stdout, stderr, collected result, or all output for one session.\n- events: Read session events, optionally after a sequence number.\n- capabilities: Read available subagent capabilities for a project or agent template.",
     {
       requests: z.array(subagentContextRequestSchema).min(1)
     },

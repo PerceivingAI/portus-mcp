@@ -432,7 +432,7 @@ const expectedFileSchema = z.object({
 }).strict();
 
 export function registerProjectReadTool(server: McpServer, registry: SkillRegistrySnapshot, policy: PortusPolicyConfig = loadPolicyConfig()): void {
-  registerStrictProjectTool(server, "project_read", "Read content or metadata from registered project paths and configured read-only skill paths. Text content results include the complete raw-file SHA-256, including for bounded or truncated reads. Use a project alias or a skill rootAlias returned by project_context; skill entrypoints and supporting files use their catalog-provided relative paths. Supports 1–50 batched content, binary, metadata, or existence requests with ordered per-item results.", {
+  registerStrictProjectTool(server, "project_read", "Read files from a registered project or available skill. Pass a project alias or skill rootAlias and batch up to 50 requests.\n\nModes:\n- content: Read text content. Optionally pass startLine and endLine for a line range.\n- binary: Read binary file data.\n- metadata: Read file metadata.\n- exists: Check whether a path exists.\n\nText reads return the complete file hash, including bounded and truncated reads.", {
     projectAlias: z.string().min(1),
     requests: z.array(z.object({ relativePath: z.string().min(1), mode: z.enum(["content", "binary", "metadata", "exists"]).default("content"), startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional() }).strict().superRefine((request, context) => { if (request.mode !== "content" && (request.startLine !== undefined || request.endLine !== undefined)) context.addIssue({ code: z.ZodIssueCode.custom, message: "Line ranges are only valid for content mode" }); })).min(1).max(50)
   }, readAnnotations, async ({ projectAlias, requests }) => {
@@ -464,7 +464,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
   registerProjectReadTool(server, registry, policy);
 
   const treeSchema = z.object({ relativePath: z.string().min(1).optional(), maxDepth: z.number().int().positive().max(20).optional(), includeFiles: z.boolean().optional(), includeDirs: z.boolean().optional(), maxEntries: z.number().int().positive().max(20000).optional(), format: z.enum(["tree", "json", "flat"]).optional() }).strict();
-  registerStrictProjectTool(server, "project_context", "Discover registered projects and available read-only skills, or inspect the complete effective capability allowlist, bounded trees, file listings, and path metadata using either a registered project alias or a catalog-provided skill rootAlias. The registered MCP catalog may contain tools unavailable under policy; capabilities.availableTools is the complete allowlist, and absent tools must not be invoked. Project status, capabilities, and package scripts are available only for registered projects.", {
+  registerStrictProjectTool(server, "project_context", "Discover projects and skills, or inspect a selected project or skill.\n\nSections:\n- projects: List registered project aliases. No projectAlias is required.\n- skills: List available skills and their rootAlias values. No projectAlias is required.\n- status: Read status for a registered project.\n- capabilities: Read the complete availableTools list for a registered project. Do not invoke tools absent from this list.\n- tree: Return a bounded directory tree for a project or skill rootAlias.\n- files: List files under a project or skill rootAlias.\n- paths: Read metadata for selected project or skill paths.\n- scripts: List package scripts for a registered project.", {
     projectAlias: z.string().min(1).optional().describe("Registered project alias, or a skill rootAlias returned by include.skills for tree, files, and paths."), include: z.object({ projects: z.boolean().optional(), skills: z.boolean().optional(), status: z.boolean().optional(), capabilities: z.boolean().optional(), tree: treeSchema.optional(), files: z.object({ relativePath: z.string().min(1).optional(), maxEntries: z.number().int().positive().max(10000).optional() }).strict().optional(), paths: z.array(z.object({ relativePath: z.string().min(1), includeHash: z.boolean().optional() }).strict()).max(100).optional(), scripts: z.boolean().optional() }).strict().optional()
   }, readAnnotations, async ({ projectAlias, include }) => {
     const requested = include ?? { status: true, capabilities: true, tree: { maxDepth: 2, maxEntries: 200 }, scripts: true };
@@ -520,7 +520,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     expect: z.enum(["present", "absent"]).optional()
   }).strict();
 
-  registerStrictProjectTool(server, "project_search", "Search project file paths, text, symbols, or all three within authoritative scan and output limits.", {
+  registerStrictProjectTool(server, "project_search", "Search a registered project. Batch up to 20 search requests.\n\nModes:\n- files: Search file paths.\n- text: Search file contents.\n- symbols: Search symbol-like text.\n- all: Run file, text, and symbol search together.\n\nEach request can set its relative path, case sensitivity, regex behavior, context lines, expected presence, and result limit.", {
     projectAlias: z.string().min(1),
     requests: z.array(searchRequestSchema).min(1).max(20)
   }, readAnnotations, async ({ projectAlias, requests }) => {
@@ -645,7 +645,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     };
   });
 
-  registerStrictProjectTool(server, "project_patch", "Prepare patch metadata or safely apply a unified diff or structured patch inside a registered project.", {
+  registerStrictProjectTool(server, "project_patch", "Prepare or apply a unified diff or structured patch inside a registered project.\n\nModes:\n- prepare: Inspect affected files and return current expectedFiles metadata for a later apply request.\n- apply: Validate and apply the patch. Pass expectedFiles from prepare for stale-file protection.\n\nOptions:\n- dryRun: Validate an apply request without changing files.\n- confirm: Confirm file deletion when required by policy.", {
     projectAlias: z.string().min(1), mode: z.enum(["prepare", "apply"]), patch: patchInputSchema, includeHash: z.boolean().optional(), expectedFiles: z.array(expectedFileSchema).optional(), dryRun: z.boolean().optional(), confirm: z.boolean().optional()
   }, mutateAnnotations, async ({ projectAlias, mode, patch, includeHash, expectedFiles, dryRun, confirm }) => {
     assertMainAgentPermission("projectPatch", policy);
@@ -783,7 +783,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     }).strict()
   ]);
 
-  registerStrictProjectTool(server, "project_run", "Run an approved check, package script, or allowlisted command with bounded timeout and output, or manage observable execution sessions.", {
+  registerStrictProjectTool(server, "project_run", "Run project checks, package scripts, permitted commands, or observable execution sessions.\n\nRequest types:\n- check: Run a configured project check.\n- script: Run a package script with optional arguments.\n- command: Run a permitted command with an argument array.\n\nSession actions:\n- start: Start a long-running observable process.\n- poll: Read incremental output and current session state.\n- terminate: Stop the session and its process tree.\n- list: List execution sessions for the project.\n\nUse batched requests for work that should finish during the call. Use session actions for processes that must remain observable across calls.", {
     projectAlias: z.string().min(1),
     batchTimeoutSecs: z.number().int().positive().max(3600).optional(),
     stopOnFailure: z.boolean().default(false),
@@ -1046,7 +1046,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     };
   });
 
-  registerStrictProjectTool(server, "project_edit", "Apply a policy-checked edit batch. Staged execution is the default for write and text edits: it evaluates projected same-path state, revalidates every base before commit, and writes each changed path once. Use batchMode=ordered for filesystem sequencing or continueOnFailure. Rejected and skipped operations use the typed reasons occurrence_mismatch, stale_file, invalid_range, conflicting_base_hash, unsupported_batch_mode, batch_rejected, batch_failed, and prior_operation_failed. conflicting_base_hash identifies contradictory same-path base guards; stale_file identifies an expected or revalidated on-disk base mismatch.", {
+  registerStrictProjectTool(server, "project_edit", "Edit files inside a registered project.\n\nBatch modes:\n- staged: Default for write, replace, insert, and replace_range. Evaluate related same-file edits together before committing them.\n- ordered: Use for copy, move, delete, mkdir, rmdir, or intentionally sequential changes.\n\nOptions:\n- dryRun: Return the planned result without modifying files.\n- continueOnFailure: Continue ordered execution after an operation fails.", {
     projectAlias: z.string().min(1),
     operations: z.array(editOperationSchema).min(1).max(50),
     batchMode: editBatchModeSchema,

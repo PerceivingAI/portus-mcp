@@ -157,7 +157,7 @@ export function toPublicAuditEvent(event: Record<string, unknown>): PublicAuditE
 }
 
 export function registerBroadPolicyTools(server: McpServer, policy: PortusPolicyConfig = loadPolicyConfig()): void {
-  registerStrictProjectTool(server, "project_policy", "Evaluate policy checks or perform one native project-policy action.", {
+  registerStrictProjectTool(server, "project_policy", "Check effective project policy or inspect audit records. Provide checks or one action, never both.\n\nInputs:\n- checks: Evaluate permission, path, configuration, command, or related policy decisions.\n- action list_audit: List available audit events.\n- action read_audit: Read selected audit records.\n\nThis tool does not change policy.", {
     checks: z.array(policyCheckSchema).min(1).max(250).optional(),
     action: policyActionSchema.optional()
   }, { readOnlyHint: false, destructiveHint: true, openWorldHint: false }, async ({ checks, action }) => {
