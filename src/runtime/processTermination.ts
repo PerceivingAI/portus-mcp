@@ -3,15 +3,20 @@ import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 
 export type ProcessTerminationMethod = "process_group" | "taskkill_tree" | "win32_job_object" | "descendant_fallback";
+export type ProcessTerminationOutcome = "terminated" | "termination_unverified" | "termination_failed";
+export type ProcessTerminationVerification = "confirmed_absent" | "confirmed_alive" | "unavailable";
 
 export type ProcessTreeTerminationResult = {
   attempted: true;
   scope: "process_tree";
   method: ProcessTerminationMethod;
+  outcome: ProcessTerminationOutcome;
+  verification: ProcessTerminationVerification;
   confirmed: boolean;
   childCloseObserved: boolean;
-  descendantsRemaining?: number;
-  error?: string;
+  descendantsRemaining: number;
+  actionError?: string;
+  verificationError?: string;
 };
 
 export type ProcessLifecycle = {
@@ -24,9 +29,12 @@ export type ProcessLifecycle = {
   processTreeKillAttempted?: boolean;
   processTreeKillSucceeded?: boolean;
   descendantsRemaining?: number;
+  terminationOutcome?: ProcessTerminationOutcome;
+  terminationVerification?: ProcessTerminationVerification;
+  terminationActionError?: string;
+  terminationVerificationError?: string;
   scope?: "process_tree" | "direct_child";
   method?: ProcessTerminationMethod;
-  error?: string;
 };
 
 export type ProcessTreeTerminationOptions = {
@@ -41,6 +49,33 @@ const terminationPromises = new WeakMap<ChildProcess, Promise<ProcessTreeTermina
 function processErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.replace(/[\r\n\t]+/g, " ").trim().slice(0, 2000) || "Process-tree termination failed";
+}
+
+function terminationResult(options: {
+  method: ProcessTerminationMethod;
+  verification: ProcessTerminationVerification;
+  childCloseObserved: boolean;
+  descendantsRemaining: number;
+  actionError?: string;
+  verificationError?: string;
+}): ProcessTreeTerminationResult {
+  const outcome: ProcessTerminationOutcome = options.verification === "confirmed_absent"
+    ? "terminated"
+    : options.verification === "confirmed_alive"
+      ? "termination_failed"
+      : "termination_unverified";
+  return {
+    attempted: true,
+    scope: "process_tree",
+    method: options.method,
+    outcome,
+    verification: options.verification,
+    confirmed: options.verification === "confirmed_absent",
+    childCloseObserved: options.childCloseObserved,
+    descendantsRemaining: options.descendantsRemaining,
+    ...(options.actionError ? { actionError: options.actionError } : {}),
+    ...(options.verificationError ? { verificationError: options.verificationError } : {})
+  };
 }
 
 function hasChildExited(child: ChildProcess): boolean {
@@ -371,9 +406,13 @@ function parsePidArray(text: string): number[] | null {
   return pids;
 }
 
-export async function getWindowsDescendants(rootPid: number): Promise<number[]> {
+async function getWindowsDescendantSnapshot(rootPid: number): Promise<number[] | null> {
   const text = await runWindowsProcessTreeQuery("GetDescendants", rootPid);
-  return text === null ? [] : (parsePidArray(text) ?? []);
+  return text === null ? null : parsePidArray(text);
+}
+
+export async function getWindowsDescendants(rootPid: number): Promise<number[]> {
+  return (await getWindowsDescendantSnapshot(rootPid)) ?? [];
 }
 
 export async function getWindowsSessionProcessSnapshot(rootPid: number): Promise<SessionProcessSnapshot | null> {
@@ -417,7 +456,7 @@ async function runTaskkill(pid: number): Promise<void> {
     windowsHide: true
   });
   const [code] = await once(killer, "close") as [number | null, NodeJS.Signals | null];
-  if (code !== 0) throw new Error(`taskkill failed for process ${pid} with exit code ${code}`);
+  if (code !== 0) throw new Error(`taskkill failed with exit code ${code}`);
 }
 
 function forceTrackedChild(child: ChildProcess): void {
@@ -437,122 +476,148 @@ async function performProcessTreeTermination(
   const method: ProcessTerminationMethod = process.platform === "win32" ? "taskkill_tree" : "process_group";
   const pid = child.pid;
   if (!pid) {
-    return {
-      attempted: true,
-      scope: "process_tree",
+    return terminationResult({
       method,
-      confirmed: false,
+      verification: "unavailable",
       childCloseObserved: hasChildClosed(child),
-      error: "Cannot terminate process tree without a process id"
-    };
+      descendantsRemaining: 0,
+      verificationError: "Cannot verify process-tree termination without a process id"
+    });
   }
-  let knownPosixDescendants: number[] = [];
 
-  try {
-    if (process.platform === "win32") {
-      let taskkillError: Error | undefined;
-      let taskkillSucceeded = false;
-      if (!hasChildClosed(child)) {
-        try {
-          await runTaskkill(pid);
-          taskkillSucceeded = true;
-        } catch (err) {
-          taskkillError = err instanceof Error ? err : new Error(String(err));
-          if (!hasChildExited(child)) throw taskkillError;
+  if (process.platform === "win32") {
+    let actionError: string | undefined;
+    let verificationError: string | undefined;
+    const descendantSnapshot = await getWindowsDescendantSnapshot(pid);
+    if (descendantSnapshot === null) {
+      verificationError = "Unable to capture the Windows process tree before termination";
+    }
+
+    if (!hasChildClosed(child)) {
+      try {
+        await runTaskkill(pid);
+      } catch (error) {
+        actionError = processErrorMessage(error);
+        if (descendantSnapshot !== null) {
+          for (const descendantPid of descendantSnapshot) {
+            try {
+              await forceKillPid(descendantPid);
+            } catch (fallbackError) {
+              const message = processErrorMessage(fallbackError);
+              actionError = actionError ? `${actionError}; descendant fallback failed: ${message}` : message;
+            }
+          }
         }
-      }
-
-      let descendantPids: number[] = [];
-      if (!taskkillSucceeded) {
-        descendantPids = await getWindowsDescendants(pid);
-        for (const dPid of descendantPids) {
-          if (isProcessAlive(dPid)) {
-            await forceKillPid(dPid);
+        if (options.fallbackToTrackedChild !== false) {
+          try {
+            forceTrackedChild(child);
+          } catch (fallbackError) {
+            const message = processErrorMessage(fallbackError);
+            actionError = actionError ? `${actionError}; root fallback failed: ${message}` : message;
           }
         }
       }
-
-      const childCloseObserved = await waitForChildClose(child, options.forcedCloseGraceMs);
-      const remainingDescendants = descendantPids.filter(isProcessAlive);
-      const isRootAlive = isProcessAlive(pid);
-      const totalRemaining = remainingDescendants.length + (isRootAlive ? 1 : 0);
-
-      if (!childCloseObserved && !hasChildClosed(child)) {
-        throw new Error(taskkillError?.message ?? `Process ${pid} did not close after taskkill`);
-      }
-      if (totalRemaining > 0) {
-        throw new Error(`Process tree ${pid} has ${totalRemaining} surviving descendant process(es): [${remainingDescendants.join(", ")}]`);
-      }
-      return {
-        attempted: true,
-        scope: "process_tree",
-        method,
-        confirmed: true,
-        childCloseObserved: true,
-        descendantsRemaining: 0
-      };
     }
 
-    knownPosixDescendants = await getPosixDescendants(pid);
-    for (const descendantPid of [...knownPosixDescendants].reverse()) {
+    let childCloseObserved = hasChildClosed(child);
+    try {
+      childCloseObserved = await waitForChildClose(child, options.forcedCloseGraceMs);
+    } catch (error) {
+      const message = processErrorMessage(error);
+      verificationError = verificationError ? `${verificationError}; ${message}` : message;
+    }
+
+    if (descendantSnapshot === null) {
+      return terminationResult({
+        method,
+        verification: "unavailable",
+        childCloseObserved,
+        descendantsRemaining: isProcessAlive(pid) ? 1 : 0,
+        actionError,
+        verificationError
+      });
+    }
+
+    const descendantsRemaining = descendantSnapshot.filter(isProcessAlive).length + (isProcessAlive(pid) ? 1 : 0);
+    return terminationResult({
+      method,
+      verification: descendantsRemaining === 0 ? "confirmed_absent" : "confirmed_alive",
+      childCloseObserved,
+      descendantsRemaining,
+      actionError,
+      ...(descendantsRemaining > 0
+        ? { verificationError: "One or more tracked processes remained alive after termination" }
+        : {})
+    });
+  }
+
+  let knownDescendants: number[] | null = null;
+  let actionError: string | undefined;
+  let verificationError: string | undefined;
+  try {
+    knownDescendants = await getPosixDescendants(pid);
+  } catch (error) {
+    verificationError = processErrorMessage(error);
+  }
+
+  try {
+    for (const descendantPid of [...(knownDescendants ?? [])].reverse()) {
       signalProcess(descendantPid, "SIGTERM");
     }
     if (!hasProcessGroupExited(pid)) signalProcessGroup(pid, "SIGTERM");
 
-    const exitedDuringGrace = await waitForPosixTreeExit(pid, knownPosixDescendants, options.escalationDelayMs);
-    if (!exitedDuringGrace) {
-      for (const descendantPid of remainingProcesses(knownPosixDescendants).reverse()) {
-        signalProcess(descendantPid, "SIGKILL");
+    if (knownDescendants !== null) {
+      const exitedDuringGrace = await waitForPosixTreeExit(pid, knownDescendants, options.escalationDelayMs);
+      if (!exitedDuringGrace) {
+        for (const descendantPid of remainingProcesses(knownDescendants).reverse()) {
+          signalProcess(descendantPid, "SIGKILL");
+        }
+        if (!hasProcessGroupExited(pid)) signalProcessGroup(pid, "SIGKILL");
       }
-      if (!hasProcessGroupExited(pid)) signalProcessGroup(pid, "SIGKILL");
     }
-
-    const [childCloseObserved, treeExited] = await Promise.all([
-      waitForChildClose(child, options.forcedCloseGraceMs),
-      waitForPosixTreeExit(pid, knownPosixDescendants, options.forcedCloseGraceMs)
-    ]);
-    const survivingDescendants = remainingProcesses(knownPosixDescendants);
-    if (!childCloseObserved || !treeExited) {
-      throw new Error(
-        survivingDescendants.length > 0
-          ? `Process tree ${pid} has ${survivingDescendants.length} surviving descendant process(es): [${survivingDescendants.join(", ")}]`
-          : !hasProcessGroupExited(pid)
-            ? `Process group ${pid} remained alive after termination`
-            : `Process ${pid} did not close after process-tree termination`
-      );
-    }
-    return {
-      attempted: true,
-      scope: "process_tree",
-      method,
-      confirmed: true,
-      childCloseObserved: true,
-      descendantsRemaining: 0
-    };
   } catch (error) {
-    let fallbackError: string | undefined;
-    let childCloseObserved = hasChildClosed(child);
+    actionError = processErrorMessage(error);
     if (options.fallbackToTrackedChild !== false) {
       try {
         forceTrackedChild(child);
-      } catch (fallback) {
-        fallbackError = processErrorMessage(fallback);
+      } catch (fallbackError) {
+        actionError = `${actionError}; root fallback failed: ${processErrorMessage(fallbackError)}`;
       }
-      childCloseObserved = await waitForChildClose(child, options.forcedCloseGraceMs);
     }
-    const isRootAlive = pid ? isProcessAlive(pid) : false;
-    const survivingDescendants = remainingProcesses(knownPosixDescendants);
-    const primaryError = processErrorMessage(error);
-    return {
-      attempted: true,
-      scope: "process_tree",
-      method,
-      confirmed: false,
-      childCloseObserved,
-      descendantsRemaining: survivingDescendants.length + (isRootAlive ? 1 : 0),
-      error: fallbackError ? `${primaryError}; fallback kill failed: ${fallbackError}` : primaryError
-    };
   }
+
+  let childCloseObserved = hasChildClosed(child);
+  try {
+    childCloseObserved = await waitForChildClose(child, options.forcedCloseGraceMs);
+  } catch (error) {
+    const message = processErrorMessage(error);
+    verificationError = verificationError ? `${verificationError}; ${message}` : message;
+  }
+
+  if (knownDescendants === null) {
+    return terminationResult({
+      method,
+      verification: "unavailable",
+      childCloseObserved,
+      descendantsRemaining: hasProcessGroupExited(pid) ? 0 : 1,
+      actionError,
+      verificationError: verificationError ?? "Unable to capture the process tree before termination"
+    });
+  }
+
+  const survivingDescendants = remainingProcesses(knownDescendants);
+  const processGroupAlive = !hasProcessGroupExited(pid);
+  const descendantsRemaining = survivingDescendants.length + (processGroupAlive ? 1 : 0);
+  return terminationResult({
+    method,
+    verification: descendantsRemaining === 0 ? "confirmed_absent" : "confirmed_alive",
+    childCloseObserved,
+    descendantsRemaining,
+    actionError,
+    ...(descendantsRemaining > 0
+      ? { verificationError: "One or more tracked processes remained alive after termination" }
+      : {})
+  });
 }
 
 export function terminateProcessTree(

@@ -162,9 +162,12 @@ export async function runCapturedProcess(options: CapturedProcessOptions): Promi
         attempted: true,
         scope: "process_tree",
         method: process.platform === "win32" ? "taskkill_tree" : "process_group",
+        outcome: "termination_unverified",
+        verification: "unavailable",
         confirmed: false,
         childCloseObserved: false,
-        error: safeProcessError(error)
+        descendantsRemaining: 1,
+        verificationError: safeProcessError(error)
       };
       terminationEvents.emit("complete");
     });
@@ -235,9 +238,12 @@ export async function runCapturedProcess(options: CapturedProcessOptions): Promi
         attempted: true,
         scope: "process_tree",
         method: process.platform === "win32" ? "taskkill_tree" : "process_group",
+        outcome: "termination_unverified",
+        verification: "unavailable",
         confirmed: false,
         childCloseObserved: closeObserved,
-        error: safeProcessError(error)
+        descendantsRemaining: 1,
+        verificationError: safeProcessError(error)
       };
     }
   }
@@ -277,14 +283,15 @@ export async function runCapturedProcess(options: CapturedProcessOptions): Promi
     executionError = "Process closed without an exit code or signal";
   }
 
-  if (termination && !termination.confirmed && termination.error) {
-    executionError = `${executionError ?? "Process execution failed"}; process-tree termination was not confirmed: ${termination.error}`;
+  if (termination && termination.outcome !== "terminated") {
+    const details = [termination.actionError, termination.verificationError].filter(Boolean).join("; ");
+    executionError = `${executionError ?? "Process execution failed"}; process-tree termination ${termination.outcome}${details ? `: ${details}` : ""}`;
   }
   const killAttempted = terminalCause !== null;
-  const killSucceeded = termination ? termination.confirmed : false;
+  const killSucceeded = termination?.outcome === "terminated";
   const processExited = terminalCause === null && childError === undefined && closeSignal === null && closeCode !== null;
   const waitAttempted = true;
-  const reaped = closeObserved && (!killAttempted || killSucceeded);
+  const reaped = closeObserved && (!killAttempted || termination?.verification === "confirmed_absent");
 
   const lifecycle: ProcessLifecycle = {
     processStarted: true,
@@ -296,12 +303,15 @@ export async function runCapturedProcess(options: CapturedProcessOptions): Promi
     ...(killAttempted ? {
       processTreeKillAttempted: true,
       processTreeKillSucceeded: killSucceeded,
-      descendantsRemaining: termination?.descendantsRemaining ?? (killSucceeded ? 0 : 1)
+      descendantsRemaining: termination?.descendantsRemaining ?? 1
     } : {}),
     ...(termination ? {
       scope: termination.scope,
       method: termination.method,
-      ...(termination.error ? { error: termination.error } : {})
+      terminationOutcome: termination.outcome,
+      terminationVerification: termination.verification,
+      ...(termination.actionError ? { terminationActionError: termination.actionError } : {}),
+      ...(termination.verificationError ? { terminationVerificationError: termination.verificationError } : {})
     } : {})
   };
 

@@ -153,6 +153,8 @@ test("Execution sessions: terminate reaps background process tree", async () => 
   assert.equal(term.lifecycle.processTreeKillAttempted, true);
   assert.equal(term.lifecycle.processTreeKillSucceeded, true);
   assert.equal(term.lifecycle.descendantsRemaining, 0);
+  assert.equal(term.lifecycle.terminationOutcome, "terminated");
+  assert.equal(term.lifecycle.terminationVerification, "confirmed_absent");
 
   const finalRecord = getExecutionSession(session.sessionId);
   assert.equal(finalRecord.status, "stopped");

@@ -504,6 +504,8 @@ test("Process outcome contract: Execution deadline preserves partial stdout and 
   assert.equal(result.lifecycle.waitAttempted, true);
   assert.equal(result.lifecycle.reaped, true);
   assert.equal(result.lifecycle.scope, "process_tree");
+  assert.equal(result.lifecycle.terminationOutcome, "terminated");
+  assert.equal(result.lifecycle.terminationVerification, "confirmed_absent");
 });
 
 test("Process snapshots retain detached descendants by parent ancestry", () => {
@@ -539,6 +541,8 @@ test("Process tree termination reaps spawned descendant processes on timeout and
   assert.equal(result.lifecycle.processTreeKillAttempted, true);
   assert.equal(result.lifecycle.processTreeKillSucceeded, true);
   assert.equal(result.lifecycle.descendantsRemaining, 0);
+  assert.equal(result.lifecycle.terminationOutcome, "terminated");
+  assert.equal(result.lifecycle.terminationVerification, "confirmed_absent");
   assert.match(result.stdout, /CHILD_PID:\d+/);
   const match = result.stdout.match(/CHILD_PID:(\d+)/);
   if (match) {

@@ -439,7 +439,7 @@ await new Promise(() => {});
   writeDefaultFakeFlue();
 });
 
-test("termination failure retains running state and project lock", async () => {
+test("termination outcome follows verification rather than the action exit status", async () => {
   writeDefaultFakeFlue();
   const started = await runFlueTask({ projectAlias: "agent", task: "SLEEP TASK", agentTemplate: "ephemeral-project-subagent" });
   const originalPath = process.env.PATH;
@@ -448,24 +448,29 @@ test("termination failure retains running state and project lock", async () => {
     const failingBin = path.join(root, "failing-bin");
     mkdirSync(failingBin, { recursive: true });
     writeFileSync(path.join(failingBin, "taskkill.cmd"), "@exit /b 9\r\n", "utf8");
-    process.env.PATH = failingBin;
-  } else {
-    process.kill = (() => {
-      const error = new Error("injected termination failure") as NodeJS.ErrnoException;
-      error.code = "EPERM";
-      throw error;
-    }) as typeof process.kill;
+    process.env.PATH = `${failingBin}${path.delimiter}${originalPath ?? ""}`;
+
+    const stopped = await stopFlueTask(started.sessionId);
+    assert.equal(stopped.status, "stopped");
+    assert.equal(
+      readSessionEvents({ sessionId: started.sessionId }).events.some((event) => event.type === "termination_failed"),
+      false
+    );
+    process.env.PATH = originalPath;
+    return;
   }
 
-  await assert.rejects(() => stopFlueTask(started.sessionId), /taskkill failed|injected termination failure|ENOENT/);
+  process.kill = (() => {
+    const error = new Error("injected termination failure") as NodeJS.ErrnoException;
+    error.code = "EPERM";
+    throw error;
+  }) as typeof process.kill;
+  await assert.rejects(() => stopFlueTask(started.sessionId), /injected termination failure/);
   assert.equal(getSession(started.sessionId).status, "running");
   await assert.rejects(
     () => runFlueTask({ projectAlias: "agent", task: "LOCK MUST REMAIN", agentTemplate: "ephemeral-project-subagent" }),
     /Project lock active/
   );
-  assert.equal(readSessionEvents({ sessionId: started.sessionId }).events.some((event) => event.type === "termination_failed"), true);
-
-  process.env.PATH = originalPath;
   process.kill = originalKill;
   await stopFlueTask(started.sessionId);
 });

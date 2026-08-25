@@ -6,7 +6,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { loadPolicyConfig, policyPermissions, type PortusPolicyConfig } from "../policy/policyConfig.js";
 import { stateStore } from "../state/StateStore.js";
-import { terminateProcessTree, type ProcessLifecycle } from "./processTermination.js";
+import { terminateProcessTree, type ProcessLifecycle, type ProcessTreeTerminationResult } from "./processTermination.js";
 
 const DEFAULT_SESSION_TIMEOUT_MS = 3600 * 1000;
 const SESSIONS_FILE = "execution_sessions.json";
@@ -221,6 +221,39 @@ function closeExecutionOutput(entry: ActiveProcessEntry): Promise<void> {
     closeOutputStream(entry.stderrStream)
   ]).then(() => undefined);
   return entry.outputClosePromise;
+}
+
+function lifecycleAfterTermination(
+  lifecycle: ProcessLifecycle,
+  termination: ProcessTreeTerminationResult
+): ProcessLifecycle {
+  const succeeded = termination.outcome === "terminated";
+  return {
+    ...lifecycle,
+    killAttempted: true,
+    killSucceeded: succeeded,
+    processTreeKillAttempted: true,
+    processTreeKillSucceeded: succeeded,
+    descendantsRemaining: termination.descendantsRemaining,
+    terminationOutcome: termination.outcome,
+    terminationVerification: termination.verification,
+    ...(termination.actionError ? { terminationActionError: termination.actionError } : {}),
+    ...(termination.verificationError ? { terminationVerificationError: termination.verificationError } : {}),
+    scope: termination.scope,
+    method: termination.method,
+    waitAttempted: true,
+    reaped: termination.verification === "confirmed_absent"
+  };
+}
+
+function appendTerminationFailure(
+  currentError: string | null,
+  termination: ProcessTreeTerminationResult
+): string | null {
+  if (termination.outcome === "terminated") return currentError;
+  const details = [termination.actionError, termination.verificationError].filter(Boolean).join("; ");
+  const message = `Process-tree termination ${termination.outcome}${details ? `: ${details}` : ""}`;
+  return currentError ? `${currentError}; ${message}` : message;
 }
 
 export async function startExecutionSession(options: StartExecutionSessionOptions): Promise<PublicExecutionSession> {
@@ -451,18 +484,8 @@ async function handleSessionTimeout(sessionId: string): Promise<void> {
   if (termination.childCloseObserved) await closeExecutionOutput(entry);
 
   rec.completedAt = new Date().toISOString();
-  rec.lifecycle = {
-    ...rec.lifecycle,
-    killAttempted: true,
-    killSucceeded: termination.confirmed,
-    processTreeKillAttempted: true,
-    processTreeKillSucceeded: termination.confirmed,
-    descendantsRemaining: termination.descendantsRemaining ?? (termination.confirmed ? 0 : 1),
-    scope: termination.scope,
-    method: termination.method,
-    waitAttempted: true,
-    reaped: termination.confirmed
-  };
+  rec.executionError = appendTerminationFailure(rec.executionError, termination);
+  rec.lifecycle = lifecycleAfterTermination(rec.lifecycle, termination);
   upsertExecutionSession(rec);
   notifyExecutionSessionExit(sessionId);
 
@@ -471,7 +494,10 @@ async function handleSessionTimeout(sessionId: string): Promise<void> {
     sessionAction: "timed_out",
     sessionId,
     projectAlias: rec.projectAlias,
-    killSucceeded: termination.confirmed
+    killSucceeded: termination.outcome === "terminated",
+    terminationOutcome: termination.outcome,
+    terminationVerification: termination.verification,
+    descendantsRemaining: termination.descendantsRemaining
   });
 }
 
@@ -502,18 +528,8 @@ export async function terminateExecutionSession(sessionId: string): Promise<Publ
 
   if (termination.childCloseObserved) await closeExecutionOutput(entry);
 
-  rec.lifecycle = {
-    ...rec.lifecycle,
-    killAttempted: true,
-    killSucceeded: termination.confirmed,
-    processTreeKillAttempted: true,
-    processTreeKillSucceeded: termination.confirmed,
-    descendantsRemaining: termination.descendantsRemaining ?? (termination.confirmed ? 0 : 1),
-    scope: termination.scope,
-    method: termination.method,
-    waitAttempted: true,
-    reaped: termination.confirmed
-  };
+  rec.executionError = appendTerminationFailure(rec.executionError, termination);
+  rec.lifecycle = lifecycleAfterTermination(rec.lifecycle, termination);
   upsertExecutionSession(rec);
   notifyExecutionSessionExit(sessionId);
 
@@ -522,7 +538,10 @@ export async function terminateExecutionSession(sessionId: string): Promise<Publ
     sessionAction: "terminate",
     sessionId,
     projectAlias: rec.projectAlias,
-    killSucceeded: termination.confirmed
+    killSucceeded: termination.outcome === "terminated",
+    terminationOutcome: termination.outcome,
+    terminationVerification: termination.verification,
+    descendantsRemaining: termination.descendantsRemaining
   });
 
   return toPublicExecutionSession(rec);

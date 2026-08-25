@@ -899,8 +899,9 @@ async function terminateChildTree(child: ChildProcess, reason: string): Promise<
     forcedCloseGraceMs: lifecycle.forcedCloseGraceMs,
     fallbackToTrackedChild: false
   });
-  if (!result.confirmed || !result.childCloseObserved) {
-    throw new Error(result.error ?? `Process-tree termination could not be confirmed for process ${child.pid ?? "unknown"}`);
+  if (result.outcome !== "terminated" || !result.childCloseObserved) {
+    const details = [result.actionError, result.verificationError].filter(Boolean).join("; ");
+    throw new Error(`Process-tree termination ${result.outcome}${details ? `: ${details}` : ""}`);
   }
   stateStore.audit({ tool: "subagent_task", kill: "confirmed", pid: child.pid, reason });
 }
