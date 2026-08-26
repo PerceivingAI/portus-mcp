@@ -340,7 +340,7 @@ test("canonical project boundary permits internal links and rejects external jun
   });
   registerProject(projectAlias, rootLink);
   const linkedRegistration = getProject(projectAlias);
-  assert.equal(linkedRegistration.rootPath, realpathSync.native(projectRoot));
+  assert.equal(linkedRegistration.rootPath, path.resolve(rootLink));
 
   const reads = resultOf(await client.callTool({
     name: "project_read",

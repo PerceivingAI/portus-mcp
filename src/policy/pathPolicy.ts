@@ -1,5 +1,5 @@
 import path from "node:path";
-import { lstatSync, realpathSync } from "node:fs";
+import { lstatSync, realpathSync, statSync } from "node:fs";
 import { loadPolicyConfig } from "./policyConfig.js";
 import { getProject } from "../state/ProjectRegistry.js";
 import type { SkillRegistrySnapshot } from "../skills/SkillRegistry.js";
@@ -21,8 +21,7 @@ function assertNotBlocked(target: string): void {
 function assertCanonicalRootPath(root: string, target: string, rootKind: "project" | "skill"): void {
   const rootLabel = rootKind === "project" ? "Project" : "Skill";
   try {
-    const rootInfo = lstatSync(root);
-    if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
+    if (!statSync(root).isDirectory()) {
       throw new Error(`${rootLabel} root cannot be resolved safely.`);
     }
   } catch (error) {

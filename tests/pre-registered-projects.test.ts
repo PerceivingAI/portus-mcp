@@ -173,8 +173,21 @@ test("listPreRegisteredProjects parses multiline and pipe-delimited configuratio
     process.env.PORTUS_MCP_PROJECTS = saved;
   }
 });
+test("listPreRegisteredProjects accepts fake or non-existent paths without throwing", () => {
+  const saved = process.env.PORTUS_MCP_PROJECTS;
+  try {
+    process.env.PORTUS_MCP_PROJECTS = `real=${projectRoot};fake=C:\\non\\existent\\path\\to\\fake-project;fake2=/tmp/non/existent/path`;
+    const projects = listPreRegisteredProjects();
+    assert.equal(projects.length, 3);
+    assert.equal(projects[0]?.projectAlias, "real");
+    assert.equal(projects[1]?.projectAlias, "fake");
+    assert.equal(projects[2]?.projectAlias, "fake2");
+  } finally {
+    process.env.PORTUS_MCP_PROJECTS = saved;
+  }
+});
 test("project_context safely discovers environment aliases before scoped use", async (t) => {
-  process.env.PORTUS_MCP_PROJECTS = `pre=${projectRoot};second=${secondProjectRoot}`;
+  process.env.PORTUS_MCP_PROJECTS = `pre=${projectRoot};second=${secondProjectRoot};fake=C:\\non\\existent\\path`;
   const server = createHttpServer("/mcp");
   await new Promise<void>((resolve) => server.listen(0, resolve));
 
@@ -195,7 +208,7 @@ test("project_context safely discovers environment aliases before scoped use", a
   });
   assert.equal(discoveryResponse.isError, undefined);
   const serializedDiscovery = JSON.stringify(discoveryResponse.structuredContent);
-  for (const alias of ["pre", "second"]) {
+  for (const alias of ["pre", "second", "fake"]) {
     assert.match(serializedDiscovery, new RegExp(`"${alias}"`));
   }
 
@@ -212,6 +225,13 @@ test("project_context safely discovers environment aliases before scoped use", a
   });
   assert.equal(scoped.isError, undefined);
   assert.match(JSON.stringify(scoped.structuredContent), /"projectAlias":"pre"/);
+
+  const fakeRead = await client.callTool({
+    name: "project_read",
+    arguments: { projectAlias: "fake", requests: [{ relativePath: "test.txt", mode: "exists" }] }
+  });
+  const fakeReadPayload = JSON.stringify(fakeRead);
+  assert.match(fakeReadPayload, /cannot be resolved safely|does not exist/i);
 });
 
 test.after(() => {

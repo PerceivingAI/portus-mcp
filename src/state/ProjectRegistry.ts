@@ -1,5 +1,4 @@
 import path from "node:path";
-import { lstatSync, realpathSync } from "node:fs";
 import { optionalEnv } from "../env.js";
 
 export type ProjectRecord = {
@@ -10,20 +9,7 @@ export type ProjectRecord = {
 };
 
 function normalizeProjectRoot(rootPath: string): string {
-  const resolved = path.resolve(rootPath);
-  let canonical: string;
-  try {
-    canonical = realpathSync.native(resolved);
-  } catch {
-    throw new Error("Project root must be an existing directory.");
-  }
-  try {
-    if (!lstatSync(canonical).isDirectory()) throw new Error("Project root must be an existing directory.");
-  } catch (error) {
-    if (error instanceof Error && error.message === "Project root must be an existing directory.") throw error;
-    throw new Error("Project root cannot be resolved safely.");
-  }
-  return canonical;
+  return path.resolve(rootPath);
 }
 
 export function assertProjectAlias(projectAlias: string): void {
