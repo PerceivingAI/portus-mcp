@@ -391,16 +391,28 @@ function executeWrite(index: number, operation: Extract<EditOperation, { type: "
   if (existsSync(target)) {
     assertCanReadProjectPath(projectAlias, target, operation.relativePath);
     const current = readFileSync(target);
+    const oldSha256 = hashSha256(current);
     assertExpectedHash(operation.expectedSha256, operation.relativePath, current);
     if (current.equals(desired)) {
-      return noChange(identity, { bytes: desired.length });
+      return noChange(identity, { bytes: desired.length, oldSha256, newSha256: oldSha256 });
     }
-  } else if (operation.expectedSha256) {
-    throw new SemanticRejection("stale_file", { relativePath: safeRelativePath(operation.relativePath) });
+    if (dryRun) {
+      return planned(identity, { bytes: desired.length, oldSha256, projectedSha256: hashSha256(desired) });
+    }
+    stateStore.requireAuditWritable();
+    resolveProjectPath(projectAlias, operation.relativePath);
+    markMutation();
+    mkdirSync(path.dirname(target), { recursive: true });
+    resolveProjectPath(projectAlias, operation.relativePath);
+    writeFileSync(target, desired);
+    return applied(identity, { bytes: desired.length, oldSha256, newSha256: hashSha256(desired) });
   }
 
+  if (operation.expectedSha256) {
+    throw new SemanticRejection("stale_file", { relativePath: safeRelativePath(operation.relativePath) });
+  }
   if (dryRun) {
-    return planned(identity, { bytes: desired.length });
+    return planned(identity, { bytes: desired.length, projectedSha256: hashSha256(desired) });
   }
 
   stateStore.requireAuditWritable();
@@ -409,7 +421,7 @@ function executeWrite(index: number, operation: Extract<EditOperation, { type: "
   mkdirSync(path.dirname(target), { recursive: true });
   resolveProjectPath(projectAlias, operation.relativePath);
   writeFileSync(target, desired);
-  return applied(identity, { bytes: desired.length });
+  return applied(identity, { bytes: desired.length, newSha256: hashSha256(desired) });
 }
 
 function executeReplace(index: number, operation: Extract<EditOperation, { type: "replace" }>, projectAlias: string, dryRun: boolean, policy: PortusPolicyConfig, markMutation: () => void): OperationResult {
@@ -417,6 +429,7 @@ function executeReplace(index: number, operation: Extract<EditOperation, { type:
   const searchChars = assertInputChars("limits.textEdit.maxSearchOrMarkerChars", operation.search, policy.limits.textEdit.maxSearchOrMarkerChars);
   const replacementChars = assertInputChars("limits.textEdit.maxOperationChars", operation.replace, policy.limits.textEdit.maxOperationChars);
   const { target, source } = readTextSource(projectAlias, operation.relativePath, operation.expectedSha256);
+  const oldSha256 = hashSha256(source);
   const scan = scanExactMatches(source, operation.search);
   const matchDetails = {
     expectedOccurrences: operation.expectedOccurrences,
@@ -430,20 +443,21 @@ function executeReplace(index: number, operation: Extract<EditOperation, { type:
   }
 
   if (operation.search === operation.replace) {
-    return noChange(identity, { ...matchDetails, matchesApplied: 0 });
+    return noChange(identity, { ...matchDetails, matchesApplied: 0, oldSha256, newSha256: oldSha256 });
   }
   const projectedChars = scan.sourceChars + scan.matchesFound * (replacementChars - searchChars);
   assertCharCount("limits.fileWrite.maxChars", projectedChars, policy.limits.fileWrite.maxChars);
   const updated = replaceExactMatches(source, operation.search, operation.replace);
+  const newSha256 = hashSha256(updated);
   if (dryRun) {
-    return planned(identity, { ...matchDetails, matchesPlanned: scan.matchesFound, matchesApplied: 0 });
+    return planned(identity, { ...matchDetails, matchesPlanned: scan.matchesFound, matchesApplied: 0, oldSha256, projectedSha256: newSha256 });
   }
 
   stateStore.requireAuditWritable();
   resolveProjectPath(projectAlias, operation.relativePath);
   markMutation();
   writeFileSync(target, updated, "utf8");
-  return applied(identity, { ...matchDetails, matchesApplied: scan.matchesFound });
+  return applied(identity, { ...matchDetails, matchesApplied: scan.matchesFound, oldSha256, newSha256 });
 }
 
 function executeInsert(index: number, operation: Extract<EditOperation, { type: "insert" }>, projectAlias: string, dryRun: boolean, policy: PortusPolicyConfig, markMutation: () => void): OperationResult {
@@ -451,6 +465,7 @@ function executeInsert(index: number, operation: Extract<EditOperation, { type: 
   assertInputChars("limits.textEdit.maxSearchOrMarkerChars", operation.marker, policy.limits.textEdit.maxSearchOrMarkerChars);
   const contentChars = assertInputChars("limits.textEdit.maxOperationChars", operation.content, policy.limits.textEdit.maxOperationChars);
   const { target, source } = readTextSource(projectAlias, operation.relativePath, operation.expectedSha256);
+  const oldSha256 = hashSha256(source);
   const scan = scanExactMatches(source, operation.marker);
   const matchDetails = {
     expectedOccurrences: 1,
@@ -464,22 +479,23 @@ function executeInsert(index: number, operation: Extract<EditOperation, { type: 
   }
 
   if (contentChars === 0) {
-    return noChange(identity, { ...matchDetails, matchesApplied: 0 });
+    return noChange(identity, { ...matchDetails, matchesApplied: 0, oldSha256, newSha256: oldSha256 });
   }
   assertCharCount("limits.fileWrite.maxChars", scan.sourceChars + contentChars, policy.limits.fileWrite.maxChars);
   const markerEnd = scan.firstIndex + operation.marker.length;
   const updated = operation.position === "before"
     ? `${source.slice(0, scan.firstIndex)}${operation.content}${source.slice(scan.firstIndex)}`
     : `${source.slice(0, markerEnd)}${operation.content}${source.slice(markerEnd)}`;
+  const newSha256 = hashSha256(updated);
   if (dryRun) {
-    return planned(identity, { ...matchDetails, matchesPlanned: 1, matchesApplied: 0 });
+    return planned(identity, { ...matchDetails, matchesPlanned: 1, matchesApplied: 0, oldSha256, projectedSha256: newSha256 });
   }
 
   stateStore.requireAuditWritable();
   resolveProjectPath(projectAlias, operation.relativePath);
   markMutation();
   writeFileSync(target, updated, "utf8");
-  return applied(identity, { ...matchDetails, matchesApplied: 1 });
+  return applied(identity, { ...matchDetails, matchesApplied: 1, oldSha256, newSha256 });
 }
 function executeReplaceRange(index: number, operation: Extract<EditOperation, { type: "replace_range" }>, projectAlias: string, dryRun: boolean, policy: PortusPolicyConfig, markMutation: () => void): OperationResult {
   const identity = operationIdentity(index, operation);
@@ -773,20 +789,29 @@ function evaluateStagedOperation(
   if (operation.type === "write") {
     assertInputChars("limits.fileWrite.maxChars", operation.content, policy.limits.fileWrite.maxChars);
     const desired = Buffer.from(operation.content, "utf8");
+    const oldSha256 = projection.projectedContent === null ? undefined : hashSha256(projection.projectedContent);
     if (projection.projectedContent?.equals(desired)) {
-      return { index, operation, projection, result: noChange(identity, { bytes: desired.length }) };
+      return {
+        index,
+        operation,
+        projection,
+        result: noChange(identity, { bytes: desired.length, ...(oldSha256 === undefined ? {} : { oldSha256, newSha256: oldSha256 }) })
+      };
     }
     projection.projectedContent = desired;
-    const details = { bytes: desired.length };
+    const newSha256 = hashSha256(desired);
     projection.projectedIsText = true;
     return {
       index,
       operation,
       projection,
-      change: { plannedDetails: details, appliedDetails: details, canceledDetails: details }
+      change: {
+        plannedDetails: { bytes: desired.length, ...(oldSha256 === undefined ? {} : { oldSha256 }), projectedSha256: newSha256 },
+        appliedDetails: { bytes: desired.length, ...(oldSha256 === undefined ? {} : { oldSha256 }), newSha256 },
+        canceledDetails: { bytes: desired.length, ...(oldSha256 === undefined ? {} : { oldSha256 }), projectedSha256: newSha256 }
+      }
     };
   }
-
   const sourceContent = projection.projectedContent;
   if (sourceContent === null) throw new Error(`File does not exist: ${operation.relativePath}`);
   if (projection.projectedIsText === undefined) {
@@ -808,6 +833,7 @@ function evaluateStagedOperation(
     if (scan.matchesFound !== operation.expectedOccurrences) {
       throw new SemanticRejection("occurrence_mismatch", { ...matchDetails, matchesApplied: 0 });
     }
+    const oldSha256 = hashSha256(sourceContent);
     if (operation.search === operation.replace) {
       return {
         index,
@@ -815,21 +841,24 @@ function evaluateStagedOperation(
         projection,
         result: noChange(identity, {
           ...matchDetails,
-          ...(dryRun ? {} : { matchesApplied: 0 })
+          ...(dryRun ? {} : { matchesApplied: 0 }),
+          oldSha256,
+          newSha256: oldSha256
         })
       };
     }
     const projectedChars = scan.sourceChars + scan.matchesFound * (replacementChars - searchChars);
     assertCharCount("limits.fileWrite.maxChars", projectedChars, policy.limits.fileWrite.maxChars);
     projection.projectedContent = Buffer.from(replaceExactMatches(source, operation.search, operation.replace), "utf8");
+    const projectedSha256 = hashSha256(projection.projectedContent);
     return {
       index,
       operation,
       projection,
       change: {
-        plannedDetails: { ...matchDetails, matchesPlanned: scan.matchesFound },
-        appliedDetails: { ...matchDetails, matchesApplied: scan.matchesFound },
-        canceledDetails: { ...matchDetails, matchesPlanned: scan.matchesFound, matchesApplied: 0 }
+        plannedDetails: { ...matchDetails, matchesPlanned: scan.matchesFound, oldSha256, projectedSha256 },
+        appliedDetails: { ...matchDetails, matchesApplied: scan.matchesFound, oldSha256, newSha256: projectedSha256 },
+        canceledDetails: { ...matchDetails, matchesPlanned: scan.matchesFound, matchesApplied: 0, oldSha256, projectedSha256 }
       }
     };
   }
@@ -845,6 +874,7 @@ function evaluateStagedOperation(
       exactMatchLocations: scan.exactMatchLocations,
       locationsTruncated: scan.locationsTruncated
     };
+    const oldSha256 = hashSha256(sourceContent);
     if (scan.matchesFound !== 1 || scan.firstIndex === null) {
       throw new SemanticRejection("occurrence_mismatch", { ...matchDetails, matchesApplied: 0 });
     }
@@ -855,7 +885,9 @@ function evaluateStagedOperation(
         projection,
         result: noChange(identity, {
           ...matchDetails,
-          ...(dryRun ? {} : { matchesApplied: 0 })
+          ...(dryRun ? {} : { matchesApplied: 0 }),
+          oldSha256,
+          newSha256: oldSha256
         })
       };
     }
@@ -865,14 +897,15 @@ function evaluateStagedOperation(
       ? `${source.slice(0, scan.firstIndex)}${operation.content}${source.slice(scan.firstIndex)}`
       : `${source.slice(0, markerEnd)}${operation.content}${source.slice(markerEnd)}`;
     projection.projectedContent = Buffer.from(updated, "utf8");
+    const projectedSha256 = hashSha256(projection.projectedContent);
     return {
       index,
       operation,
       projection,
       change: {
-        plannedDetails: { ...matchDetails, matchesPlanned: 1 },
-        appliedDetails: { ...matchDetails, matchesApplied: 1 },
-        canceledDetails: { ...matchDetails, matchesPlanned: 1, matchesApplied: 0 }
+        plannedDetails: { ...matchDetails, matchesPlanned: 1, oldSha256, projectedSha256 },
+        appliedDetails: { ...matchDetails, matchesApplied: 1, oldSha256, newSha256: projectedSha256 },
+        canceledDetails: { ...matchDetails, matchesPlanned: 1, matchesApplied: 0, oldSha256, projectedSha256 }
       }
     };
   }

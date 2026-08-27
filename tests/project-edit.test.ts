@@ -248,6 +248,8 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
     assert.equal(batch.results[0].matchesFound, 2);
     assert.equal(batch.results[0].matchesApplied, 2);
     assert.equal(batch.results[0].operationStatus, "applied");
+    assert.equal(batch.results[0].oldSha256, sha256("🙂x needle\nneedle\n"));
+    assert.equal(batch.results[0].newSha256, sha256("🙂x done\ndone\n"));
     assert.equal(readFileSync(target, "utf8"), "🙂x done\ndone\n");
   });
   await t.test("uses non-overlapping matches and preserves CRLF insertion placement", async () => {
@@ -261,6 +263,10 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
     const insertion = resultOf(await callEdit(client, [{ type: "insert", relativePath: "non-overlap-crlf.txt", marker: "marker", content: "!", position: "after" }]));
     assert.deepEqual(insertion.results[0].exactMatchLocations, [{ line: 2, column: 1 }]);
     assert.equal(insertion.results[0].matchesApplied, 1);
+    assert.equal(replacement.results[0].oldSha256, sha256("aaa\r\nmarker\r\n"));
+    assert.equal(replacement.results[0].newSha256, sha256("Xa\r\nmarker\r\n"));
+    assert.equal(insertion.results[0].oldSha256, sha256("Xa\r\nmarker\r\n"));
+    assert.equal(insertion.results[0].newSha256, sha256("Xa\r\nmarker!\r\n"));
     assert.equal(readFileSync(target, "utf8"), "Xa\r\nmarker!\r\n");
   });
 
@@ -291,6 +297,8 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
     }]));
     assert.equal(before.results[0].operationStatus, "applied");
     assert.equal(before.results[0].matchesApplied, 1);
+    assert.equal(before.results[0].oldSha256, sha256("marker\n"));
+    assert.equal(before.results[0].newSha256, sha256("before-marker\n"));
     assert.equal(readFileSync(target, "utf8"), "before-marker\n");
     const after = resultOf(await callEdit(client, [{
       type: "insert",
@@ -301,6 +309,8 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
     }]));
     assert.equal(after.results[0].operationStatus, "applied");
     assert.equal(after.results[0].matchesApplied, 1);
+    assert.equal(after.results[0].oldSha256, sha256("before-marker\n"));
+    assert.equal(after.results[0].newSha256, sha256("before-marker-after\n"));
     assert.equal(readFileSync(target, "utf8"), "before-marker-after\n");
   });
 
@@ -332,6 +342,10 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
     assert.equal(writeBatch.noChangeCount, 1);
     assert.equal(writeBatch.repositoryState, "unchanged");
     assert.equal(statSync(target).mtimeMs, before);
+    assert.equal(replaceBatch.results[0].oldSha256, sha256("same\n"));
+    assert.equal(replaceBatch.results[0].newSha256, sha256("same\n"));
+    assert.equal(writeBatch.results[0].oldSha256, sha256("same\n"));
+    assert.equal(writeBatch.results[0].newSha256, sha256("same\n"));
   });
 
   await t.test("distinguishes dry-run plans from applied mutations", async () => {
@@ -346,6 +360,8 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
     assert.equal(batch.results[0].operationStatus, "planned");
     assert.equal(batch.results[0].matchesPlanned, 1);
     assert.equal(batch.results[0].fileChanged, false);
+    assert.equal(batch.results[0].oldSha256, sha256("marker\n"));
+    assert.equal(batch.results[0].projectedSha256, sha256("before-marker\n"));
     assert.equal(readFileSync(target, "utf8"), "marker\n");
   });
 
@@ -570,6 +586,8 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
     assert.equal(batch.batchOutcome, "succeeded");
     assert.equal(batch.appliedCount, 2);
     assert.deepEqual(batch.results.map((result: Record<string, unknown>) => result.operationStatus), ["applied", "applied"]);
+    assert.equal(batch.results[0].oldSha256, baseHash);
+    assert.equal(batch.results[0].newSha256, sha256("ALPHA\nbeta\n"));
     assert.deepEqual(batch.results[1].newRange, { startLine: 2, endLine: 3 });
     assert.equal(batch.results[1].oldSha256, sha256("ALPHA\nbeta\n"));
     assert.deepEqual(readFileSync(target), expected);
