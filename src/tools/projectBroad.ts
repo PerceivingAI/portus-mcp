@@ -20,6 +20,7 @@ import type { ScreenshotCapabilities } from "../runtime/screenshotSystem.js";
 import {
   startExecutionSession,
   pollExecutionSession,
+  writeExecutionSession,
   terminateExecutionSession,
   listExecutionSessions
 } from "../runtime/executionSessions.js";
@@ -775,6 +776,11 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
       stream: z.enum(["stdout", "stderr", "both"]).optional()
     }).strict(),
     z.object({
+      type: z.literal("write"),
+      sessionId: z.string().min(1),
+      input: z.string().max(65536)
+    }).strict(),
+    z.object({
       type: z.literal("terminate"),
       sessionId: z.string().min(1)
     }).strict(),
@@ -783,7 +789,7 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     }).strict()
   ]);
 
-  registerStrictProjectTool(server, "project_run", "Run project checks, package scripts, permitted commands, or observable execution sessions.\n\nRequest types:\n- check: Run a configured project check.\n- script: Run a package script with optional arguments.\n- command: Run a permitted command with an argument array.\n\nSession actions:\n- start: Start a long-running observable process.\n- poll: Read incremental output and current session state.\n- terminate: Stop the session and its process tree.\n- list: List execution sessions for the project.\n\nUse batched requests for work that should finish during the call. Use session actions for processes that must remain observable across calls.", {
+  registerStrictProjectTool(server, "project_run", "Run project checks, package scripts, permitted commands, or observable execution sessions.\n\nRequest types:\n- check: Run a configured project check.\n- script: Run a package script with optional arguments.\n- command: Run a permitted command with an argument array.\n\nSession actions:\n- start: Start a long-running observable process.\n- poll: Read incremental output and current session state.\n- write: Write bounded input to a running session's stdin.\n- terminate: Stop the session and its process tree.\n- list: List execution sessions for the project.\n\nUse batched requests for work that should finish during the call. Use session actions for processes that must remain observable across calls.", {
     projectAlias: z.string().min(1),
     batchTimeoutSecs: z.number().int().positive().max(3600).optional(),
     stopOnFailure: z.boolean().default(false),
@@ -836,6 +842,12 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
         return {
           sessionAction: "poll",
           ...pollResult
+        };
+      } else if (sessionAction.type === "write") {
+        const result = writeExecutionSession(sessionAction.sessionId, sessionAction.input);
+        return {
+          sessionAction: "write",
+          ...result
         };
       } else if (sessionAction.type === "terminate") {
         const session = await terminateExecutionSession(sessionAction.sessionId);

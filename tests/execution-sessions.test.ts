@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   startExecutionSession,
   pollExecutionSession,
+  writeExecutionSession,
   terminateExecutionSession,
   listExecutionSessions,
   getExecutionSession
@@ -74,6 +75,36 @@ test("Execution sessions: start, poll incremental chunks with cursor, and comple
   // List sessions
   const list = listExecutionSessions("test");
   assert.equal(list.some((s) => s.sessionId === session.sessionId), true);
+});
+
+test("Execution sessions write bounded stdin and observe the response", async () => {
+  const session = await startExecutionSession({
+    projectAlias: "test",
+    rootPath: root,
+    command: "node",
+    args: ["-e", "process.stdin.setEncoding('utf8'); process.stdin.on('data', data => { process.stdout.write(`received:${data}`); if (data.includes('quit')) process.exit(0); });"],
+    timeoutSecs: 60,
+    policy: withMainAgentPermissions({ allowedCommands: ["node"] })
+  });
+
+  const writeResult = writeExecutionSession(session.sessionId, "ping\n");
+  assert.equal(writeResult.status, "running");
+  assert.equal(writeResult.writtenBytes, 5);
+
+  const outputDeadline = Date.now() + 5000;
+  let pollResult = pollExecutionSession({ sessionId: session.sessionId, cursor: 0 });
+  while (!pollResult.stdoutChunk.includes("received:ping") && Date.now() < outputDeadline) {
+    await delay(20);
+    pollResult = pollExecutionSession({ sessionId: session.sessionId, cursor: pollResult.nextCursor });
+  }
+  assert.match(pollResult.stdoutChunk, /received:ping/);
+
+  writeExecutionSession(session.sessionId, "quit\n");
+  const completionDeadline = Date.now() + 5000;
+  while (getExecutionSession(session.sessionId).status === "running" && Date.now() < completionDeadline) {
+    await delay(20);
+  }
+  assert.equal(getExecutionSession(session.sessionId).status, "completed");
 });
 
 test("Execution sessions spawn a resolved executable while preserving the logical command", async () => {

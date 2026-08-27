@@ -12,6 +12,7 @@ const DEFAULT_SESSION_TIMEOUT_MS = 3600 * 1000;
 const SESSIONS_FILE = "execution_sessions.json";
 const ESCALATION_DELAY_MS = 1200;
 const FORCED_CLOSE_GRACE_MS = 8000;
+const MAX_SESSION_INPUT_BYTES = 64 * 1024;
 
 export type ExecutionSessionStatus = "running" | "completed" | "failed" | "timed_out" | "stopped";
 
@@ -51,6 +52,13 @@ export type PublicExecutionSession = {
   stdoutBytes: number;
   stderrBytes: number;
   lifecycle: ProcessLifecycle;
+};
+
+export type WriteExecutionSessionResult = {
+  sessionId: string;
+  projectAlias: string;
+  status: ExecutionSessionStatus;
+  writtenBytes: number;
 };
 
 export type StartExecutionSessionOptions = {
@@ -302,7 +310,6 @@ export async function startExecutionSession(options: StartExecutionSessionOption
   const timeoutMs = Math.min(Math.max(1, (options.timeoutSecs ?? 3600)) * 1000, DEFAULT_SESSION_TIMEOUT_MS);
   const startedAt = new Date().toISOString();
   const startedAtMs = performance.now();
-
   let child: ChildProcess;
   try {
     child = spawn(execCommand, execArgs, {
@@ -311,7 +318,7 @@ export async function startExecutionSession(options: StartExecutionSessionOption
       shell: shellOption,
       detached: !isWin,
       windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"]
     });
   } catch (error) {
     const errMessage = error instanceof Error ? error.message : String(error);
@@ -545,6 +552,39 @@ export async function terminateExecutionSession(sessionId: string): Promise<Publ
   });
 
   return toPublicExecutionSession(rec);
+}
+
+export function writeExecutionSession(sessionId: string, input: string): WriteExecutionSessionResult {
+  const entry = activeProcesses.get(sessionId);
+  if (!entry) {
+    const record = getExecutionSession(sessionId);
+    throw new Error(`Execution session is not running (status: ${record.status})`);
+  }
+  if (entry.record.status !== "running") {
+    throw new Error(`Execution session is not running (status: ${entry.record.status})`);
+  }
+  const writtenBytes = Buffer.byteLength(input, "utf8");
+  if (writtenBytes > MAX_SESSION_INPUT_BYTES) {
+    throw new Error(`Execution session input exceeds ${MAX_SESSION_INPUT_BYTES} bytes`);
+  }
+  const stdin = entry.child.stdin;
+  if (!stdin || stdin.destroyed || stdin.writableEnded) {
+    throw new Error("Execution session stdin is unavailable");
+  }
+  stdin.write(input);
+  stateStore.audit({
+    tool: "project_run",
+    sessionAction: "write",
+    sessionId,
+    projectAlias: entry.record.projectAlias,
+    writtenBytes
+  });
+  return {
+    sessionId,
+    projectAlias: entry.record.projectAlias,
+    status: entry.record.status,
+    writtenBytes
+  };
 }
 
 export function pollExecutionSession(options: PollExecutionSessionOptions): PollExecutionSessionResult {
