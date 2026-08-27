@@ -179,12 +179,12 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   const readTool = tools.tools.find((tool) => tool.name === "project_read");
   const contextTool = tools.tools.find((tool) => tool.name === "project_context");
   const editTool = tools.tools.find((tool) => tool.name === "project_edit");
-  assert.deepEqual(Object.keys(editTool?.inputSchema.properties ?? {}).sort(), ["batchMode", "continueOnFailure", "dryRun", "operations", "projectAlias"]);
+  assert.deepEqual(Object.keys(editTool?.inputSchema.properties ?? {}).sort(), ["batchMode", "continueOnFailure", "dryRun", "operations", "projectAlias", "verifyResult"]);
   assert.match(readTool?.description ?? "", /skill rootAlias returned by project_context/);
   for (const section of ["projects:", "skills:", "status:", "capabilities:", "tree:", "files:", "paths:", "scripts:"]) {
     assert.equal(contextTool?.description?.includes(section), true);
   }
-  for (const instruction of ["Batch modes:", "staged:", "ordered:", "dryRun:", "continueOnFailure:"]) {
+  for (const instruction of ["Batch modes:", "staged:", "ordered:", "dryRun:", "verifyResult:", "continueOnFailure:"]) {
     assert.equal(editTool?.description?.includes(instruction), true);
   }
   const includeProperties = ((contextTool?.inputSchema.properties?.include as { properties?: Record<string, unknown> } | undefined)?.properties) ?? {};
@@ -539,7 +539,9 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
       dryRun: true
     }
   });
-  assert.equal(patchMissingExpected.isError, true);
+  const patchMissingExpectedResult = resultOf(patchMissingExpected);
+  assert.equal(patchMissingExpectedResult.reason, "missing_expected_metadata");
+  assert.equal(patchMissingExpectedResult.operationStatus, "not_applied");
 
   const permissions = resultOf(await client.callTool({ name: "project_policy", arguments: { checks: [{ type: "permissions", projectAlias: "mcp", operation: "project_read" }] } }));
   assert.deepEqual(permissions.results[0].requiredPermissions, ["projectRead"]);

@@ -104,7 +104,8 @@ async function callEdit(
   operations: Array<Record<string, unknown>>,
   dryRun = false,
   continueOnFailure = false,
-  batchMode?: "staged" | "ordered"
+  batchMode?: "staged" | "ordered",
+  verifyResult = false
 ): Promise<CallToolResult> {
   return client.callTool({
     name: "project_edit",
@@ -113,6 +114,7 @@ async function callEdit(
       operations,
       dryRun,
       continueOnFailure,
+      verifyResult,
       ...(batchMode === undefined ? {} : { batchMode })
     }
   });
@@ -363,6 +365,23 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
     assert.equal(batch.results[0].oldSha256, sha256("marker\n"));
     assert.equal(batch.results[0].projectedSha256, sha256("before-marker\n"));
     assert.equal(readFileSync(target, "utf8"), "marker\n");
+  });
+
+  await t.test("returns bounded resulting content when verification is requested", async () => {
+    const target = path.join(projectRoot, "verify-result.txt");
+    const content = "first\nsecond\n";
+    const batch = resultOf(await callEdit(client, [{
+      type: "write",
+      relativePath: "verify-result.txt",
+      content
+    }], false, false, undefined, true));
+    assert.deepEqual(batch.verification.files, [{
+      relativePath: "verify-result.txt",
+      resultingRange: { startLine: 1, endLine: 2 },
+      content,
+      truncated: false
+    }]);
+    assert.equal(readFileSync(target, "utf8"), content);
   });
 
   await t.test("returns structured stale-file rejection", async () => {

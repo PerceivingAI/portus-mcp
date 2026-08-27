@@ -26,7 +26,7 @@ import {
 } from "../runtime/executionSessions.js";
 import { registerStrictProjectTool, safeError, safeRelativePath } from "./projectToolUtils.js";
 import { screenshotCapabilityEntry } from "./projectScreenshot.js";
-import { editBatchModeSchema, editOperationSchema, executeProjectEditBatch } from "./projectEdit.js";
+import { editBatchModeSchema, editOperationSchema, executeProjectEditBatch, type ProjectEditBatchResult } from "./projectEdit.js";
 import { patchInputSchema, synthesizeUnifiedDiff } from "./patchSynthesizer.js";
 import type { SkillRegistrySnapshot } from "../skills/SkillRegistry.js";
 import {
@@ -458,6 +458,41 @@ export function registerProjectReadTool(server: McpServer, registry: SkillRegist
     }
     return { projectAlias, requestedCount: requests.length, successCount: results.filter((result) => result.ok).length, errorCount: results.filter((result) => !result.ok).length, results };
   });
+}
+
+function verifyProjectEditResult(projectAlias: string, result: ProjectEditBatchResult, policy: PortusPolicyConfig): Record<string, unknown> {
+  if (result.dryRun) return { omittedReason: "dry_run" };
+  const paths = new Set(
+    result.results
+      .filter((item) => item.operationStatus === "applied" || item.operationStatus === "no_change")
+      .filter((item) => item.type === "write" || item.type === "replace" || item.type === "insert" || item.type === "replace_range")
+      .map((item) => item.relativePath)
+      .filter((relativePath): relativePath is string => typeof relativePath === "string")
+  );
+  const files: Array<Record<string, unknown>> = [];
+  for (const relativePath of paths) {
+    const target = resolveProjectPath(projectAlias, relativePath);
+    assertCanReadProjectPath(projectAlias, target, relativePath);
+    if (!existsSync(target)) {
+      files.push({ relativePath: safeRelativePath(relativePath), omittedReason: "file_not_found" });
+      continue;
+    }
+    if (!isTextLikely(target)) {
+      files.push({ relativePath: safeRelativePath(relativePath), omittedReason: "binary_file" });
+      continue;
+    }
+    const raw = readFileSync(target, "utf8");
+    const lines = raw === "" ? [] : raw.split(/\r\n|\n|\r/);
+    if (lines.at(-1) === "") lines.pop();
+    const limited = limitText(raw, Math.min(policy.limits.textEdit.maxOperationChars, 16384));
+    files.push({
+      relativePath: safeRelativePath(relativePath),
+      resultingRange: lines.length === 0 ? null : { startLine: 1, endLine: lines.length },
+      content: limited.text,
+      truncated: limited.truncated
+    });
+  }
+  return { files };
 }
 
 export function registerBroadProjectTools(server: McpServer, registry: SkillRegistrySnapshot, policy: PortusPolicyConfig = loadPolicyConfig()): void {
@@ -1058,7 +1093,10 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
               killAttempted: false,
               killSucceeded: false,
               waitAttempted: false,
-              reaped: false
+              reaped: false,
+              processTreeKillAttempted: false,
+              processTreeKillSucceeded: false,
+              descendantsRemaining: 0
             }
           });
         }
@@ -1084,14 +1122,16 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
     };
   });
 
-  registerStrictProjectTool(server, "project_edit", "Edit files inside a registered project.\n\nBatch modes:\n- staged: Default for write, replace, insert, and replace_range. Evaluate related same-file edits together before committing them.\n- ordered: Use for copy, move, delete, mkdir, rmdir, or intentionally sequential changes.\n\nOptions:\n- dryRun: Return the planned result without modifying files.\n- continueOnFailure: Continue ordered execution after an operation fails.", {
+  registerStrictProjectTool(server, "project_edit", "Edit files inside a registered project.\n\nBatch modes:\n- staged: Default for write, replace, insert, and replace_range. Evaluate related same-file edits together before committing them.\n- ordered: Use for copy, move, delete, mkdir, rmdir, or intentionally sequential changes.\n\nOptions:\n- dryRun: Return the planned result without modifying files.\n- verifyResult: Include bounded resulting text for changed text files.\n- continueOnFailure: Continue ordered execution after an operation fails.", {
     projectAlias: z.string().min(1),
     operations: z.array(editOperationSchema).min(1).max(50),
     batchMode: editBatchModeSchema,
     dryRun: z.boolean().default(false),
+    verifyResult: z.boolean().default(false),
     continueOnFailure: z.boolean().default(false)
-  }, mutateAnnotations, async ({ projectAlias, operations, batchMode, dryRun, continueOnFailure }) => {
+  }, mutateAnnotations, async ({ projectAlias, operations, batchMode, dryRun, verifyResult, continueOnFailure }) => {
     assertMainAgentPermission("projectEdit", policy);
-    return executeProjectEditBatch({ projectAlias, operations, batchMode, dryRun, continueOnFailure, policy });
+    const result = executeProjectEditBatch({ projectAlias, operations, batchMode, dryRun, continueOnFailure, policy });
+    return verifyResult ? { ...result, verification: verifyProjectEditResult(projectAlias, result, policy) } : result;
   });
 }

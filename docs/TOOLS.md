@@ -100,7 +100,7 @@ The top-level input is strict:
 | `operations` | Required ordered array of 1–50 operations. |
 | `batchMode` | `"staged"` by default; `"ordered"` is an explicit opt-in. |
 | `dryRun` | Defaults to `false`. Reports projected operation results without filesystem mutation when `true`. |
-| `continueOnFailure` | Defaults to `false`; valid only with `batchMode: "ordered"`. |
+| `verifyResult` | Defaults to `false`. When `true`, returns bounded resulting text for changed text files under `verification.files`. Dry runs report `omittedReason: "dry_run"` because no committed content exists. |
 
 Operation inputs are also strict:
 
@@ -119,6 +119,8 @@ Operation inputs are also strict:
 Staged evaluation continues after an operation-local semantic rejection or execution failure whenever the path's captured projection remains available. The failed operation leaves the last valid projected state unchanged, so later same-path operations are still checked in order. If the batch is rejected, valid mutations are withheld as `skipped/batch_rejected`; if staging has an execution failure, they are withheld as `skipped/batch_failed`. `skipped/prior_operation_failed` is reserved for operations that cannot be evaluated because their path projection is unavailable.
 
 Every operation result has `index`, operation `type`, safe relative path fields, `ok`, `outcome`, and `operationStatus`. `operationStatus` is exactly one of `applied`, `no_change`, `planned`, `not_applied`, `failed`, or `skipped`; `outcome` distinguishes completed semantic decisions from execution failure and skipped execution. Exact edits return bounded match counts and one-based Unicode line/column locations. File-content `write`, `replace`, `insert`, and `replace_range` results return complete-file `oldSha256` and `newSha256` hashes when a file exists, or `projectedSha256` for staged and dry-run output. Range edits also return old/new ranges, using `projectedNewRange` during dry runs.
+
+When `verifyResult` is `true`, `verification.files` contains one entry per changed text file with a safe relative path, the resulting inclusive line range, bounded content, and a `truncated` flag. Binary files and files removed by the operation report an omission reason instead of content.
 
 Rejected and skipped operations use this complete typed `reason` taxonomy:
 
