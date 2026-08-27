@@ -35,7 +35,6 @@ import {
   collectPaths,
   collectSearchableFiles,
   commandRequiresConfirmation,
-  ensureExpectedHash,
   hashSha256,
   isTextLikely,
   parsePatchPaths,
@@ -681,11 +680,25 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
         }
       }
     }
+    const stalePatchResult = (reason: "stale_file" | "missing_expected_metadata", relativePath: string, details: Record<string, unknown> = {}) => ({
+      projectAlias,
+      mode,
+      applied: false,
+      dryRun: dryRun ?? false,
+      changedFiles: parsed.files,
+      deletedFiles: [...parsed.deleted],
+      outcome: "completed" as const,
+      operationStatus: "not_applied" as const,
+      reason,
+      relativePath,
+      fileChanged: false,
+      ...details
+    });
     for (const file of parsed.files) {
       const target = resolveProjectPath(projectAlias, file);
       if (existsSync(target)) {
         assertCanReadProjectPath(projectAlias, target, file);
-        if (!byPath.has(file)) throw new Error(`stale_file:${file}:missing_expected_metadata`);
+        if (!byPath.has(file)) return stalePatchResult("missing_expected_metadata", file);
       }
     }
     if (parsed.deleted.size > 0 && policyPermissions(policy).main_agent.requireConfirmation) {
@@ -697,9 +710,22 @@ export function registerBroadProjectTools(server: McpServer, registry: SkillRegi
       assertCanReadProjectPath(projectAlias, target, expected.relativePath);
       const info = statSync(target);
       const expectedSize = expected.sizeBytes ?? expected.bytes;
-      if (expectedSize !== undefined && expectedSize !== info.size) throw new Error(`stale_file:${expected.relativePath}`);
-      if (expected.modifiedAt && expected.modifiedAt !== info.mtime.toISOString()) throw new Error(`stale_file:${expected.relativePath}`);
-      ensureExpectedHash(projectAlias, expected.sha256, expected.relativePath);
+      if (expectedSize !== undefined && expectedSize !== info.size) {
+        return stalePatchResult("stale_file", expected.relativePath, { expectedBytes: expectedSize, actualBytes: info.size });
+      }
+      const actualModifiedAt = info.mtime.toISOString();
+      if (expected.modifiedAt && expected.modifiedAt !== actualModifiedAt) {
+        return stalePatchResult("stale_file", expected.relativePath, { expectedModifiedAt: expected.modifiedAt, actualModifiedAt });
+      }
+      if (expected.sha256) {
+        const actualSha256 = hashSha256(readFileSync(target));
+        if (actualSha256 !== expected.sha256.toLowerCase()) {
+          return stalePatchResult("stale_file", expected.relativePath, {
+            expectedSha256: expected.sha256.toLowerCase(),
+            actualSha256
+          });
+        }
+      }
     }
     const patchPath = path.join(os.tmpdir(), `portus-mcp-${Date.now()}-${Math.random().toString(36).slice(2)}.patch`);
     writeFileSync(patchPath, unifiedDiff, "utf8");

@@ -88,7 +88,7 @@ In `mode: "apply"`, Portus supports two safe application workflows:
 - **One-Shot Direct Apply**: When `files[].expectedSha256` is provided inside the structured patch, top-level `expectedFiles` can be omitted; Portus automatically hydrates the expected metadata and enforces base-hash verification.
 - **Seamless Two-Phase Piping**: When using `mode: "prepare"` first, the returned `expectedFiles` array can be passed directly to `mode: "apply"` without manual field filtering.
 
-Portus verifies `expectedFiles` preconditions (rejecting stale files with `stale_file:<path>`), applies the changeset atomically via `git apply --check` and `git apply`, records durable audit logs, and returns `{ projectAlias, mode, applied, dryRun, changedFiles, deletedFiles }`.
+Portus verifies `expectedFiles` preconditions. A stale precondition returns a completed, not-applied result with `reason: "stale_file"` plus the affected relative path and the mismatching expected/actual size, modification time, or SHA-256 values. Missing expected metadata returns `reason: "missing_expected_metadata"` without applying the patch. Filesystem inspection and Git application failures remain execution errors. Applied results return `{ projectAlias, mode, applied, dryRun, changedFiles, deletedFiles }`.
 
 ### `project_edit` Input and Result Contract
 
@@ -125,7 +125,7 @@ Rejected and skipped operations use this complete typed `reason` taxonomy:
 | Reason | Contract |
 |---|---|
 | `occurrence_mismatch` | A replacement's exact-match count differs from `expectedOccurrences`, or an insertion marker is not unique. |
-| `stale_file` | An operation's expected SHA-256 does not match the captured on-disk base, or pre-commit revalidation detects that the base changed. |
+| `stale_file` | An operation's expected SHA-256 does not match the captured on-disk base, or pre-commit revalidation detects that the base changed. Hash mismatches include `expectedSha256` and `actualSha256`; no mutation is applied. |
 | `invalid_range` | A requested line range is reversed, outside the projected file, or wider than the configured limit. |
 | `conflicting_base_hash` | A later staged operation supplies a different `expectedSha256` from the already accepted base guard for the same path. |
 | `unsupported_batch_mode` | The selected batch mode does not support the requested operation. |

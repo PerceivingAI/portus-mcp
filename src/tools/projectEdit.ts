@@ -362,8 +362,15 @@ export function transformLineRange(input: {
 
 
 function assertExpectedHash(expectedSha256: string | undefined, relativePath: string, content: Buffer): void {
-  if (expectedSha256 && hashSha256(content) !== expectedSha256.toLowerCase()) {
-    throw new SemanticRejection("stale_file", { relativePath: safeRelativePath(relativePath) });
+  if (expectedSha256) {
+    const actualSha256 = hashSha256(content);
+    if (actualSha256 !== expectedSha256.toLowerCase()) {
+      throw new SemanticRejection("stale_file", {
+        relativePath: safeRelativePath(relativePath),
+        expectedSha256: expectedSha256.toLowerCase(),
+        actualSha256
+      });
+    }
   }
 }
 
@@ -409,7 +416,10 @@ function executeWrite(index: number, operation: Extract<EditOperation, { type: "
   }
 
   if (operation.expectedSha256) {
-    throw new SemanticRejection("stale_file", { relativePath: safeRelativePath(operation.relativePath) });
+    throw new SemanticRejection("stale_file", {
+      relativePath: safeRelativePath(operation.relativePath),
+      expectedSha256: operation.expectedSha256?.toLowerCase()
+    });
   }
   if (dryRun) {
     return planned(identity, { bytes: desired.length, projectedSha256: hashSha256(desired) });
@@ -781,7 +791,10 @@ function evaluateStagedOperation(
       throw new SemanticRejection("conflicting_base_hash", {});
     }
     if (!projection.baseExists || projection.baseSha256 !== expectedSha256) {
-      throw new SemanticRejection("stale_file", {});
+      throw new SemanticRejection("stale_file", {
+        expectedSha256,
+        ...(projection.baseSha256 === undefined ? {} : { actualSha256: projection.baseSha256 })
+      });
     }
     projection.suppliedBaseHash ??= expectedSha256;
   }

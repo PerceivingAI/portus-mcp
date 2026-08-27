@@ -374,6 +374,8 @@ test("project_edit exposes typed exact-edit outcomes", async (t) => {
     assert.equal(batch.errorCount, 0);
     assert.equal(batch.results[0].reason, "stale_file");
     assert.equal(batch.results[0].operationStatus, "not_applied");
+    assert.equal(batch.results[0].expectedSha256, sha256("old\n"));
+    assert.equal(batch.results[0].actualSha256, sha256("current\n"));
     assert.equal(readFileSync(target, "utf8"), "current\n");
   });
   await t.test("applies guarded ranges while preserving CRLF and missing-final-newline state", async () => {

@@ -1,5 +1,6 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -125,6 +126,21 @@ const appliedSchema = z.object({
   changedFiles: z.array(z.string()),
   deletedFiles: z.array(z.string())
 });
+const staleSchema = z.object({
+  projectAlias: z.string(),
+  mode: z.literal("apply"),
+  applied: z.literal(false),
+  dryRun: z.boolean(),
+  changedFiles: z.array(z.string()),
+  deletedFiles: z.array(z.string()),
+  outcome: z.literal("completed"),
+  operationStatus: z.literal("not_applied"),
+  reason: z.enum(["stale_file", "missing_expected_metadata"]),
+  relativePath: z.string(),
+  fileChanged: z.literal(false),
+  expectedSha256: z.string().optional(),
+  actualSha256: z.string().optional()
+});
 const permissionSchema = z.object({ requiredPermissions: z.array(z.string()) });
 const errorSchema = z.object({ error: z.string() });
 
@@ -137,6 +153,10 @@ function resultOf<T>(response: CallToolResult, schema: z.ZodType<T>): T {
 function errorOf(response: CallToolResult): string {
   assert.equal(response.isError, true);
   return errorSchema.parse(response.structuredContent).error;
+}
+
+function sha256(content: string | Buffer): string {
+  return createHash("sha256").update(content).digest("hex");
 }
 
 async function withClient(t: TestContext): Promise<Client> {
@@ -496,8 +516,11 @@ test("project_patch supports structured hunks in prepare and apply modes", async
       }
     }
   });
-  assert.equal(staleOneShot.isError, true);
-  assert.match(JSON.stringify(staleOneShot.structuredContent), /stale_file:existing\.txt/);
+  const staleResult = resultOf(staleOneShot, staleSchema);
+  assert.equal(staleResult.reason, "stale_file");
+  assert.equal(staleResult.relativePath, "existing.txt");
+  assert.equal(staleResult.expectedSha256, "0000000000000000000000000000000000000000000000000000000000000000");
+  assert.equal(staleResult.actualSha256, sha256("one-shot-updated\r\n"));
 
 });
 
