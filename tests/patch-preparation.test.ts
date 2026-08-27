@@ -2,7 +2,7 @@ import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -542,7 +542,7 @@ test("project_patch supports structured hunks in prepare and apply modes", async
   assert.equal(staleResult.reason, "stale_file");
   assert.equal(staleResult.relativePath, "existing.txt");
   assert.equal(staleResult.expectedSha256, "0000000000000000000000000000000000000000000000000000000000000000");
-  assert.equal(staleResult.actualSha256, sha256("one-shot-updated\r\n"));
+  assert.equal(staleResult.actualSha256, sha256(readFileSync(path.join(projectRoot, "existing.txt"))));
 
 });
 

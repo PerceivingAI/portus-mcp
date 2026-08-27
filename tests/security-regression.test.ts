@@ -441,7 +441,8 @@ test("MCP denies gitignored-file reads and excludes traversal patterns", async (
   }));
   for (const denied of reads.results) {
     assert.equal(denied.ok, false);
-    assert.match(denied.error, /readGitIgnoredFiles/);
+    const expectedPermission = denied.mode === "content" ? /readGitIgnoredFiles/ : /statGitIgnoredFiles/;
+    assert.match(denied.error, expectedPermission);
   }
 
   const copied = resultOf(await client.callTool({
