@@ -1,14 +1,23 @@
+# Dependencies and build output
 node_modules/
 dist/
 coverage/
-.portus-security-test-*/
-.portus-exec-test-*/
-portus-agents/
-portus-mcp/
+
+# Runtime state and generated workspaces
 .portus-mcp/
+.flue/
+portus-agents/
+.portus-agents/
+portus-mcp/
+
+# Test fixtures
+.portus-core-test-*/
+.portus-exec-test-*/
+.portus-mcp-test-*/
+.portus-security-test-*/
+
+# Local-only files
 notes/
 .env
-.portus-agents/
-.flue/
-*.log
 *.local.json
+*.log
