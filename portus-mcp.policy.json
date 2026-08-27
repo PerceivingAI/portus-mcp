@@ -12,6 +12,7 @@
       "projectPolicy": true,
       "projectScreenshot": false,
       "readGitIgnoredFiles": false,
+      "statGitIgnoredFiles": false,
       "requireConfirmation": true,
       "allowShell": false,
       "allowedCommands": ["git"]

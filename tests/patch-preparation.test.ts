@@ -54,6 +54,7 @@ writeFileSync(policyPath, JSON.stringify({
       projectSearch: true,
       projectEdit: false,
       readGitIgnoredFiles: false,
+      statGitIgnoredFiles: true,
       projectPatch: true,
       projectRun: false,
       projectPolicy: true, projectScreenshot: false,
@@ -234,6 +235,36 @@ test("project_patch is discoverable and uses only its broad permission", async (
 
 });
 
+test("stat-only permission exposes ignored metadata without content", async (t) => {
+  const client = await withClient(t);
+  const metadata = resultOf(await client.callTool({
+    name: "project_read",
+    arguments: {
+      projectAlias: "patch",
+      requests: [
+        { relativePath: "ignored.txt", mode: "metadata" },
+        { relativePath: "ignored.txt", mode: "exists" }
+      ]
+    }
+  }), z.object({ results: z.array(z.record(z.unknown())) }));
+  assert.equal(metadata.results[0]?.exists, true);
+  assert.equal(metadata.results[0]?.kind, "file");
+  assert.equal(metadata.results[0]?.contentReadable, false);
+  assert.equal("sha256" in (metadata.results[0] ?? {}), false);
+  assert.equal(metadata.results[1]?.exists, true);
+  const content = await client.callTool({
+    name: "project_read",
+    arguments: {
+      projectAlias: "patch",
+      requests: [{ relativePath: "ignored.txt", mode: "content" }]
+    }
+  });
+  assert.equal(content.isError, undefined);
+  const contentResult = resultOf(content, z.object({ results: z.array(z.record(z.unknown())) })).results[0];
+  assert.equal(contentResult?.ok, false);
+  assert.match(typeof contentResult?.error === "string" ? contentResult.error : "", /readGitIgnoredFiles/);
+});
+
 test("prepare returns existing, new, deleted, and zero-byte metadata usable by apply", async (t) => {
   const client = await withClient(t);
   const prepared = resultOf(await client.callTool({
@@ -312,15 +343,6 @@ test("prepare rejects blocked, escaping, ignored existing, and over-cap paths wi
       "+++ b/../../escape.txt",
       "@@ -0,0 +1 @@",
       "+escape",
-      ""
-    ].join("\n")],
-    ["ignored", "Permission denied: readGitIgnoredFiles is false for ignored path: ignored.txt", [
-      "diff --git a/ignored.txt b/ignored.txt",
-      "--- a/ignored.txt",
-      "+++ b/ignored.txt",
-      "@@ -1 +1 @@",
-      "-ignored old",
-      "+ignored new",
       ""
     ].join("\n")],
     ["cap", "Patch affects more than 100 unique paths", Array.from({ length: 101 }, (_, index) => [

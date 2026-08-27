@@ -204,6 +204,10 @@ function isGitIgnored(projectRoot: string, target: string): boolean {
   }
 }
 
+export function isProjectPathGitIgnored(projectAlias: string, target: string): boolean {
+  return isGitIgnored(getProject(projectAlias).rootPath, target);
+}
+
 export function assertCanReadProjectPath(
   projectAlias: string,
   target: string,
@@ -216,6 +220,21 @@ export function assertCanReadProjectPath(
   if (permissions.readGitIgnoredFiles) return;
   if (isGitIgnored(getProject(projectAlias).rootPath, target)) {
     throw new Error(`Permission denied: readGitIgnoredFiles is false for ignored path: ${relativePath}`);
+  }
+}
+
+export function assertCanStatProjectPath(
+  projectAlias: string,
+  target: string,
+  relativePath: string,
+  registry?: SkillRegistrySnapshot,
+  policy: PortusPolicyConfig = loadPolicyConfig()
+): void {
+  if (registry?.connected.byAlias.has(projectAlias)) return;
+  const permissions = policyPermissions(policy).main_agent;
+  if (permissions.readGitIgnoredFiles || permissions.statGitIgnoredFiles) return;
+  if (isGitIgnored(getProject(projectAlias).rootPath, target)) {
+    throw new Error(`Permission denied: statGitIgnoredFiles is false for ignored path: ${relativePath}`);
   }
 }
 

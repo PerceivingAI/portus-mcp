@@ -31,12 +31,14 @@ import { patchInputSchema, synthesizeUnifiedDiff } from "./patchSynthesizer.js";
 import type { SkillRegistrySnapshot } from "../skills/SkillRegistry.js";
 import {
   assertCanReadProjectPath,
+  assertCanStatProjectPath,
   assertProjectCommandStaysInProject,
   collectPaths,
   collectSearchableFiles,
   commandRequiresConfirmation,
   hashSha256,
   isTextLikely,
+  isProjectPathGitIgnored,
   parsePatchPaths,
   readProjectBinaryFile,
   readProjectTextFile,
@@ -98,6 +100,7 @@ function projectContextCapabilities(policy: PortusPolicyConfig): ProjectContextC
   const features: Record<string, EnabledFeature> = {};
   if (permissions.projectRun && permissions.allowShell) features.shell = { enabled: true };
   if (permissions.readGitIgnoredFiles) features.readGitIgnoredFiles = { enabled: true };
+  if (permissions.statGitIgnoredFiles) features.statGitIgnoredFiles = { enabled: true };
   if (
     permissions.requireConfirmation
     && (permissions.projectEdit || permissions.projectPatch || permissions.projectRun)
@@ -122,10 +125,13 @@ function pathMetadata(projectAlias: string, relativePath: string, includeHash: b
   const target = registry
     ? resolveReadablePath(projectAlias, relativePath, registry)
     : resolveProjectPath(projectAlias, relativePath);
-  assertCanReadProjectPath(projectAlias, target, relativePath, registry);
+  assertCanStatProjectPath(projectAlias, target, relativePath, registry);
   if (!existsSync(target)) return { relativePath, exists: false };
   const info = statSync(target);
   const kind = info.isDirectory() ? "directory" : info.isFile() ? "file" : "other";
+  const contentReadable = registry?.connected.byAlias.has(projectAlias)
+    || !isProjectPathGitIgnored(projectAlias, target)
+    || policyPermissions().main_agent.readGitIgnoredFiles;
   return {
     relativePath,
     exists: true,
@@ -133,7 +139,8 @@ function pathMetadata(projectAlias: string, relativePath: string, includeHash: b
     bytes: info.size,
     modifiedAt: info.mtime.toISOString(),
     isTextLikely: kind === "file" ? isTextLikely(target) : false,
-    ...(includeHash && kind === "file" ? { sha256: hashSha256(readFileSync(target)) } : {})
+    contentReadable,
+    ...(includeHash && kind === "file" && contentReadable ? { sha256: hashSha256(readFileSync(target)) } : {})
   };
 }
 
@@ -445,7 +452,7 @@ export function registerProjectReadTool(server: McpServer, registry: SkillRegist
           : request.mode === "exists"
             ? (() => {
                 const target = resolveReadablePath(projectAlias, request.relativePath, registry);
-                assertCanReadProjectPath(projectAlias, target, request.relativePath, registry);
+                assertCanStatProjectPath(projectAlias, target, request.relativePath, registry);
                 return { relativePath: request.relativePath, exists: existsSync(target) };
               })()
             : request.mode === "binary"
