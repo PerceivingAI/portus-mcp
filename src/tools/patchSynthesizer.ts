@@ -22,10 +22,57 @@ export const structuredPatchFileSchema = z.object({
   deleted: z.boolean().optional(),
   hunks: z.array(structuredHunkSchema).optional(),
   content: z.string().optional()
-}).strict().refine(
-  (file) => file.deleted === true || (Array.isArray(file.hunks) && file.hunks.length > 0) || typeof file.content === "string",
-  { message: "Structured patch file must specify hunks, full content, or deleted: true" }
-);
+}).strict().superRefine((file, ctx) => {
+  const hasHunks = Array.isArray(file.hunks) && file.hunks.length > 0;
+  const hasContent = typeof file.content === "string";
+
+  if (file.deleted === true) {
+    if (file.newFile === true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Structured patch file cannot specify both deleted: true and newFile: true"
+      });
+    }
+    if (hasContent) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Structured patch file cannot specify content when deleted: true"
+      });
+    }
+    if (hasHunks || (Array.isArray(file.hunks) && file.hunks.length === 0)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Structured patch file cannot specify hunks when deleted: true"
+      });
+    }
+    return;
+  }
+
+  if (file.newFile === true) {
+    if (hasHunks || (Array.isArray(file.hunks) && file.hunks.length === 0)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Structured patch file cannot specify hunks when newFile: true"
+      });
+    }
+    return;
+  }
+
+  if (hasContent && hasHunks) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Structured patch file cannot specify both full content and hunks"
+    });
+    return;
+  }
+
+  if (!hasContent && !hasHunks) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Structured patch file must specify hunks, full content, newFile: true, or deleted: true"
+    });
+  }
+});
 
 export type StructuredPatchFile = z.infer<typeof structuredPatchFileSchema>;
 
@@ -124,6 +171,11 @@ function findHunkLocation(
     if (candidates.length > 1 && hunk.lineHint !== undefined) {
       const targetZeroIndex = hunk.lineHint - 1;
       candidates.sort((a, b) => Math.abs(a - targetZeroIndex) - Math.abs(b - targetZeroIndex));
+      const dist0 = Math.abs(candidates[0]! - targetZeroIndex);
+      const dist1 = Math.abs(candidates[1]! - targetZeroIndex);
+      if (dist0 === dist1) {
+        throw new Error(`Ambiguous hunk match in ${relativePath}: multiple equidistant occurrences found for lineHint ${hunk.lineHint}`);
+      }
       resolvedIndex = candidates[0];
     } else if (candidates.length === 1) {
       resolvedIndex = candidates[0];

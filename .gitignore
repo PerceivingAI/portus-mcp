@@ -15,6 +15,7 @@ portus-mcp/
 .portus-exec-test-*/
 .portus-mcp-test-*/
 .portus-security-test-*/
+.portus-shot-test-*/
 
 # Local-only files
 notes/

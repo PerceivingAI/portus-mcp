@@ -567,4 +567,107 @@ test("project_patch rejects missing and ambiguous structured hunks", async (t) =
   });
   assert.equal(missingHunk.isError, true);
   assert.match(JSON.stringify(missingHunk.structuredContent), /Hunk not found in existing.txt/);
+
+  // Ambiguous hunk without lineHint
+  const duplicateFile = path.join(projectRoot, "duplicate.txt");
+  writeFileSync(duplicateFile, "repeat\nmiddle\nrepeat\n");
+
+  const ambiguousHunkNoHint = await client.callTool({
+    name: "project_patch",
+    arguments: {
+      projectAlias: "patch",
+      mode: "prepare",
+      patch: {
+        files: [
+          {
+            relativePath: "duplicate.txt",
+            hunks: [{ old: "repeat", new: "replaced" }]
+          }
+        ]
+      }
+    }
+  });
+  assert.equal(ambiguousHunkNoHint.isError, true);
+  assert.match(JSON.stringify(ambiguousHunkNoHint.structuredContent), /Ambiguous hunk match in duplicate\.txt: multiple occurrences found/);
+
+  // Ambiguous hunk with equidistant lineHint tie
+  const ambiguousHunkTie = await client.callTool({
+    name: "project_patch",
+    arguments: {
+      projectAlias: "patch",
+      mode: "prepare",
+      patch: {
+        files: [
+          {
+            relativePath: "duplicate.txt",
+            hunks: [{ old: "repeat", new: "replaced", lineHint: 2 }]
+          }
+        ]
+      }
+    }
+  });
+  assert.equal(ambiguousHunkTie.isError, true);
+  assert.match(JSON.stringify(ambiguousHunkTie.structuredContent), /multiple equidistant occurrences found for lineHint 2/);
+
+  // Disambiguated with unambiguous lineHint
+  const unambiguousHunk = await client.callTool({
+    name: "project_patch",
+    arguments: {
+      projectAlias: "patch",
+      mode: "prepare",
+      patch: {
+        files: [
+          {
+            relativePath: "duplicate.txt",
+            hunks: [{ old: "repeat", new: "replaced", lineHint: 1 }]
+          }
+        ]
+      }
+    }
+  });
+  assert.equal(unambiguousHunk.isError, undefined);
+});
+
+test("project_patch validates and rejects contradictory structured file fields", async (t) => {
+  const client = await withClient(t);
+
+  const testCases = [
+    {
+      patch: { files: [{ relativePath: "f.txt", deleted: true, newFile: true }] },
+      expectedError: /cannot specify both deleted: true and newFile: true/
+    },
+    {
+      patch: { files: [{ relativePath: "f.txt", deleted: true, content: "abc" }] },
+      expectedError: /cannot specify content when deleted: true/
+    },
+    {
+      patch: { files: [{ relativePath: "f.txt", deleted: true, hunks: [{ old: "a", new: "b" }] }] },
+      expectedError: /cannot specify hunks when deleted: true/
+    },
+    {
+      patch: { files: [{ relativePath: "f.txt", newFile: true, hunks: [{ old: "a", new: "b" }] }] },
+      expectedError: /cannot specify hunks when newFile: true/
+    },
+    {
+      patch: { files: [{ relativePath: "f.txt", content: "abc", hunks: [{ old: "a", new: "b" }] }] },
+      expectedError: /cannot specify both full content and hunks/
+    },
+    {
+      patch: { files: [{ relativePath: "f.txt" }] },
+      expectedError: /must specify hunks, full content, newFile: true, or deleted: true/
+    }
+  ];
+
+  for (const { patch, expectedError } of testCases) {
+    const res = await client.callTool({
+      name: "project_patch",
+      arguments: {
+        projectAlias: "patch",
+        mode: "prepare",
+        patch
+      }
+    });
+    assert.equal(res.isError, true);
+    assert.match(JSON.stringify(res), expectedError);
+  }
 });
