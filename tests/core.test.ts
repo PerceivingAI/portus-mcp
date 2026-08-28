@@ -13,7 +13,7 @@ const stateDir = path.join(root, "state");
 const projectRoot = path.join(root, "project");
 const configPath = path.join(root, "config.json");
 const dotenvPath = path.join(root, "missing.env");
-after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+after(() => rmSync(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 100 }));
 
 
 mkdirSync(projectRoot, { recursive: true });

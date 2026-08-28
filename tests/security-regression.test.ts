@@ -12,7 +12,7 @@ const projectRoot = path.join(root, "project");
 const stateDir = path.join(projectRoot, ".portus-mcp");
 const configPath = path.join(root, "config.json");
 const dotenvPath = path.join(root, "missing.env");
-after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+after(() => rmSync(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 100 }));
 
 
 mkdirSync(projectRoot, { recursive: true });
@@ -332,9 +332,9 @@ test("canonical project boundary permits internal links and rejects external jun
     process.env.PORTUS_MCP_PROJECTS = savedProjects;
     for (const junction of [outsideLink, insideLink, rootLink]) {
       try {
-        unlinkSync(junction);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        rmSync(junction, { recursive: true, force: true });
+      } catch {
+        // ignore
       }
     }
   });

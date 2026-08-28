@@ -87,7 +87,7 @@ process.env.AGENT_SKILL_PATHS = "";
 process.env.SUBAGENTS_SKILL_PATHS = "";
 process.env.PORTUS_MCP_PROJECTS = `edit=${projectRoot}`;
 
-after(() => rmSync(root, { recursive: true, force: true }));
+after(() => rmSync(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 100 }));
 
 // The server reads these environment-selected paths during module initialization.
 const { createHttpServer } = await import("../src/server.js");

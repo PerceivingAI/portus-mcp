@@ -183,7 +183,7 @@ test.after(() => {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
   }
-  rmSync(root, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 100 });
 });
 
 test("fixed tool discovery and positive capabilities follow effective permissions", async () => {

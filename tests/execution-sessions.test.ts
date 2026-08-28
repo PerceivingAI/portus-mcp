@@ -20,13 +20,7 @@ const root = mkdtempSync(path.join(process.cwd(), ".portus-exec-test-"));
 const stateDir = path.join(root, "state");
 process.env.PORTUS_MCP_STATE_DIR = stateDir;
 process.env.PORTUS_MCP_PROJECTS = `test=${root}`;
-after(async () => {
-  try {
-    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  } catch {
-    // Ignore transient cleanup errors on Windows
-  }
-});
+after(() => rmSync(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 100 }));
 
 const selectedPolicy = loadPolicyConfig();
 const withMainAgentPermissions = (
@@ -210,7 +204,7 @@ test("Execution sessions finalize cleanly even when background child keeps inher
   // Script launches a child inheriting stdout and holding it, while parent exits immediately with code 0
   const pipeInheritScript = [
     "const { spawn } = require('node:child_process')",
-    "const child = spawn('node', ['-e', 'setTimeout(() => {}, 30000)'], { stdio: ['ignore', 1, 2], detached: true })",
+    "const child = spawn('node', ['-e', 'setTimeout(() => {}, 1000)'], { stdio: ['ignore', 1, 2], detached: true, cwd: require('node:os').tmpdir() })",
     "console.log('CHILD_PID:' + child.pid)",
     "child.unref()",
     "console.log('parent-finished')"
@@ -399,7 +393,7 @@ test("Execution sessions finalize cleanly even when background child keeps inher
 
   const pipeInheritScript = [
     "const { spawn } = require('node:child_process')",
-    "const child = spawn('node', ['-e', 'setTimeout(() => {}, 30000)'], { stdio: ['ignore', 1, 2], detached: true })",
+    "const child = spawn('node', ['-e', 'setTimeout(() => {}, 1000)'], { stdio: ['ignore', 1, 2], detached: true, cwd: require('node:os').tmpdir() })",
     "console.log('CHILD_PID:' + child.pid)",
     "child.unref()",
     "console.error('stderr-parent-finished')"

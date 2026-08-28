@@ -18,7 +18,7 @@ process.env.PORTUS_MCP_STATE_DIR = stateDir;
 // The shipped policy is valid today; path-policy containment checks load it.
 process.env.PORTUS_MCP_POLICY_PATH = path.join(root, "policy.json");
 writeFileSync(path.join(root, "policy.json"), readFileSync(path.resolve("portus-mcp.policy.json"), "utf8"));
-after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+after(() => rmSync(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 100 }));
 
 // Stateful modules are imported only after the isolated environment paths are installed.
 const projectRoot = path.join(root, "project");
@@ -238,7 +238,13 @@ test("capture rejects a session-directory symlink before launching the worker", 
   mkdirSync(outside, { recursive: true });
   symlinkSync(outside, sessionLink, process.platform === "win32" ? "junction" : "dir");
   t.after(() => {
-    if (existsSync(sessionLink)) unlinkSync(sessionLink);
+    if (existsSync(sessionLink)) {
+      try {
+        rmSync(sessionLink, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+    }
     rmSync(outside, { recursive: true, force: true });
   });
 

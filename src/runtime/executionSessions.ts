@@ -639,7 +639,7 @@ async function handleSessionTimeout(sessionId: string): Promise<void> {
     forcedCloseGraceMs: FORCED_CLOSE_GRACE_MS
   });
 
-  if (termination.childCloseObserved) await closeExecutionOutput(entry);
+  await closeExecutionOutput(entry);
 
   rec.completedAt = new Date().toISOString();
   rec.executionError = appendTerminationFailure(rec.executionError, termination);
@@ -700,7 +700,7 @@ export async function terminateExecutionSession(sessionId: string): Promise<Publ
     forcedCloseGraceMs: FORCED_CLOSE_GRACE_MS
   });
 
-  if (termination.childCloseObserved) await closeExecutionOutput(entry);
+  await closeExecutionOutput(entry);
 
   rec.executionError = appendTerminationFailure(rec.executionError, termination);
   rec.lifecycle = lifecycleAfterTermination(rec.lifecycle, termination);
