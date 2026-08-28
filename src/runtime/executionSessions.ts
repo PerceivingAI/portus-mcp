@@ -41,6 +41,9 @@ export type ExecutionSessionRecord = {
   stderrPath: string;
   stdoutBytes: number;
   stderrBytes: number;
+  lastStdoutAt?: string;
+  lastStderrAt?: string;
+  lastOutputAt?: string;
   lifecycle: ProcessLifecycle;
 };
 
@@ -58,6 +61,9 @@ export type PublicExecutionSession = {
   elapsedMs: number;
   stdoutBytes: number;
   stderrBytes: number;
+  lastStdoutAt?: string;
+  lastStderrAt?: string;
+  lastOutputAt?: string;
   lifecycle: ProcessLifecycle;
 };
 
@@ -96,6 +102,9 @@ export type PollExecutionSessionResult = {
   nextCursor: number;
   stdoutBytes: number;
   stderrBytes: number;
+  lastStdoutAt?: string;
+  lastStderrAt?: string;
+  lastOutputAt?: string;
   exitCode: number | null;
   signal: string | null;
   executionError: string | null;
@@ -201,6 +210,9 @@ export function toPublicExecutionSession(record: ExecutionSessionRecord): Public
     status: record.status,
     startedAt: record.startedAt,
     ...(record.completedAt ? { completedAt: record.completedAt } : {}),
+    ...(record.lastStdoutAt ? { lastStdoutAt: record.lastStdoutAt } : {}),
+    ...(record.lastStderrAt ? { lastStderrAt: record.lastStderrAt } : {}),
+    ...(record.lastOutputAt ? { lastOutputAt: record.lastOutputAt } : {}),
     exitCode: record.exitCode,
     signal: record.signal,
     executionError: record.executionError,
@@ -233,13 +245,15 @@ export function reconcileExecutionSessionRecord(record: ExecutionSessionRecord):
   if (pid === undefined || !isProcessAlive(pid)) {
     record.status = record.exitCode !== null ? (record.exitCode === 0 ? "completed" : "failed") : "stopped";
     record.completedAt ??= new Date().toISOString();
+    const exitCodeKnown = record.exitCode !== null || record.signal !== null;
     record.lifecycle = {
       ...record.lifecycle,
       processExited: true,
       waitAttempted: true,
       reaped: true,
       reconciled: true,
-      reconciliationReason: "root_process_absent"
+      reconciliationReason: "root_process_absent",
+      exitCodeKnown
     };
     upsertExecutionSession(record);
     notifyExecutionSessionExit(record.sessionId);
@@ -491,11 +505,17 @@ export async function startExecutionSession(options: StartExecutionSessionOption
   child.stdout?.on("data", (chunk: Buffer) => {
     if (!stdoutStream.destroyed && !stdoutStream.writableEnded) stdoutStream.write(chunk);
     record.stdoutBytes += chunk.length;
+    const now = new Date().toISOString();
+    record.lastStdoutAt = now;
+    record.lastOutputAt = now;
   });
 
   child.stderr?.on("data", (chunk: Buffer) => {
     if (!stderrStream.destroyed && !stderrStream.writableEnded) stderrStream.write(chunk);
     record.stderrBytes += chunk.length;
+    const now = new Date().toISOString();
+    record.lastStderrAt = now;
+    record.lastOutputAt = now;
   });
 
   const triggerClose = (code: number | null, signal: NodeJS.Signals | null, reason?: string) => {
@@ -559,11 +579,13 @@ async function handleProcessClosed(
   if (rec.status === "running") {
     rec.status = exitCode === 0 ? "completed" : "failed";
   }
+  const exitCodeKnown = exitCode !== null || signal !== null;
   rec.lifecycle = {
     ...rec.lifecycle,
     processExited: true,
     waitAttempted: true,
     reaped: true,
+    exitCodeKnown,
     ...(reconciliationReason ? { reconciled: true, reconciliationReason } : {})
   };
   upsertExecutionSession(rec);
@@ -776,6 +798,9 @@ export function pollExecutionSession(options: PollExecutionSessionOptions): Poll
     nextCursor,
     stdoutBytes: record.stdoutBytes,
     stderrBytes: record.stderrBytes,
+    ...(record.lastStdoutAt ? { lastStdoutAt: record.lastStdoutAt } : {}),
+    ...(record.lastStderrAt ? { lastStderrAt: record.lastStderrAt } : {}),
+    ...(record.lastOutputAt ? { lastOutputAt: record.lastOutputAt } : {}),
     exitCode: record.exitCode,
     signal: record.signal,
     executionError: record.executionError,

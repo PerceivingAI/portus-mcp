@@ -37,6 +37,7 @@ export type ProcessLifecycle = {
   method?: ProcessTerminationMethod;
   reconciled?: boolean;
   reconciliationReason?: string;
+  exitCodeKnown?: boolean;
 };
 
 export type ProcessTreeTerminationOptions = {

@@ -73,9 +73,11 @@ test("Execution sessions: start, poll incremental chunks with cursor, and comple
 
   assert.notEqual(pollRes.status, "running");
   assert.equal(pollRes.exitCode, 0);
+  assert.equal(pollRes.lifecycle.exitCodeKnown, true);
+  assert.ok(pollRes.lastStdoutAt);
+  assert.ok(pollRes.lastOutputAt);
   assert.match(pollRes.stdoutChunk, /line1\r?\nline2\r?\nline3/);
   assert.equal(pollRes.nextCursor > 0, true);
-
   // Poll again from nextCursor - should return empty chunk
   const nextPoll = pollExecutionSession({ sessionId: session.sessionId, cursor: pollRes.nextCursor });
   assert.equal(nextPoll.stdoutChunk, "");
@@ -294,11 +296,54 @@ test("Execution sessions reconcile stale/orphaned sessions on poll and list", as
   assert.equal(polled.lifecycle.reaped, true);
   assert.equal(polled.lifecycle.reconciled, true);
   assert.equal(polled.lifecycle.reconciliationReason, "root_process_absent");
-
+  assert.equal(polled.lifecycle.exitCodeKnown, false);
   // 2. Listing sessions should reflect the reconciled state
   const list = listExecutionSessions("test");
   const entry = list.find((s) => s.sessionId === staleSessionId);
   assert.ok(entry);
   assert.equal(entry.status, "stopped");
   assert.equal(entry.lifecycle.reconciled, true);
+});
+
+test("Execution sessions track output timestamps (lastStdoutAt, lastStderrAt, lastOutputAt) and public telemetry", async () => {
+  const testPolicy = withMainAgentPermissions({
+    allowedCommands: ["node"]
+  });
+
+  const dualOutputScript = "console.log('out-chunk'); console.error('err-chunk');";
+  const session = await startExecutionSession({
+    projectAlias: "test",
+    rootPath: root,
+    command: "node",
+    args: ["-e", dualOutputScript],
+    timeoutSecs: 30,
+    policy: testPolicy
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Exit event timed out")), 5000);
+    const unsubscribe = subscribeExecutionSessionExit((id) => {
+      if (id === session.sessionId) {
+        clearTimeout(timer);
+        unsubscribe();
+        resolve();
+      }
+    });
+  });
+
+  const polled = pollExecutionSession({ sessionId: session.sessionId, stream: "both" });
+  assert.equal(polled.status, "completed");
+  assert.equal(polled.exitCode, 0);
+  assert.equal(polled.lifecycle.exitCodeKnown, true);
+  assert.ok(polled.lastStdoutAt, "lastStdoutAt should be recorded");
+  assert.ok(polled.lastStderrAt, "lastStderrAt should be recorded");
+  assert.ok(polled.lastOutputAt, "lastOutputAt should be recorded");
+  assert.equal(polled.stdoutBytes > 0, true);
+  assert.equal(polled.stderrBytes > 0, true);
+
+  const publicSession = listExecutionSessions("test").find((s) => s.sessionId === session.sessionId);
+  assert.ok(publicSession);
+  assert.equal(publicSession.lastStdoutAt, polled.lastStdoutAt);
+  assert.equal(publicSession.lastStderrAt, polled.lastStderrAt);
+  assert.equal(publicSession.lastOutputAt, polled.lastOutputAt);
 });
