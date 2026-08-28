@@ -35,6 +35,8 @@ export type ProcessLifecycle = {
   terminationVerificationError?: string;
   scope?: "process_tree" | "direct_child";
   method?: ProcessTerminationMethod;
+  reconciled?: boolean;
+  reconciliationReason?: string;
 };
 
 export type ProcessTreeTerminationOptions = {

@@ -6,13 +6,20 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { loadPolicyConfig, policyPermissions, type PortusPolicyConfig } from "../policy/policyConfig.js";
 import { stateStore } from "../state/StateStore.js";
-import { terminateProcessTree, type ProcessLifecycle, type ProcessTreeTerminationResult } from "./processTermination.js";
+import {
+  forceKillPid,
+  isProcessAlive,
+  terminateProcessTree,
+  type ProcessLifecycle,
+  type ProcessTreeTerminationResult
+} from "./processTermination.js";
 
 const DEFAULT_SESSION_TIMEOUT_MS = 3600 * 1000;
 const SESSIONS_FILE = "execution_sessions.json";
 const ESCALATION_DELAY_MS = 1200;
 const FORCED_CLOSE_GRACE_MS = 8000;
 const MAX_SESSION_INPUT_BYTES = 64 * 1024;
+const STDIO_DRAIN_GRACE_MS = 500;
 
 export type ExecutionSessionStatus = "running" | "completed" | "failed" | "timed_out" | "stopped";
 
@@ -99,11 +106,16 @@ export type PollExecutionSessionResult = {
 type ActiveProcessEntry = {
   child: ChildProcess;
   timeoutHandle: NodeJS.Timeout;
+  drainTimer?: NodeJS.Timeout;
   startedAtMs: number;
   stdoutStream: WriteStream;
   stderrStream: WriteStream;
   outputClosePromise?: Promise<void>;
   record: ExecutionSessionRecord;
+  exitObserved?: boolean;
+  exitCode?: number | null;
+  signal?: NodeJS.Signals | null;
+  finalized?: boolean;
 };
 
 const activeProcesses = new Map<string, ActiveProcessEntry>();
@@ -199,10 +211,70 @@ export function toPublicExecutionSession(record: ExecutionSessionRecord): Public
   };
 }
 
-export function listExecutionSessions(projectAlias?: string): PublicExecutionSession[] {
+export function reconcileExecutionSessionRecord(record: ExecutionSessionRecord): ExecutionSessionRecord {
+  if (record.status !== "running") return record;
+
+  const entry = activeProcesses.get(record.sessionId);
+  if (entry) {
+    const pid = entry.child.pid;
+    if (pid !== undefined && !isProcessAlive(pid)) {
+      void handleProcessClosed(
+        record.sessionId,
+        entry.exitCode ?? entry.child.exitCode ?? null,
+        entry.signal ?? entry.child.signalCode ?? null,
+        "root_process_absent"
+      );
+      return getExecutionSession(record.sessionId);
+    }
+    return record;
+  }
+
+  const pid = record.pid;
+  if (pid === undefined || !isProcessAlive(pid)) {
+    record.status = record.exitCode !== null ? (record.exitCode === 0 ? "completed" : "failed") : "stopped";
+    record.completedAt ??= new Date().toISOString();
+    record.lifecycle = {
+      ...record.lifecycle,
+      processExited: true,
+      waitAttempted: true,
+      reaped: true,
+      reconciled: true,
+      reconciliationReason: "root_process_absent"
+    };
+    upsertExecutionSession(record);
+    notifyExecutionSessionExit(record.sessionId);
+    stateStore.audit({
+      tool: "project_run",
+      sessionAction: "reconciled",
+      sessionId: record.sessionId,
+      projectAlias: record.projectAlias,
+      status: record.status,
+      reconciliationReason: "root_process_absent"
+    });
+  }
+
+  return record;
+}
+
+export function reconcileOrphanedExecutionSessions(projectAlias?: string): ExecutionSessionRecord[] {
   const records = readSessionRecords();
+  const updated: ExecutionSessionRecord[] = [];
+  for (const record of records) {
+    if (record.status === "running") {
+      const reconciled = reconcileExecutionSessionRecord(record);
+      if (!projectAlias || reconciled.projectAlias === projectAlias) {
+        updated.push(reconciled);
+      }
+    } else if (!projectAlias || record.projectAlias === projectAlias) {
+      updated.push(record);
+    }
+  }
+  return updated;
+}
+
+export function listExecutionSessions(projectAlias?: string): PublicExecutionSession[] {
+  const records = reconcileOrphanedExecutionSessions(projectAlias);
   return records
-    .filter((s) => !projectAlias || s.projectAlias === projectAlias)
     .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
     .map(toPublicExecutionSession);
 }
@@ -426,10 +498,35 @@ export async function startExecutionSession(options: StartExecutionSessionOption
     record.stderrBytes += chunk.length;
   });
 
-  child.once("close", (code, signal) => {
-    void handleProcessClosed(sessionId, code, signal);
+  const triggerClose = (code: number | null, signal: NodeJS.Signals | null, reason?: string) => {
+    if (entry.finalized) return;
+    if (entry.drainTimer) {
+      clearTimeout(entry.drainTimer);
+      entry.drainTimer = undefined;
+    }
+    void handleProcessClosed(sessionId, code, signal, reason);
+  };
+
+  child.once("exit", (code, signal) => {
+    entry.exitObserved = true;
+    entry.exitCode = code;
+    entry.signal = signal;
+
+    entry.drainTimer = setTimeout(() => {
+      entry.drainTimer = undefined;
+      try {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      } catch {
+        // ignore
+      }
+      triggerClose(entry.exitCode ?? code, entry.signal ?? signal, "stdio_drain_timeout");
+    }, STDIO_DRAIN_GRACE_MS);
   });
 
+  child.once("close", (code, signal) => {
+    triggerClose(entry.exitCode ?? code, entry.signal ?? signal);
+  });
   child.once("error", (err) => {
     record.executionError = err.message;
   });
@@ -437,11 +534,21 @@ export async function startExecutionSession(options: StartExecutionSessionOption
   return toPublicExecutionSession(record);
 }
 
-async function handleProcessClosed(sessionId: string, exitCode: number | null, signal: NodeJS.Signals | null): Promise<void> {
+async function handleProcessClosed(
+  sessionId: string,
+  exitCode: number | null,
+  signal: NodeJS.Signals | null,
+  reconciliationReason?: string
+): Promise<void> {
   const entry = activeProcesses.get(sessionId);
-  if (!entry) return;
+  if (!entry || entry.finalized) return;
+  entry.finalized = true;
 
   clearTimeout(entry.timeoutHandle);
+  if (entry.drainTimer) {
+    clearTimeout(entry.drainTimer);
+    entry.drainTimer = undefined;
+  }
   activeProcesses.delete(sessionId);
   await closeExecutionOutput(entry);
 
@@ -454,9 +561,10 @@ async function handleProcessClosed(sessionId: string, exitCode: number | null, s
   }
   rec.lifecycle = {
     ...rec.lifecycle,
-    processExited: exitCode !== null || signal !== null,
+    processExited: true,
     waitAttempted: true,
-    reaped: true
+    reaped: true,
+    ...(reconciliationReason ? { reconciled: true, reconciliationReason } : {})
   };
   upsertExecutionSession(rec);
   notifyExecutionSessionExit(sessionId);
@@ -468,17 +576,22 @@ async function handleProcessClosed(sessionId: string, exitCode: number | null, s
     projectAlias: rec.projectAlias,
     status: rec.status,
     exitCode,
-    signal
+    signal,
+    ...(reconciliationReason ? { reconciliationReason } : {})
   });
 }
 
 async function handleSessionTimeout(sessionId: string): Promise<void> {
   const entry = activeProcesses.get(sessionId);
-  if (!entry) return;
+  if (!entry || entry.finalized) return;
+  entry.finalized = true;
 
   clearTimeout(entry.timeoutHandle);
+  if (entry.drainTimer) {
+    clearTimeout(entry.drainTimer);
+    entry.drainTimer = undefined;
+  }
   activeProcesses.delete(sessionId);
-
   const rec = entry.record;
   rec.status = "timed_out";
   rec.executionError = `Execution session timed out after ${rec.timeoutMs} ms`;
@@ -513,17 +626,33 @@ export async function terminateExecutionSession(sessionId: string): Promise<Publ
   if (!entry) {
     const record = getExecutionSession(sessionId);
     if (record.status === "running") {
+      if (record.pid !== undefined && isProcessAlive(record.pid)) {
+        await forceKillPid(record.pid).catch(() => undefined);
+      }
       record.status = "stopped";
       record.completedAt = new Date().toISOString();
+      record.lifecycle = {
+        ...record.lifecycle,
+        processExited: true,
+        killAttempted: true,
+        killSucceeded: true,
+        reaped: true,
+        reconciled: true,
+        reconciliationReason: "terminated_untracked_session"
+      };
       upsertExecutionSession(record);
       notifyExecutionSessionExit(sessionId);
     }
     return toPublicExecutionSession(record);
   }
 
+  entry.finalized = true;
   clearTimeout(entry.timeoutHandle);
+  if (entry.drainTimer) {
+    clearTimeout(entry.drainTimer);
+    entry.drainTimer = undefined;
+  }
   activeProcesses.delete(sessionId);
-
   const rec = entry.record;
   rec.status = "stopped";
   rec.completedAt = new Date().toISOString();
@@ -588,7 +717,10 @@ export function writeExecutionSession(sessionId: string, input: string): WriteEx
 }
 
 export function pollExecutionSession(options: PollExecutionSessionOptions): PollExecutionSessionResult {
-  const record = getExecutionSession(options.sessionId);
+  let record = getExecutionSession(options.sessionId);
+  if (record.status === "running") {
+    record = reconcileExecutionSessionRecord(record);
+  }
   const cursor = Math.max(0, options.cursor ?? 0);
   const maxChars = Math.min(Math.max(1, options.maxChars ?? 16384), 65536);
 

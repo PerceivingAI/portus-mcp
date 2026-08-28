@@ -9,7 +9,10 @@ import {
   writeExecutionSession,
   terminateExecutionSession,
   listExecutionSessions,
-  getExecutionSession
+  getExecutionSession,
+  upsertExecutionSession,
+  reconcileOrphanedExecutionSessions,
+  subscribeExecutionSessionExit
 } from "../src/runtime/executionSessions.js";
 import { loadPolicyConfig } from "../src/policy/policyConfig.js";
 
@@ -17,7 +20,13 @@ const root = mkdtempSync(path.join(process.cwd(), ".portus-exec-test-"));
 const stateDir = path.join(root, "state");
 process.env.PORTUS_MCP_STATE_DIR = stateDir;
 process.env.PORTUS_MCP_PROJECTS = `test=${root}`;
-after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+after(async () => {
+  try {
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } catch {
+    // Ignore transient cleanup errors on Windows
+  }
+});
 
 const selectedPolicy = loadPolicyConfig();
 const withMainAgentPermissions = (
@@ -189,4 +198,107 @@ test("Execution sessions: terminate reaps background process tree", async () => 
 
   const finalRecord = getExecutionSession(session.sessionId);
   assert.equal(finalRecord.status, "stopped");
+});
+
+test("Execution sessions finalize cleanly even when background child keeps inherited stdout open", async () => {
+  const testPolicy = withMainAgentPermissions({
+    allowedCommands: ["node"]
+  });
+
+  // Script launches a child inheriting stdout and holding it, while parent exits immediately with code 0
+  const pipeInheritScript = [
+    "const { spawn } = require('node:child_process')",
+    "const child = spawn('node', ['-e', 'setTimeout(() => {}, 30000)'], { stdio: ['ignore', 1, 2], detached: true })",
+    "console.log('CHILD_PID:' + child.pid)",
+    "child.unref()",
+    "console.log('parent-finished')"
+  ].join("; ");
+
+  const session = await startExecutionSession({
+    projectAlias: "test",
+    rootPath: root,
+    command: "node",
+    args: ["-e", pipeInheritScript],
+    timeoutSecs: 60,
+    policy: testPolicy
+  });
+
+  assert.equal(session.status, "running");
+
+  // Wait for the exit event notification (emitted within ~500ms STDIO_DRAIN_GRACE_MS after root exit)
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Session exit event timed out")), 5000);
+    const unsubscribe = subscribeExecutionSessionExit((id) => {
+      if (id === session.sessionId) {
+        clearTimeout(timer);
+        unsubscribe();
+        resolve();
+      }
+    });
+  });
+
+  const pollRes = pollExecutionSession({ sessionId: session.sessionId, stream: "both" });
+  const rec = getExecutionSession(session.sessionId);
+  const rawStdout = readFileSync(rec.stdoutPath, "utf8");
+  const rawStderr = readFileSync(rec.stderrPath, "utf8");
+  assert.equal(pollRes.status, "completed", `Status not completed. Stderr: ${rawStderr}`);
+  assert.equal(pollRes.exitCode, 0, `Exit code not 0. Stderr: ${rawStderr}`);
+  assert.match(pollRes.stdoutChunk || rawStdout, /parent-finished/, `Stdout missing. Out: "${rawStdout}", Err: "${rawStderr}"`);
+  assert.equal(pollRes.lifecycle.reaped, true);
+
+  const match = (pollRes.stdoutChunk || rawStdout).match(/CHILD_PID:(\d+)/);
+  if (match?.[1]) {
+    try {
+      process.kill(Number(match[1]), "SIGKILL");
+    } catch {
+      // ignore
+    }
+  }
+});
+
+test("Execution sessions reconcile stale/orphaned sessions on poll and list", async () => {
+  // Manually create a session record on disk with a nonexistent PID
+  const staleSessionId = `exec_stale_${Date.now()}`;
+  const fakeRecord = {
+    sessionId: staleSessionId,
+    projectAlias: "test",
+    command: "node",
+    args: ["-v"],
+    shell: false,
+    status: "running" as const,
+    pid: 9999999, // nonexistent PID
+    startedAt: new Date(Date.now() - 10000).toISOString(),
+    timeoutMs: 60000,
+    exitCode: null,
+    signal: null,
+    executionError: null,
+    stdoutPath: path.join(stateDir, "executions", staleSessionId, "stdout.log"),
+    stderrPath: path.join(stateDir, "executions", staleSessionId, "stderr.log"),
+    stdoutBytes: 0,
+    stderrBytes: 0,
+    lifecycle: {
+      processStarted: true,
+      processExited: false,
+      killAttempted: false,
+      killSucceeded: false,
+      waitAttempted: false,
+      reaped: false
+    }
+  };
+  upsertExecutionSession(fakeRecord);
+
+  // 1. Polling the stale session should automatically reconcile it
+  const polled = pollExecutionSession({ sessionId: staleSessionId });
+  assert.equal(polled.status, "stopped");
+  assert.equal(polled.lifecycle.processExited, true);
+  assert.equal(polled.lifecycle.reaped, true);
+  assert.equal(polled.lifecycle.reconciled, true);
+  assert.equal(polled.lifecycle.reconciliationReason, "root_process_absent");
+
+  // 2. Listing sessions should reflect the reconciled state
+  const list = listExecutionSessions("test");
+  const entry = list.find((s) => s.sessionId === staleSessionId);
+  assert.ok(entry);
+  assert.equal(entry.status, "stopped");
+  assert.equal(entry.lifecycle.reconciled, true);
 });
