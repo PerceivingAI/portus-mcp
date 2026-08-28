@@ -347,3 +347,101 @@ test("Execution sessions track output timestamps (lastStdoutAt, lastStderrAt, la
   assert.equal(publicSession.lastStderrAt, polled.lastStderrAt);
   assert.equal(publicSession.lastOutputAt, polled.lastOutputAt);
 });
+
+test("Execution sessions reconcile immediately when process is killed externally", async () => {
+  const testPolicy = withMainAgentPermissions({
+    allowedCommands: ["node"]
+  });
+
+  const sleepScript = "setInterval(() => {}, 1000);";
+  const session = await startExecutionSession({
+    projectAlias: "test",
+    rootPath: root,
+    command: "node",
+    args: ["-e", sleepScript],
+    timeoutSecs: 60,
+    policy: testPolicy
+  });
+
+  assert.equal(session.status, "running");
+  const rec = getExecutionSession(session.sessionId);
+  assert.ok(rec.pid);
+
+  // Kill the process externally
+  try {
+    process.kill(rec.pid, "SIGKILL");
+  } catch {
+    // ignore
+  }
+
+  // Wait for the exit event notification
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Exit event timed out")), 5000);
+    const unsubscribe = subscribeExecutionSessionExit((id) => {
+      if (id === session.sessionId) {
+        clearTimeout(timer);
+        unsubscribe();
+        resolve();
+      }
+    });
+  });
+
+  const polled = pollExecutionSession({ sessionId: session.sessionId });
+  assert.notEqual(polled.status, "running");
+  assert.equal(polled.lifecycle.processExited, true);
+  assert.equal(polled.lifecycle.reaped, true);
+  assert.equal(polled.lifecycle.exitCodeKnown, true);
+});
+test("Execution sessions finalize cleanly even when background child keeps inherited stderr open", async () => {
+  const testPolicy = withMainAgentPermissions({
+    allowedCommands: ["node"]
+  });
+
+  const pipeInheritScript = [
+    "const { spawn } = require('node:child_process')",
+    "const child = spawn('node', ['-e', 'setTimeout(() => {}, 30000)'], { stdio: ['ignore', 1, 2], detached: true })",
+    "console.log('CHILD_PID:' + child.pid)",
+    "child.unref()",
+    "console.error('stderr-parent-finished')"
+  ].join("; ");
+
+  const session = await startExecutionSession({
+    projectAlias: "test",
+    rootPath: root,
+    command: "node",
+    args: ["-e", pipeInheritScript],
+    timeoutSecs: 60,
+    policy: testPolicy
+  });
+
+  assert.equal(session.status, "running");
+
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Exit event timed out")), 5000);
+    const unsubscribe = subscribeExecutionSessionExit((id) => {
+      if (id === session.sessionId) {
+        clearTimeout(timer);
+        unsubscribe();
+        resolve();
+      }
+    });
+  });
+
+  const pollRes = pollExecutionSession({ sessionId: session.sessionId, stream: "both" });
+  const rec = getExecutionSession(session.sessionId);
+  const rawStdout = readFileSync(rec.stdoutPath, "utf8");
+  const rawStderr = readFileSync(rec.stderrPath, "utf8");
+  assert.equal(pollRes.status, "completed");
+  assert.equal(pollRes.exitCode, 0);
+  assert.match(pollRes.stderrChunk || rawStderr, /stderr-parent-finished/);
+  assert.equal(pollRes.lifecycle.reaped, true);
+
+  const match = (pollRes.stdoutChunk || rawStdout).match(/CHILD_PID:(\d+)/);
+  if (match?.[1]) {
+    try {
+      process.kill(Number(match[1]), "SIGKILL");
+    } catch {
+      // ignore
+    }
+  }
+});

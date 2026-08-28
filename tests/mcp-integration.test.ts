@@ -940,7 +940,7 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   assert.equal(sessionPollRes.projectAlias, "mcp");
   assert.equal(typeof sessionPollRes.status, "string");
   assert.equal(typeof sessionPollRes.stdoutChunk, "string");
-
+  assert.equal(sessionPollRes.lifecycle.processStarted, true);
   const sessionListRes = resultOf(await client.callTool({
     name: "project_run",
     arguments: {
@@ -952,8 +952,9 @@ test("MCP endpoint exposes and executes core tool surface", async (t) => {
   }));
   assert.equal(sessionListRes.sessionAction, "list");
   assert.equal(Array.isArray(sessionListRes.sessions), true);
-  assert.equal(sessionListRes.sessions.some((s: { sessionId: string }) => s.sessionId === createdSessionId), true);
-
+  const listedSession = sessionListRes.sessions.find((s: { sessionId: string }) => s.sessionId === createdSessionId);
+  assert.ok(listedSession);
+  assert.equal(listedSession.lifecycle.processStarted, true);
   const sessionTermRes = resultOf(await client.callTool({
     name: "project_run",
     arguments: {

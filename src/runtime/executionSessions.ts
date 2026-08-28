@@ -230,13 +230,28 @@ export function reconcileExecutionSessionRecord(record: ExecutionSessionRecord):
   if (entry) {
     const pid = entry.child.pid;
     if (pid !== undefined && !isProcessAlive(pid)) {
+      const exitCode = entry.exitCode ?? entry.child.exitCode ?? null;
+      const signal = entry.signal ?? entry.child.signalCode ?? null;
       void handleProcessClosed(
         record.sessionId,
-        entry.exitCode ?? entry.child.exitCode ?? null,
-        entry.signal ?? entry.child.signalCode ?? null,
+        exitCode,
+        signal,
         "root_process_absent"
       );
-      return getExecutionSession(record.sessionId);
+      record.status = exitCode === 0 ? "completed" : "failed";
+      record.completedAt ??= new Date().toISOString();
+      record.exitCode = exitCode;
+      record.signal = signal;
+      record.lifecycle = {
+        ...record.lifecycle,
+        processExited: true,
+        waitAttempted: true,
+        reaped: true,
+        reconciled: true,
+        reconciliationReason: "root_process_absent",
+        exitCodeKnown: exitCode !== null || signal !== null
+      };
+      return record;
     }
     return record;
   }
@@ -570,7 +585,6 @@ async function handleProcessClosed(
     entry.drainTimer = undefined;
   }
   activeProcesses.delete(sessionId);
-  await closeExecutionOutput(entry);
 
   const rec = entry.record;
   rec.completedAt = new Date().toISOString();
@@ -601,6 +615,8 @@ async function handleProcessClosed(
     signal,
     ...(reconciliationReason ? { reconciliationReason } : {})
   });
+
+  await closeExecutionOutput(entry);
 }
 
 async function handleSessionTimeout(sessionId: string): Promise<void> {
