@@ -129,34 +129,23 @@ Health endpoint:
 http://127.0.0.1:8789/
 ```
 
-## Connect to ChatGPT with `tunnel-client`
+## Connect with `tunnel-client`
 
-Portus MCP can be connected to ChatGPT through OpenAI Secure MCP Tunnel using `tunnel-client`.
+Portus MCP connects to agents via the `tunnel-client` daemon.
 
-This section assumes you have already downloaded `tunnel-client`, created an OpenAI Platform tunnel, and set `CONTROL_PLANE_API_KEY`. It then creates the local `tunnel-client` profile used for Portus MCP. For the full setup, see `docs/TUNNEL_CLIENT.md`.
+### Setup Wizard
 
-The local Portus MCP endpoint is:
+Run the interactive setup wizard to install and configure `tunnel-client`:
 
-```text
-http://127.0.0.1:8789/mcp
+```bash
+npm run setup:tunnel
 ```
 
-### One-time tunnel profile setup
+Or run the platform script:
+- **Windows (PowerShell)**: `.\scripts\setup-tunnel.ps1`
+- **Linux / macOS (Bash)**: `./scripts/setup-tunnel.sh`
 
-After creating a tunnel in OpenAI Platform and copying the tunnel ID, create a local `tunnel-client` profile that points to the Portus MCP HTTP endpoint:
-
-```powershell
-cd C:\tools\tunnel-client
-
-.\tunnel-client.exe init `
-  --profile portus-local `
-  --tunnel-id tunnel_your_tunnel_id `
-  --mcp-server-url "http://127.0.0.1:8789/mcp"
-```
-
-`CONTROL_PLANE_API_KEY` must be a regular OpenAI Platform API key used by `tunnel-client`. It is not the tunnel ID and it is not `PORTUS_MCP_BEARER_TOKEN`.
-
-### Daily startup
+### Daily Startup
 
 #### Single-Command Launcher (Recommended)
 
@@ -169,94 +158,22 @@ npm run start:tunnel
 
 #### Two-Terminal Setup (Alternative)
 
-Terminal 1 (Portus MCP):
 ```powershell
-cd C:\path\to\portus-mcp
+# Terminal 1
 npm start
+
+# Terminal 2
+tunnel-client run --profile portus-local
 ```
+### Connect in ChatGPT
 
-Terminal 2 (`tunnel-client`):
-```powershell
-cd C:\tools\tunnel-client
-.\tunnel-client.exe run --profile portus-local
-```
-### Add the plugin in ChatGPT
+1. In ChatGPT, navigate to **Settings** -> **Plugins (or Connectors)** -> **Browse plugins**.
+2. Click **+** (add plugin), select **Tunnel**, and choose your configured tunnel.
+3. Select **No Auth**, accept the disclaimer, and click **Create** -> **Connect**.
 
-In ChatGPT web:
+*(Optional)* In plugin settings, configure confirmation behavior under "Choose when ChatGPT should ask for permission".
 
-```text
-Click your account button at the bottom-left of the screen
--> Settings
--> Plugins
--> Browse plugins
-```
-
-![Opening ChatGPT settings, selecting Plugins, and scrolling to Browse plugins](./assets/1_setup.png)
-
-Create and connect the plugin:
-
-```text
-1. On the Browse plugins screen, click the + button next to the Search plugins box.
-2. In the new plugin modal, add a name that identifies the device, machine, or VM you are connecting to.
-3. Select the Tunnel option.
-4. From the tunnel dropdown, pick the tunnel for the device you want to use.
-5. In the authentication dropdown, select No Auth.
-6. Tick the disclaimer checkbox.
-7. Click Create.
-8. In the connection modal, click Connect.
-```
-
-![Creating a ChatGPT plugin, selecting the Portus MCP tunnel, and connecting it](./assets/2_config.png)
-
-After discovery, ChatGPT should see the Portus MCP tool surface:
-
-```text
-project_context
-project_edit
-project_patch
-project_policy
-project_read
-project_run
-project_screenshot
-project_search
-subagent_context
-subagent_task
-```
-To verify registered projects, ask ChatGPT to call `project_context` with `include.projects=true` and no `projectAlias`.
-
-### Optional: change ChatGPT permission behavior
-
-The MCP works without changing this setting. If you do not configure it manually, ChatGPT uses its default permission policy.
-
-To choose a more granular permission policy:
-
-```text
-Click your account button at the bottom-left of the screen
--> Settings
--> Plugins
--> Find the Portus MCP plugin by the name you chose
--> Click it
--> Click "Choose when ChatGPT should ask for permission when using this plugin."
--> Select the permission option you want
--> Close the settings modal
-```
-
-![Opening the Portus MCP plugin settings and selecting one of ChatGPT's four permission policies](./assets/3_permissions.png)
-
-The plugin settings menu also lets you connect, disconnect, or delete the Portus MCP plugin at any time.
-
-### Shut down Portus MCP and the tunnel
-
-When you want to close the MCP connection, stop both running processes:
-
-```text
-Terminal 1: stop Portus MCP
-Terminal 2: stop tunnel-client
-```
-
-On Windows, you can usually stop each process with `Ctrl+C`.
-
-Portus MCP and `tunnel-client` are separate processes. Both are required while ChatGPT is using the MCP.
+---
 
 ## Use From Another Client & Tailscale Setup
 

@@ -84,9 +84,28 @@ tunnel-client releases:
 https://github.com/openai/tunnel-client/releases
 ```
 
-## Setup order
+## Quick Automated Setup
 
-Use this order:
+Portus MCP includes an interactive setup wizard that automatically installs `tunnel-client`, validates credentials, and initializes the local profile:
+
+```bash
+npm run setup:tunnel
+```
+
+Or via platform script:
+- **Windows (PowerShell)**: `.\scripts\setup-tunnel.ps1`
+- **Linux / macOS (Bash)**: `./scripts/setup-tunnel.sh`
+
+Once configured, start Portus MCP with the tunnel:
+```bash
+npm run start:tunnel
+```
+
+---
+
+## Manual Setup Order
+
+If you prefer to perform each step manually, follow the sections below:
 
 ```text
 1. Download tunnel-client.
@@ -100,7 +119,6 @@ Use this order:
 9. Validate the profile with doctor.
 10. Run tunnel-client.
 ```
-
 ## 1. Download `tunnel-client`
 
 Open:
