@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { execSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, createWriteStream } from "node:fs";
+import { existsSync, mkdirSync, createWriteStream, readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import path from "node:path";
@@ -21,7 +21,7 @@ function openBrowser(url) {
     } else if (platform === "darwin") {
       execSync(`open "${url}"`, { stdio: "ignore" });
     } else {
-      execSync(`xdg-open "${url}"`, { stdio: "ignore" });
+      execSync(`xdg-open "${url}" >/dev/null 2>&1 &`, { stdio: "ignore", shell: true });
     }
   } catch {
     // Ignore browser open failures
@@ -141,6 +141,28 @@ async function main() {
           if (os.platform() === "win32") {
             try {
               execSync(`powershell.exe -NoProfile -Command "[Environment]::SetEnvironmentVariable('CONTROL_PLANE_API_KEY', '${key}', 'User')"`, { stdio: "ignore" });
+            } catch {
+              // Ignore persist error
+            }
+          } else {
+            try {
+              const envPath = path.resolve(".env");
+              if (existsSync(envPath)) {
+                let content = readFileSync(envPath, "utf8");
+                if (content.includes("CONTROL_PLANE_API_KEY=")) {
+                  content = content.replace(/^CONTROL_PLANE_API_KEY=.*$/m, `CONTROL_PLANE_API_KEY=${key}`);
+                } else {
+                  content += `\nCONTROL_PLANE_API_KEY=${key}\n`;
+                }
+                writeFileSync(envPath, content, "utf8");
+              }
+              const bashrc = path.join(os.homedir(), ".bashrc");
+              if (existsSync(bashrc)) {
+                const bashrcContent = readFileSync(bashrc, "utf8");
+                if (!bashrcContent.includes("CONTROL_PLANE_API_KEY")) {
+                  appendFileSync(bashrc, `\nexport CONTROL_PLANE_API_KEY="${key}"\n`, "utf8");
+                }
+              }
             } catch {
               // Ignore persist error
             }

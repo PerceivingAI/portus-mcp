@@ -41,12 +41,24 @@ if [ -n "${CURRENT_KEY}" ]; then
 fi
 
 if [ -z "${CURRENT_KEY}" ]; then
-  if command -v xdg-open >/dev/null 2>&1; then xdg-open "https://platform.openai.com/settings/organization/api-keys" || true; fi
+  if command -v xdg-open >/dev/null 2>&1; then
+    (xdg-open "https://platform.openai.com/settings/organization/api-keys" >/dev/null 2>&1 &) || true
+  fi
   while true; do
     read -rp "Enter OpenAI API Key (sk-...): " KEY
     KEY="$(echo "${KEY}" | tr -d '[:space:]')"
     if [[ "${KEY}" == sk-* ]]; then
       export CONTROL_PLANE_API_KEY="${KEY}"
+      if [ -f .env ]; then
+        if grep -q "^CONTROL_PLANE_API_KEY=" .env; then
+          sed -i "s|^CONTROL_PLANE_API_KEY=.*|CONTROL_PLANE_API_KEY=${KEY}|" .env
+        else
+          echo -e "\nCONTROL_PLANE_API_KEY=${KEY}" >> .env
+        fi
+      fi
+      if [ -f "${HOME}/.bashrc" ] && ! grep -q "CONTROL_PLANE_API_KEY" "${HOME}/.bashrc"; then
+        echo "export CONTROL_PLANE_API_KEY=\"${KEY}\"" >> "${HOME}/.bashrc"
+      fi
       break
     fi
     echo "Must start with 'sk-'."
@@ -64,7 +76,9 @@ In the OpenAI Platform 'Create tunnel' modal:
 
 If you do not select a workspace from the dropdown, the platform will create the tunnel, but the ChatGPT plugin modal will not list or connect to it.\n"
 
-if command -v xdg-open >/dev/null 2>&1; then xdg-open "https://platform.openai.com/settings/organization/tunnels" || true; fi
+if command -v xdg-open >/dev/null 2>&1; then
+  (xdg-open "https://platform.openai.com/settings/organization/tunnels" >/dev/null 2>&1 &) || true
+fi
 
 TUNNEL_ID=""
 while true; do
