@@ -1,11 +1,13 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { createServer as createNetServer, type Socket } from "node:net";
+import type { ChildProcess } from "node:child_process";
+import { createServer as createNetServer, createConnection, type Socket } from "node:net";
 import { createServer as createHttpServer } from "node:http";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { createStandaloneLauncher, startProcess } from "../scripts/start-all.mjs";
+import { cleanupExitedWindowsTree, type ExitedWindowsTreeOwner } from "../src/runtime/processTermination.js";
 
 const hostname = "fixture.example.ts.net";
 const root = process.cwd();
@@ -51,6 +53,8 @@ async function fixture(t: TestContext, {initial = {}, port, onConfigRead}: {init
   let configReads = 0;
   let launched = 0;
   let informChild: (value:z.infer<typeof childInfoSchema>) => void = () => {};
+  let ownedListener: z.infer<typeof childInfoSchema> | undefined;
+  const orphanCleanup = {aliveAfterRootExit:false,terminated:0};
   const childInfo = new Promise<z.infer<typeof childInfoSchema>>(resolve => {informChild=resolve;});
   // This local fixture models daemon watch-session release. It never binds a public
   // listener or contacts Tailscale. Windows child-tree termination remains real.
@@ -78,10 +82,22 @@ async function fixture(t: TestContext, {initial = {}, port, onConfigRead}: {init
   const watchAddress = watchServer.address();
   assert(watchAddress && typeof watchAddress === "object");
   const watchPort = watchAddress.port;
-  const nestedSource = `const s=require('node:http').createServer((q,r)=>r.end('owned-descendant'));s.listen(0,'127.0.0.1',()=>process.send({pid:process.pid,port:s.address().port}));`;
+  const nestedSource = `const s=require('node:http').createServer((q,r)=>{if(q.url===${JSON.stringify(`/stop-${path.basename(temp)}`)}){r.setHeader('connection','close');s.close(()=>process.exit(0));r.end('stopped');}else r.end('owned-descendant');});s.listen(0,'127.0.0.1',()=>process.send({pid:process.pid,port:s.address().port}));`;
 
-  function makeLauncher(mode = "serve", {failSpawn = false, host = "127.0.0.1"} = {}) {
+  function makeLauncher(mode = "serve", {failSpawn = false, exitBeforeRoute = false, proveDeadRoot = false, host = "127.0.0.1"} = {}) {
+    let cliRoot: ChildProcess | undefined;
     const launcher = createStandaloneLauncher({mode,env:{...env,PORTUS_MCP_HOST:host},
+      ...(proveDeadRoot ? {cleanupExited:async(owner:ExitedWindowsTreeOwner,options:{timeoutMs:number})=>{
+        if(owner.rootPid !== cliRoot?.pid) return cleanupExitedWindowsTree(owner,options);
+        assert(cliRoot.exitCode !== null || cliRoot.signalCode !== null);
+        assert(ownedListener);
+        const response = await fetch(`http://127.0.0.1:${ownedListener.port}`,{signal:AbortSignal.timeout(1000)});
+        assert.equal(await response.text(),"owned-descendant");
+        orphanCleanup.aliveAfterRootExit = true;
+        const result = await cleanupExitedWindowsTree(owner,options);
+        orphanCleanup.terminated = result.terminated;
+        return result;
+      }} : {}),
       executeTailscale:async (_binary:string,args:string[]) => {
         if(args[0] === "status") return {state:"ok",observedAt:new Date().toISOString(),value:{BackendState:"Running",Self:{Online:true,DNSName:hostname}}};
         assert.deepEqual(args,["serve","status","--json"],"ownership must not issue global reset/off or mutate unrelated configuration");
@@ -92,11 +108,13 @@ async function fixture(t: TestContext, {initial = {}, port, onConfigRead}: {init
         launched++;
         if(failSpawn) return startProcess("f2-fixture","0","f2-missing-executable",[],options);
         const source = `
+          if (${exitBeforeRoute}) process.exit(0);
+          process.on('message',message=>{if(Number.isInteger(message.exit))process.exit(message.exit);});
           const {spawn}=require('node:child_process');
           const net=require('node:net');
           const watch=net.connect(${watchPort},'127.0.0.1');
           watch.once('connect',()=>{
-            const child=spawn(process.execPath,['-e',${JSON.stringify(nestedSource)}],{stdio:['ignore','ignore','ignore','ipc']});
+            const child=spawn(process.execPath,['-e',${JSON.stringify(nestedSource)}],{stdio:['ignore','ignore','ignore','ipc'],detached:true,windowsHide:true});
             child.once('message',info=>{
               watch.write(JSON.stringify({mode:${JSON.stringify(args[0])},port:${Number(args[1])}})+'\\n');
               process.send(info);
@@ -106,7 +124,8 @@ async function fixture(t: TestContext, {initial = {}, port, onConfigRead}: {init
           watch.once('error',()=>process.exit(9));
         `;
         const child = startProcess("f2-fixture","0",process.execPath,["-e",source],{...options,ipc:true});
-        child.on("message",message => {const parsed=childInfoSchema.safeParse(message);if(parsed.success)informChild(parsed.data);});
+        cliRoot = child;
+        child.on("message",message => {const parsed=childInfoSchema.safeParse(message);if(parsed.success){ownedListener=parsed.data;informChild(parsed.data);}});
         return child;
       }
     });
@@ -117,11 +136,16 @@ async function fixture(t: TestContext, {initial = {}, port, onConfigRead}: {init
     let failure: unknown;
     for(const stop of stopLaunchers.reverse()) {try {await stop();}catch(error){failure ??= error;}}
     for(const socket of sockets) socket.destroy();
+    // Independent fixture teardown also removes a descendant if the implementation
+    // under test failed its native cleanup assertions. Never use a bare stored PID.
+    if(ownedListener) {
+      try {const response=await fetch(`http://127.0.0.1:${ownedListener.port}/stop-${path.basename(temp)}`,{signal:AbortSignal.timeout(1000)});await response.text();} catch {}
+    }
     await new Promise<void>(resolve => watchServer.close(() => resolve()));
     rmSync(temp,{recursive:true,force:true,maxRetries:10,retryDelay:100});
     if(failure) throw failure;
   });
-  return {env,makeLauncher,childInfo,state:()=>structuredClone(config),launchCount:()=>launched};
+  return {env,makeLauncher,childInfo,orphanCleanup,state:()=>structuredClone(config),launchCount:()=>launched};
 }
 
 async function health(env: NodeJS.ProcessEnv) {
@@ -130,8 +154,14 @@ async function health(env: NodeJS.ProcessEnv) {
   assert.deepEqual((await response.json()).status,"ok");
 }
 async function closedPort(port:number) {
-  // Real I/O cancellation bounds a failed platform cleanup; there is no guessed sleep.
-  await assert.rejects(fetch(`http://127.0.0.1:${port}`,{signal:AbortSignal.timeout(1000)}));
+  // Bound real socket I/O, not a guessed cleanup sleep or a pooled HTTP request.
+  await new Promise<void>((resolve,reject)=>{
+    const socket = createConnection({host:"127.0.0.1",port});
+    socket.setTimeout(1000);
+    socket.once("connect",()=>{socket.destroy();reject(new Error("Owned listener is still accepting connections."));});
+    socket.once("timeout",()=>{socket.destroy();reject(new Error("Listener closure could not be established."));});
+    socket.once("error",error=>{socket.destroy();if("code" in error && error.code === "ECONNREFUSED")resolve();else reject(error);});
+  });
 }
 
 for(const mode of ["serve","funnel"]) {
@@ -146,6 +176,10 @@ for(const mode of ["serve","funnel"]) {
     assert.equal(await response.text(),"owned-descendant");
     assert.equal(running.route.exposure,mode === "funnel" ? "public" : "private");
     await launcher.stop();
+    const terminal = await launcher.completion;
+    assert.equal(terminal.state,"stopped");
+    assert.equal(terminal.exitCode,0);
+    assert.equal(terminal.cleanup,"confirmed");
     await closedPort(Number(f.env.PORTUS_MCP_PORT));
     await closedPort(descendant.port);
     assert.throws(()=>process.kill(descendant.pid,0),{code:"ESRCH"});
@@ -210,5 +244,47 @@ test("real CLI spawn failure after backend readiness cleans up only owned startu
   await assert.rejects(f.makeLauncher("serve",{failSpawn:true}).start(),/failed before foreground route readiness/);
   assert.equal(f.launchCount(),1);
   assert.deepEqual(f.state(),initial);
+  await closedPort(Number(f.env.PORTUS_MCP_PORT));
+});
+
+test("unexpected Tailscale exit cleans descendants after their native root is gone",{timeout:15000},async t => {
+  const initial: ServeConfig = {...route(9999,"serve",8443),Foreground:{borrowed:route(9998,"serve",10000)}};
+  const f = await fixture(t,{initial});
+  const launcher = f.makeLauncher("serve",{proveDeadRoot:process.platform === "win32"});
+  const running = await launcher.start();
+  const descendant = await f.childInfo;
+  const injectedAt = Date.now();
+  running.external.send({exit:23});
+  const terminal = await launcher.completion;
+  assert.equal(terminal.state,"failed");
+  assert.equal(terminal.exitCode,1);
+  assert.equal(terminal.cleanup,"confirmed");
+  if(process.platform === "win32") {
+    assert.equal(f.orphanCleanup.aliveAfterRootExit,true);
+    assert(f.orphanCleanup.terminated >= 1,"the native helper must actually terminate a surviving owned descendant");
+  }
+  assert.match(terminal.reason,/Tailscale CLI exited unexpectedly \(exit 23\)/);
+  const detectionMs = terminal.failureDetectedAt - injectedAt;
+  const cleanupMs = Date.now() - terminal.failureDetectedAt;
+  assert(detectionMs >= 0 && detectionMs <= 5000);
+  assert(cleanupMs <= 5000,"teardown must meet its separate five-second ceiling");
+  t.diagnostic(JSON.stringify({fault:"tailscale-exit-23-dead-root",detectionMs,cleanupMs,state:terminal.state,exitCode:terminal.exitCode,cleanup:terminal.cleanup}));
+  await closedPort(Number(f.env.PORTUS_MCP_PORT));
+  await closedPort(descendant.port);
+  assert.throws(()=>process.kill(descendant.pid,0),{code:"ESRCH"});
+  assert.deepEqual(f.state(),initial);
+  assert.equal(f.launchCount(),1);
+});
+
+test("zero Tailscale exit before route readiness fails startup and releases owned resources",{timeout:15000},async t => {
+  const f = await fixture(t);
+  const launcher = f.makeLauncher("serve",{exitBeforeRoute:true});
+  await assert.rejects(launcher.start(),/Tailscale CLI exited before readiness \(exit 0\)/);
+  const terminal = await launcher.completion;
+  assert.equal(terminal.state,"failed");
+  assert.equal(terminal.exitCode,1);
+  assert.equal(terminal.cleanup,"confirmed");
+  assert.equal(f.launchCount(),1);
+  assert.deepEqual(f.state(),{});
   await closedPort(Number(f.env.PORTUS_MCP_PORT));
 });

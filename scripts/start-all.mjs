@@ -78,7 +78,8 @@ export function startProcess(name, colorCode, command, args, {
   tailscaleDiagnostics = false,
   onAnnounced,
   ipc = false,
-  processGroup = false
+  processGroup = false,
+  expectedExit
 } = {}) {
   const output = forwardOutput || tailscaleDiagnostics ? "pipe" : "ignore";
   const stdio = ["ignore", output, output];
@@ -93,12 +94,12 @@ export function startProcess(name, colorCode, command, args, {
   }
 
   proc.on("error", (err) => {
-    if (tailscaleDiagnostics) return;
+    if (tailscaleDiagnostics || expectedExit?.()) return;
     log(name, "31", `Failed to start: ${err.message}`);
   });
 
   proc.on("exit", (code, signal) => {
-    if (tailscaleDiagnostics) return;
+    if (tailscaleDiagnostics || expectedExit?.()) return;
     if (code !== null && code !== 0) {
       log(name, "31", `Exited with code ${code}`);
     } else if (signal) {
@@ -177,19 +178,43 @@ async function withinDeadline(promise, deadline, description) {
   } finally { clearTimeout(timer); }
 }
 
-async function terminateOwnedTree(proc, deadline) {
-  if (!proc?.pid || proc.exitCode !== null || proc.signalCode !== null) return;
-  const closed = new Promise((resolve) => proc.once("close", resolve));
+let exitedTreeHelper;
+async function cleanupExitedTree(owner, options) {
+  const requestedAt = Date.now();
+  exitedTreeHelper ??= import("tsx/esm/api").then(({ tsImport }) => tsImport("../src/runtime/processTermination.ts", import.meta.url)).then((module) => module.cleanupExitedWindowsTree);
+  const cleanup = await exitedTreeHelper;
+  return cleanup(owner, { timeoutMs: Math.max(1, options.timeoutMs - (Date.now() - requestedAt)) });
+}
+
+async function terminateOwnedTree(owner, deadline, cleanupExited) {
+  const proc = owner.process;
+  if (!proc?.pid) return;
+  const closed = owner.closed ? Promise.resolve() : new Promise((resolve) => proc.once("close", resolve));
+  const rootExited = proc.exitCode !== null || proc.signalCode !== null;
   if (os.platform() === "win32") {
-    const killer = spawn("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
-    const killed = new Promise((resolve, reject) => {
-      killer.once("error", () => reject(new Error("Unable to start owned Windows process-tree teardown.")));
-      killer.once("close", resolve);
-    });
-    const code = await withinDeadline(killed, deadline, "Windows process-tree teardown");
-    if (code !== 0 && proc.exitCode === null && proc.signalCode === null) throw new Error("Owned Windows process-tree teardown failed.");
+    let needsDeadRootCleanup = rootExited;
+    if (!rootExited) {
+      const killer = spawn("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+      const killed = new Promise((resolve, reject) => {
+        killer.once("error", () => reject(new Error("Unable to start owned Windows process-tree teardown.")));
+        killer.once("close", resolve);
+      });
+      const code = await withinDeadline(killed, deadline, "Windows process-tree teardown");
+      if (code !== 0) {
+        if (proc.exitCode === null && proc.signalCode === null) throw new Error("Owned Windows process-tree teardown failed.");
+        needsDeadRootCleanup = true;
+      }
+    }
+    if (needsDeadRootCleanup) {
+      if (!owner.exitedAtMs) throw new Error("Owned root exit identity is unavailable; descendant cleanup is unverified.");
+      const result = await withinDeadline(cleanupExited({
+        rootPid: proc.pid, startedAfterMs: owner.startedAtMs, exitedBeforeMs: owner.exitedAtMs
+      }, { timeoutMs: Math.max(1, deadline - Date.now()) }), deadline, "Owned exited-root cleanup");
+      if (!result.confirmed) throw new Error("Owned exited-root descendant cleanup is unverified.");
+    }
   } else {
-    // Launcher-owned processes have their own process group on POSIX.
+    // Spawn created a private launcher-owned session/process group. Address that
+    // group rather than an individual historical PID, even after its leader exits.
     try { process.kill(-proc.pid, "SIGKILL"); }
     catch (error) { if (error.code !== "ESRCH") throw error; }
   }
@@ -200,7 +225,9 @@ export function createStandaloneLauncher({
   mode = "tunnel",
   env = process.env,
   executeTailscale = runTailscaleCommand,
-  launchTailscale
+  launchTailscale,
+  launchTunnel,
+  cleanupExited = cleanupExitedTree
 } = {}) {
   const children = [];
   const controller = new AbortController();
@@ -217,6 +244,57 @@ export function createStandaloneLauncher({
   let hostname;
   let stopPromise;
   let startCalled = false;
+  let phase = "idle";
+  let shutdownStarted = false;
+  let failure;
+  let failureDetectedAt;
+  let finishCompletion;
+  const completion = new Promise((resolve) => { finishCompletion = resolve; });
+
+  function fail(error) {
+    if (shutdownStarted) return;
+    failure ??= error;
+    failureDetectedAt ??= Date.now();
+    phase = "failed";
+    void stop().catch(() => {}); // Completion carries cleanup failure without an unhandled rejection.
+  }
+
+  function track(proc, role, startedAtMs) {
+    const owner = { process: proc, role, startedAtMs, exitedAtMs: undefined, closed: false };
+    children.push(owner);
+    proc.once("close", () => { owner.closed = true; });
+    proc.once("error", () => {
+      const description = role === "backend" ? "Owned Portus backend failed to spawn."
+        : isTailscale ? "Owned Tailscale CLI failed before foreground route readiness." : "Owned tunnel service failed to spawn.";
+      fail(new Error(description));
+    });
+    proc.once("exit", (code, signal) => {
+      owner.exitedAtMs = Date.now();
+      if (shutdownStarted) return;
+      const service = role === "backend" ? "Portus backend" : isTailscale ? "Tailscale CLI" : "tunnel service";
+      const transition = phase === "starting" ? "exited before readiness" : "exited unexpectedly";
+      fail(new Error(`Owned ${service} ${transition} (${code === null ? `signal ${signal ?? "unknown"}` : `exit ${code}`}).`));
+    });
+    return proc;
+  }
+
+  function waitForSpawn(proc) {
+    return new Promise((resolve, reject) => {
+      const finish = (error) => {
+        proc.off("spawn", onSpawn);
+        proc.off("error", onError);
+        controller.signal.removeEventListener("abort", onAbort);
+        error ? reject(error) : resolve();
+      };
+      const onSpawn = () => finish();
+      const onError = () => finish(failure ?? new Error("Owned external service failed to spawn."));
+      const onAbort = () => finish(controller.signal.reason);
+      proc.once("spawn", onSpawn);
+      proc.once("error", onError);
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+      if (controller.signal.aborted) onAbort();
+    });
+  }
 
   async function readConfig(deadline, signal) {
     const remaining = deadline - Date.now();
@@ -229,20 +307,48 @@ export function createStandaloneLauncher({
 
   function stop() {
     if (stopPromise) return stopPromise;
-    controller.abort(new DOMException("Launcher shutdown requested.", "AbortError"));
+    shutdownStarted = true;
+    if (!failure) phase = "stopping";
+    controller.abort(failure ?? new DOMException("Launcher shutdown requested.", "AbortError"));
     stopPromise = (async () => {
       const deadline = Date.now() + 5_000;
-      // Invoke every owned teardown even if one fails. Never enumerate/kill borrowed processes.
-      const outcomes = await Promise.allSettled(children.map((proc) => terminateOwnedTree(proc, deadline)));
-      const failure = outcomes.find((result) => result.status === "rejected");
-      if (failure) throw failure.reason;
-      if (external && baseline) {
-        while (Date.now() < deadline) {
-          const current = await readConfig(deadline);
-          if (tailscaleForegroundReleased(baseline, current, lease?.session)) return;
-          await delay(Math.min(100, Math.max(1, deadline - Date.now())));
+      let cleanup = "confirmed";
+      let cleanupError;
+      try {
+        const outcomes = await Promise.allSettled(children.map((owner) => terminateOwnedTree(owner, deadline, cleanupExited)));
+        const failed = outcomes.find((result) => result.status === "rejected");
+        if (failed) throw failed.reason;
+        if (external && baseline) {
+          while (Date.now() < deadline) {
+            const current = await readConfig(deadline);
+            if (tailscaleForegroundReleased(baseline, current, lease?.session)) return;
+            await delay(Math.min(100, Math.max(1, deadline - Date.now())));
+          }
+          throw new Error("Owned foreground route release was not confirmed within the teardown deadline; no reset/off was attempted.");
         }
-        throw new Error("Owned foreground route release was not confirmed within the teardown deadline; no reset/off was attempted.");
+      } catch (error) {
+        cleanup = "unverified";
+        cleanupError = "Owned cleanup could not be confirmed within its identity and time bounds.";
+        failure ??= new Error(cleanupError);
+        failureDetectedAt ??= Date.now();
+        throw error;
+      } finally {
+        phase = failure ? "failed" : "stopped";
+        finishCompletion(Object.freeze({
+          state: phase, exitCode: failure ? 1 : 0, cleanup,
+          ...(failure ? { reason: failure.message, failureDetectedAt } : {}),
+          ...(cleanupError ? { cleanupError } : {})
+        }));
+        if (cleanup === "unverified") {
+          // A terminal failure must not hang on owned handles after the bounded
+          // cleanup failed. Releasing handles is not a claim that processes died.
+          for (const { process: proc } of children) {
+            proc.stdout?.destroy();
+            proc.stderr?.destroy();
+            if (proc.connected) { try { proc.disconnect(); } catch {} }
+            proc.unref();
+          }
+        }
       }
     })();
     return stopPromise;
@@ -250,7 +356,9 @@ export function createStandaloneLauncher({
 
   async function start() {
     if (startCalled) throw new Error("This standalone launcher already started; it will not adopt or duplicate a backend.");
+    if (shutdownStarted) throw controller.signal.reason;
     startCalled = true;
+    phase = "starting";
     try {
       controller.signal.throwIfAborted();
       if (!["tunnel", "serve", "funnel"].includes(mode)) throw new Error("Unsupported standalone launcher mode.");
@@ -269,8 +377,10 @@ export function createStandaloneLauncher({
         hostname = daemon.hostname;
       }
 
-      const backend = startProcess("portus", "36", process.execPath, ["--import", "tsx", "src/server.ts"], { env, ipc: true, processGroup: true });
-      children.push(backend);
+      const backendStartedAt = Date.now();
+      const backend = track(startProcess("portus", "36", process.execPath, ["--import", "tsx", "src/server.ts"], {
+        env, ipc: true, processGroup: true, expectedExit: () => shutdownStarted
+      }), "backend", backendStartedAt);
       const probeHost = host === "0.0.0.0" ? "127.0.0.1" : host === "::" ? "::1" : host;
       const urlHost = probeHost.includes(":") ? `[${probeHost}]` : probeHost;
       await waitForMcpReady({
@@ -283,8 +393,14 @@ export function createStandaloneLauncher({
 
       if (mode === "tunnel") {
         const tunnelEnv = { ...env, TUNNEL_CLIENT_PROFILE_DIR: resolveProfileDir(env, profile) };
-        external = startProcess("tunnel", "32", resolveTunnelClientPath(env), ["run", "--profile", profile], { env: tunnelEnv, forwardOutput: forwardExternalLogs, processGroup: true });
-        children.push(external);
+        const startedAt = Date.now();
+        const options = { env: tunnelEnv, forwardOutput: forwardExternalLogs, processGroup: true, expectedExit: () => shutdownStarted };
+        external = track(launchTunnel
+          ? launchTunnel(resolveTunnelClientPath(env), ["run", "--profile", profile], options)
+          : startProcess("tunnel", "32", resolveTunnelClientPath(env), ["run", "--profile", profile], options), "external", startedAt);
+        await waitForSpawn(external);
+        controller.signal.throwIfAborted();
+        phase = "running";
         return { backend, external };
       }
 
@@ -293,37 +409,38 @@ export function createStandaloneLauncher({
       const current = await readConfig(Date.now() + 5_000, controller.signal);
       baseline = assertTailscaleListenerFree(current);
       const color = mode === "funnel" ? "33" : "34";
-      const options = { env, forwardOutput: forwardExternalLogs, tailscaleDiagnostics: true, processGroup: true };
-      external = launchTailscale
+      const options = { env, forwardOutput: forwardExternalLogs, tailscaleDiagnostics: true, processGroup: true, expectedExit: () => shutdownStarted };
+      const startedAt = Date.now();
+      external = track(launchTailscale
         ? launchTailscale(binary, [mode, port], options)
-        : startProcess(mode, color, binary, [mode, port], options);
-      children.push(external);
-      let spawnFailure = false;
-      const onError = () => { spawnFailure = true; };
-      external.on("error", onError);
+        : startProcess(mode, color, binary, [mode, port], options), "external", startedAt);
       const routeDeadline = Date.now() + 30_000;
-      try {
-        while (Date.now() < routeDeadline) {
-          controller.signal.throwIfAborted();
-          if (spawnFailure || external.exitCode !== null || external.signalCode !== null) throw new Error("Owned Tailscale CLI failed before foreground route readiness.");
-          const config = await readConfig(routeDeadline, controller.signal);
-          lease = findOwnedTailscaleRoute(baseline, config, { hostname, host, port, mcpPath, mode });
-          if (lease) {
-            if (spawnFailure || external.exitCode !== null || external.signalCode !== null) throw new Error("Owned Tailscale CLI exited during route confirmation.");
-            log(mode, color, "Owned foreground listener 443 configured; public MCP remains unverified.");
-            return { backend, external, route: lease.route };
-          }
-          await delay(100, undefined, { signal: controller.signal });
+      while (Date.now() < routeDeadline) {
+        controller.signal.throwIfAborted();
+        const config = await readConfig(routeDeadline, controller.signal);
+        controller.signal.throwIfAborted();
+        lease = findOwnedTailscaleRoute(baseline, config, { hostname, host, port, mcpPath, mode });
+        if (lease) {
+          phase = "running";
+          log(mode, color, "Owned foreground listener 443 configured; public MCP remains unverified.");
+          return { backend, external, route: lease.route };
         }
-      } finally { external.off("error", onError); }
+        await delay(100, undefined, { signal: controller.signal });
+      }
       throw new Error("Owned Tailscale foreground route startup deadline exceeded.");
     } catch (error) {
+      if (!shutdownStarted) {
+        failure ??= error;
+        failureDetectedAt ??= Date.now();
+        phase = "failed";
+      }
+      const startupError = failure ?? error;
       try { await stop(); }
-      catch (cleanupError) { throw new AggregateError([error, cleanupError], "Standalone startup failed and owned cleanup could not be confirmed."); }
-      throw error;
+      catch (cleanupError) { throw new AggregateError([startupError, cleanupError], "Standalone startup failed and owned cleanup could not be confirmed."); }
+      throw startupError;
     }
   }
-  return { start, stop };
+  return { start, stop, completion, get state() { return phase; } };
 }
 
 async function main() {
@@ -331,16 +448,16 @@ async function main() {
   const launcher = createStandaloneLauncher({ mode });
   const requestShutdown = () => {
     log("orchestrator", "33", "Stopping owned processes and awaiting bounded teardown.");
-    void launcher.stop().catch((error) => { log("orchestrator", "31", error.message); process.exitCode = 1; });
+    void launcher.stop().catch(() => {}); // The terminal completion below reports cleanup failure.
   };
   process.on("SIGINT", requestShutdown);
   process.on("SIGTERM", requestShutdown);
-  try { await launcher.start(); }
-  catch (error) {
-    if (error.name !== "AbortError") {
-      log("orchestrator", "31", error.message);
-      process.exitCode = 1;
-    }
+  try {
+    try { await launcher.start(); } catch { /* Startup outcome is preserved in completion. */ }
+    const result = await launcher.completion;
+    process.exitCode = result.exitCode;
+    if (result.state === "failed") log("orchestrator", "31", `Launcher failed: ${result.reason}; owned cleanup: ${result.cleanup}.`);
+  } finally {
     process.off("SIGINT", requestShutdown);
     process.off("SIGTERM", requestShutdown);
   }

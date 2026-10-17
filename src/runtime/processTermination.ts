@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
+import { z } from "zod";
 
 export type ProcessTerminationMethod = "process_group" | "taskkill_tree" | "win32_job_object" | "descendant_fallback";
 export type ProcessTerminationOutcome = "terminated" | "termination_unverified" | "termination_failed";
@@ -142,7 +143,7 @@ export type SessionProcessSnapshot = {
 async function runBoundedSnapshotCommand(
   application: string,
   args: string[],
-  options: { env?: NodeJS.ProcessEnv; windowsHide?: boolean; description: string }
+  options: { env?: NodeJS.ProcessEnv; windowsHide?: boolean; description: string; timeoutMs?: number }
 ): Promise<string> {
   const child = spawn(application, args, {
     stdio: ["ignore", "pipe", "pipe"],
@@ -174,7 +175,7 @@ async function runBoundedSnapshotCommand(
   const timeout = setTimeout(() => {
     timedOut = true;
     child.kill("SIGKILL");
-  }, PROCESS_SNAPSHOT_TIMEOUT_MS);
+  }, Math.min(PROCESS_SNAPSHOT_TIMEOUT_MS, Math.max(1, options.timeoutMs ?? PROCESS_SNAPSHOT_TIMEOUT_MS)));
   let code: number | null;
   try {
     [code] = (await once(child, "close")) as [number | null, NodeJS.Signals | null];
@@ -332,38 +333,129 @@ public static class PortusWinProcessTree {
         public string szExeFile;
     }
 
-    public static string GetDescendants(uint rootPid) {
+    private static List<uint> CollectDescendants(uint rootPid, HashSet<uint> extraRoots = null) {
         IntPtr snap = CreateToolhelp32Snapshot(2, 0);
-        if (snap == IntPtr.Zero || snap == (IntPtr)(-1)) return "[]";
+        if (snap == IntPtr.Zero || snap == (IntPtr)(-1)) throw new InvalidOperationException("Process snapshot unavailable");
         var parentMap = new Dictionary<uint, List<uint>>();
         PROCESSENTRY32 pe = new PROCESSENTRY32();
         pe.dwSize = (uint)Marshal.SizeOf(typeof(PROCESSENTRY32));
-        if (Process32First(snap, ref pe)) {
-            do {
-                uint pid = pe.th32ProcessID;
-                uint ppid = pe.th32ParentProcessID;
-                if (!parentMap.ContainsKey(ppid)) {
-                    parentMap[ppid] = new List<uint>();
-                }
-                parentMap[ppid].Add(pid);
-            } while (Process32Next(snap, ref pe));
+        if (!Process32First(snap, ref pe)) {
+            CloseHandle(snap);
+            throw new InvalidOperationException("Process enumeration unavailable");
         }
+        do {
+            uint pid = pe.th32ProcessID;
+            uint ppid = pe.th32ParentProcessID;
+            if (!parentMap.ContainsKey(ppid)) {
+                parentMap[ppid] = new List<uint>();
+            }
+            parentMap[ppid].Add(pid);
+        } while (Process32Next(snap, ref pe));
+        int enumerationError = Marshal.GetLastWin32Error();
         CloseHandle(snap);
+        if (enumerationError != 18) throw new InvalidOperationException("Process enumeration incomplete");
         var descendants = new List<uint>();
+        var seen = new HashSet<uint>();
+        seen.Add(rootPid);
         if (rootPid > 0) {
             var queue = new Queue<uint>();
             queue.Enqueue(rootPid);
+            if (extraRoots != null) {
+                foreach (uint extra in extraRoots) if (seen.Add(extra)) queue.Enqueue(extra);
+            }
             while (queue.Count > 0) {
                 uint current = queue.Dequeue();
                 if (parentMap.ContainsKey(current)) {
                     foreach (uint child in parentMap[current]) {
-                        descendants.Add(child);
-                        queue.Enqueue(child);
+                        if (seen.Add(child)) {
+                            descendants.Add(child);
+                            queue.Enqueue(child);
+                        }
                     }
                 }
             }
         }
-        return "[" + string.Join(",", descendants) + "]";
+        return descendants;
+    }
+
+    public static string GetDescendants(uint rootPid) {
+        try { return "[" + string.Join(",", CollectDescendants(rootPid)) + "]"; }
+        catch { return "[]"; }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetProcessTimes(IntPtr handle, out long created, out long exited, out long kernel, out long user);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr handle, out uint code);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr handle, uint code);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    public static string CleanupExitedTree(uint rootPid, long startedAfterMs, long exitedBeforeMs) {
+        int terminated = 0, unverified = 0, remaining = 0;
+        // A currently live process with this PID can be a reused identity. Never
+        // follow its parent links or terminate anything under that ambiguity.
+        IntPtr root = OpenProcess(0x00101000, false, rootPid);
+        if (root != IntPtr.Zero) {
+            uint rootCode;
+            bool absent = GetExitCodeProcess(root, out rootCode) && rootCode != 259;
+            CloseHandle(root);
+            if (!absent) return "{\\\"terminated\\\":0,\\\"unverified\\\":1,\\\"remaining\\\":1}";
+        }
+        else if (Marshal.GetLastWin32Error() != 87) {
+            return "{\\\"terminated\\\":0,\\\"unverified\\\":1,\\\"remaining\\\":0}";
+        }
+        var descendants = CollectDescendants(rootPid);
+        var handles = new List<IntPtr>();
+        var known = new HashSet<uint>(descendants);
+        try {
+            foreach (uint pid in descendants) {
+                IntPtr handle = OpenProcess(0x00101001, false, pid);
+                if (handle == IntPtr.Zero) {
+                    // ERROR_INVALID_PARAMETER means this PID no longer exists.
+                    // Other failures cannot establish absence or ownership.
+                    if (Marshal.GetLastWin32Error() != 87) unverified++;
+                    continue;
+                }
+                long created, exited, kernel, user;
+                if (!GetProcessTimes(handle, out created, out exited, out kernel, out user)) {
+                    unverified++; CloseHandle(handle); continue;
+                }
+                long createdMs = new DateTimeOffset(DateTime.FromFileTimeUtc(created)).ToUnixTimeMilliseconds();
+                if (createdMs < startedAfterMs || createdMs > exitedBeforeMs) {
+                    unverified++; CloseHandle(handle); continue;
+                }
+                // Hold the exact creation-time-checked process handle through
+                // termination; a later PID reuse cannot retarget this operation.
+                handles.Add(handle);
+            }
+            foreach (IntPtr handle in handles) {
+                uint code;
+                if (GetExitCodeProcess(handle, out code) && code != 259) continue;
+                if (TerminateProcess(handle, 1)) terminated++;
+                else unverified++;
+            }
+            var wait = Stopwatch.StartNew();
+            foreach (IntPtr handle in handles) {
+                uint budget = (uint)Math.Max(0L, 1000L - wait.ElapsedMilliseconds);
+                if (WaitForSingleObject(handle, budget) != 0) remaining++;
+            }
+            // Also inspect descendants of now-dead intermediate parents. New
+            // survivors are reported, not blindly killed or hidden.
+            foreach (uint pid in CollectDescendants(rootPid, known)) {
+                IntPtr handle = OpenProcess(0x00101000, false, pid);
+                if (handle == IntPtr.Zero) { if (Marshal.GetLastWin32Error() != 87) unverified++; continue; }
+                uint code;
+                if (!GetExitCodeProcess(handle, out code) || code == 259) remaining++;
+                CloseHandle(handle);
+            }
+        } finally {
+            foreach (IntPtr handle in handles) CloseHandle(handle);
+        }
+        return "{\\\"terminated\\\":" + terminated + ",\\\"unverified\\\":" + unverified + ",\\\"remaining\\\":" + remaining + "}";
     }
 
     public static string GetSessionSnapshot(uint rootPid) {
@@ -431,6 +523,41 @@ export async function getWindowsSessionProcessSnapshot(rootPid: number): Promise
     rootStartedAtMs,
     allowedPids: [rootPid, ...descendants]
   };
+}
+
+const exitedTreeOwnerSchema = z.object({
+  rootPid: z.number().int().positive().max(0xffffffff),
+  startedAfterMs: z.number().int().positive().safe(),
+  exitedBeforeMs: z.number().int().positive().safe()
+}).strict().refine((owner) => owner.exitedBeforeMs >= owner.startedAfterMs);
+const exitedTreeResultSchema = z.object({
+  terminated: z.number().int().nonnegative(),
+  unverified: z.number().int().nonnegative(),
+  remaining: z.number().int().nonnegative()
+}).strict();
+
+export type ExitedWindowsTreeOwner = z.infer<typeof exitedTreeOwnerSchema>;
+export type ExitedWindowsTreeCleanup = {
+  confirmed: boolean;
+  terminated: number;
+  unverified: number;
+  remaining: number;
+};
+
+/** Only for an owned root already observed exiting. Never use a bare historical PID. */
+export async function cleanupExitedWindowsTree(owner: ExitedWindowsTreeOwner, options: { timeoutMs?: number } = {}): Promise<ExitedWindowsTreeCleanup> {
+  const parsed = exitedTreeOwnerSchema.safeParse(owner);
+  if (!parsed.success || process.platform !== "win32") return { confirmed: false, terminated: 0, unverified: 1, remaining: 0 };
+  const value = parsed.data;
+  try {
+    const command = `Add-Type -TypeDefinition @'\n${WIN_PROCESS_TREE_CSHARP}\n'@ -Language CSharp\n[PortusWinProcessTree]::CleanupExitedTree(${value.rootPid}, [long]${value.startedAfterMs}, [long]${value.exitedBeforeMs})`;
+    const output = await runBoundedSnapshotCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { description: "Owned exited process-tree cleanup", windowsHide: true, timeoutMs: options.timeoutMs });
+    const result = exitedTreeResultSchema.safeParse(JSON.parse(output));
+    if (!result.success) return { confirmed: false, terminated: 0, unverified: 1, remaining: 0 };
+    return { ...result.data, confirmed: result.data.unverified === 0 && result.data.remaining === 0 };
+  } catch {
+    return { confirmed: false, terminated: 0, unverified: 1, remaining: 0 };
+  }
 }
 
 export async function forceKillPid(pid: number): Promise<void> {

@@ -1,6 +1,6 @@
 # Tailscale Integration & Setup Guide
 
-**Updated:** 2026-10-17T06:33:52Z
+**Updated:** 2026-10-17T07:40:52Z
 
 This guide is the authoritative reference for setting up, configuring, and using **Tailscale** (Tailscale Serve & Tailscale Funnel) with **Portus MCP**.
 
@@ -113,7 +113,19 @@ No `--bg` flag or persistent route is added. Background services configured else
 - Configuration reads and the CLI's write are not a cross-operator transaction. Do not concurrently reconfigure Serve/Funnel while a launcher is starting or stopping. Observed unrelated changes cause failure, not global rollback.
 - Shutdown stops only child trees started by that launcher. Windows uses awaited tree termination; foreground release is then confirmed with bounded read-only configuration observations. No arbitrary process is adopted because it answers a health URL.
 - These are local ownership guarantees. Actual daemon watch-session behavior, public reachability, and live OpenAI/client interoperability require the separately planned live verification. Windows process-tree and isolated route-fixture behavior were exercised; equivalent POSIX behavior was not exercised.
-- Unexpected failures after successful startup and recovery policy remain separate F3/I2 work. This change adds no restarts or tool-call replay.
+- Required owned backend/foreground-service exit or spawn error makes the launcher failed, including unexpected exit zero. Child events are monitored for fail-stop handling within a five-second detection bound; this is not continuous public-route or application-health polling.
+- Intentional Ctrl+C/stop is distinct from dependency failure. Expected child exits during teardown do not turn a clean stop into failure or an existing failure into success.
+- Teardown retains its separate five-second budget. On Windows, an already exited root uses bounded process snapshots and creation-time-checked native handles for eligible descendants. Ambiguous identity, inaccessible processes, or incomplete teardown produce explicit unverified cleanup and exit 1, not speculative PID termination or a clean-shutdown claim.
+- The actual launcher exits nonzero on terminal dependency/cleanup failure. A returning dependency cannot restart a terminal launcher. No automatic recovery, daemon restart, authentication change, or tool-call replay is added; recovery remains separate I2 work.
+
+### F3 local verification and limits
+
+The approved affected checks passed after correcting startup error propagation and Windows orphan fixtures. Real Windows proof includes a descendant still serving after its root exited, its actual native termination, and an out-of-window candidate left alive. Other focused cases covered unexpected zero/signal exits, backend loss, unrelated-service preservation, explicit unverified cleanup, and intentional shutdown.
+
+The real CLI smoke exited 1 and reported external failure/confirmed cleanup. Its wrapper failed an incidental punctuation assertion before its socket probe; the separately approved single later observation returned `ECONNREFUSED` for that recorded listener. Local acceptance uses this combined evidence, not a claimed passed wrapper or an immediate smoke teardown measurement. The plan/report preserve the original failures and approvals.
+
+F1–F3 are complete locally, not end-to-end public hardening. Native Tailscale daemon/public-route behavior, actual clients/OpenAI interoperability, equivalent POSIX behavior, and latency improvements remain separately unverified. Cleanup uncertainty may leave resources behind; an explicit failure is not a guarantee that everything stopped.
+
 ---
 
 ## 5. Environment Variables
