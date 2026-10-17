@@ -17,7 +17,7 @@ npm run flue:check
 
 GitHub Actions runs the standard checks on `ubuntu-latest` and `windows-latest` with Node.js 24. Checkout and Node setup also use Node 24-based actions. Both matrix jobs run to completion independently when either job fails.
 
-`npm test` enumerates the top-level `tests/*.test.ts` files and uses Node's programmatic runner to start measured slow files first. Each file runs in its own process, with two files at a time on Windows and four elsewhere by default. Set `PORTUS_TEST_CONCURRENCY` to a positive integer to override that limit. Node filtering options still pass through, for example `npm test -- --test-name-pattern="owned child exit"`.
+`npm test` enumerates the top-level `tests/*.test.ts` files and uses Node's programmatic runner. Windows retains alphabetical file order; other platforms start measured slow files first. Each file runs in its own process, with two files at a time on Windows and four elsewhere by default. Set `PORTUS_TEST_CONCURRENCY` to a positive integer to override that limit. Node filtering options still pass through, for example `npm test -- --test-name-pattern="owned child exit"`.
 
 Process-ownership regressions exercise Windows descendant-tree cleanup and POSIX owned-process-group cleanup. The exit-order regression uses a real child with delayed application callbacks so native process reaping can proceed on either platform.
 

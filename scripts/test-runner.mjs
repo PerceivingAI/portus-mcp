@@ -7,8 +7,8 @@ const concurrency = Number(process.env.PORTUS_TEST_CONCURRENCY ?? (process.platf
 if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
   throw new Error("PORTUS_TEST_CONCURRENCY must be a positive integer.");
 }
-// Start measured long-running files first. Other files retain lexical order.
-const priority = [
+// Keep Windows' original lexical order; prioritize measured slow files elsewhere.
+const priority = process.platform === "win32" ? [] : [
   "start-all-recovery.test.ts",
   "start-all-recovery-deadline.test.ts",
   "session-events-stream.test.ts",
