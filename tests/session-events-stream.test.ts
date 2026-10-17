@@ -10,15 +10,34 @@ import { setTimeout as delay } from "node:timers/promises";
 // Keep bounded socket-readiness waits real while application timers are advanced.
 const waitForIO = delay;
 function pollClock(t: TestContext) {
+  // Control the application's one-second poll, not HTTP/socket timers.
   const realTimeout = globalThis.setTimeout;
   const realClearTimeout = globalThis.clearTimeout;
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  t.after(() => {
-    t.mock.timers.reset();
-    globalThis.setTimeout = realTimeout;
-    globalThis.clearTimeout = realClearTimeout;
+  const pending = new Map<NodeJS.Timeout, { at: number; run: () => void }>();
+  let now = 0;
+  const schedule = t.mock.method(globalThis, "setTimeout", function(this: typeof globalThis, callback: (...args: any[]) => void, milliseconds?: number, ...args: any[]) {
+    if (milliseconds !== 1000) return Reflect.apply(realTimeout, this, [callback, milliseconds, ...args]);
+    const handle = {} as NodeJS.Timeout;
+    pending.set(handle, { at: now + milliseconds, run: () => Reflect.apply(callback, handle, args) });
+    return handle;
   });
-  return t.mock.timers;
+  const cancel = t.mock.method(globalThis, "clearTimeout", function(this: typeof globalThis, handle: Parameters<typeof clearTimeout>[0]) {
+    if (typeof handle === "object" && handle !== null && pending.delete(handle)) return;
+    Reflect.apply(realClearTimeout, this, [handle]);
+  });
+  const clock = {
+    tick(milliseconds: number) {
+      now += milliseconds;
+      for (const [handle, timer] of pending) {
+        if (timer.at > now) continue;
+        pending.delete(handle);
+        timer.run();
+      }
+    },
+    reset() { pending.clear(); schedule.mock.restore(); cancel.mock.restore(); }
+  };
+  t.after(() => clock.reset());
+  return clock;
 }
 
 const root = mkdtempSync(path.join(process.cwd(), ".session-events-stream-"));

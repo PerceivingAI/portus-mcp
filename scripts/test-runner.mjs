@@ -28,7 +28,7 @@ if (files.length === 0) throw new Error("No test files found.");
 
 // The CLI re-sorts explicit paths. The public run API preserves this ordering
 // while keeping each file in its own process and inheriting the tsx preload.
-run({ files, concurrency })
+run({ files, concurrency, execArgv: process.argv.slice(2) })
   .on("test:fail", () => { process.exitCode = 1; })
   .compose(spec)
   .pipe(process.stdout);

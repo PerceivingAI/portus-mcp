@@ -17,11 +17,15 @@ npm run flue:check
 
 GitHub Actions runs the standard checks on `ubuntu-latest` and `windows-latest` with Node.js 24. Checkout and Node setup also use Node 24-based actions. Both matrix jobs run to completion independently when either job fails.
 
-`npm test` enumerates the top-level `tests/*.test.ts` files in a Node launcher rather than relying on shell wildcard expansion. It keeps file concurrency at two and accepts Node test-runner options, for example `npm test -- --test-name-pattern="owned child exit"`.
+`npm test` enumerates the top-level `tests/*.test.ts` files and uses Node's programmatic runner to start measured slow files first. Each file runs in its own process, with four files at a time by default. Set `PORTUS_TEST_CONCURRENCY` to a positive integer to override that limit. Node filtering options still pass through, for example `npm test -- --test-name-pattern="owned child exit"`.
 
 Process-ownership regressions exercise Windows descendant-tree cleanup and POSIX owned-process-group cleanup. The exit-order regression uses a real child with delayed application callbacks so native process reaping can proceed on either platform.
 
+The full outage-deadline recovery case runs in its own file so its real wait overlaps other tests. Native process cleanup and production recovery deadlines/backoffs are unchanged.
+
 After compilation, CI also runs an execution-session smoke outside the test runner. It checks that successful and failed commands expose their complete stdout/stderr when terminal status is returned, then removes the disposable state.
+
+CI caches installed dependencies only for an exact match of OS, architecture, Node version/ABI, runner image, and package/lockfile hashes. Cache misses run `npm ci`, including lifecycle scripts and auditing. Exact hits reuse that completed installation and run a fresh `npm audit --audit-level=none`, retaining non-blocking vulnerability-severity reporting. Installed snapshots are saved only after the job succeeds; no partial-key or cross-OS reuse is enabled.
 
 ## Manual ChatGPT Verification
 
