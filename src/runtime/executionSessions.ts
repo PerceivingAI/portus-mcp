@@ -4,7 +4,7 @@ import type { WriteStream } from "node:fs";
 import { once } from "node:events";
 import path from "node:path";
 import crypto from "node:crypto";
-import { loadPolicyConfig, policyPermissions, type PortusPolicyConfig } from "../policy/policyConfig.js";
+import { getPolicyConfig, policyPermissions, type PortusPolicyConfig } from "../policy/policyConfig.js";
 import { stateStore } from "../state/StateStore.js";
 import {
   forceKillPid,
@@ -226,35 +226,9 @@ export function toPublicExecutionSession(record: ExecutionSessionRecord): Public
 export function reconcileExecutionSessionRecord(record: ExecutionSessionRecord): ExecutionSessionRecord {
   if (record.status !== "running") return record;
 
-  const entry = activeProcesses.get(record.sessionId);
-  if (entry) {
-    const pid = entry.child.pid;
-    if (pid !== undefined && !isProcessAlive(pid)) {
-      const exitCode = entry.exitCode ?? entry.child.exitCode ?? null;
-      const signal = entry.signal ?? entry.child.signalCode ?? null;
-      void handleProcessClosed(
-        record.sessionId,
-        exitCode,
-        signal,
-        "root_process_absent"
-      );
-      record.status = exitCode === 0 ? "completed" : "failed";
-      record.completedAt ??= new Date().toISOString();
-      record.exitCode = exitCode;
-      record.signal = signal;
-      record.lifecycle = {
-        ...record.lifecycle,
-        processExited: true,
-        waitAttempted: true,
-        reaped: true,
-        reconciled: true,
-        reconciliationReason: "root_process_absent",
-        exitCodeKnown: exitCode !== null || signal !== null
-      };
-      return record;
-    }
-    return record;
-  }
+  // PID absence can precede Node's exit code and pending stdio delivery.
+  // Tracked children are finalized by their exit/close, drain, or deadline paths.
+  if (activeProcesses.has(record.sessionId)) return record;
 
   const pid = record.pid;
   if (pid === undefined || !isProcessAlive(pid)) {
@@ -366,7 +340,7 @@ function appendTerminationFailure(
 }
 
 export async function startExecutionSession(options: StartExecutionSessionOptions): Promise<PublicExecutionSession> {
-  const policy = options.policy ?? loadPolicyConfig();
+  const policy = options.policy ?? getPolicyConfig();
   const allowShell = policyPermissions(policy).main_agent.allowShell;
   const isWin = process.platform === "win32";
   if (options.executablePath !== undefined) {

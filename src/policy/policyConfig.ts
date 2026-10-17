@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -179,7 +180,34 @@ export function loadPolicyConfig(): PortusPolicyConfig {
   }
 }
 
-export function policyPermissions(policy = loadPolicyConfig()): PermissionConfig {
+const activePolicy = new AsyncLocalStorage<PortusPolicyConfig>();
+
+/** The validated, immutable policy owned by one backend lifetime. */
+export function createPolicySnapshot(policy: PortusPolicyConfig): PortusPolicyConfig {
+  const snapshot = parsePolicyConfig(policy);
+  freezePolicyValue(snapshot);
+  return snapshot;
+}
+
+function freezePolicyValue(value: unknown): void {
+  if (value === null || typeof value !== "object") return;
+  for (const key in value) freezePolicyValue((value as Record<string, unknown>)[key]);
+  Object.freeze(value);
+}
+
+/** Async work and timers inherit their originating backend's policy. */
+export function runWithPolicyConfig<T>(policy: PortusPolicyConfig, action: () => T): T {
+  return activePolicy.run(policy, action);
+}
+
+/** Runtime access never falls back to disk or another backend's policy. */
+export function getPolicyConfig(): PortusPolicyConfig {
+  const policy = activePolicy.getStore();
+  if (!policy) throw new Error("Policy context is not initialized for this backend.");
+  return policy;
+}
+
+export function policyPermissions(policy = getPolicyConfig()): PermissionConfig {
   return {
     main_agent: { ...policy.main_agent.permissions },
     subagents: {
@@ -190,17 +218,17 @@ export function policyPermissions(policy = loadPolicyConfig()): PermissionConfig
 }
 
 /** Strict, policy-derived limits for the screenshot system (`limits.screenshot`). */
-export function loadScreenshotLimits(policy: PortusPolicyConfig = loadPolicyConfig()) {
+export function loadScreenshotLimits(policy: PortusPolicyConfig = getPolicyConfig()) {
   return policy.limits.screenshot;
 }
 
-export function loadSubagentCommandConfig(policy = loadPolicyConfig()): SubagentCommandConfig {
+export function loadSubagentCommandConfig(policy = getPolicyConfig()): SubagentCommandConfig {
   return {
     allowedCommands: normalizeCommandList(policy.subagents.permissions.allowedCommands, "subagents.permissions.allowedCommands")
   };
 }
 
-export function loadMainAgentCommandConfig(policy = loadPolicyConfig()): MainAgentCommandConfig {
+export function loadMainAgentCommandConfig(policy = getPolicyConfig()): MainAgentCommandConfig {
   return {
     allowedCommands: normalizeCommandList(policy.main_agent.permissions.allowedCommands, "main_agent.permissions.allowedCommands")
   };

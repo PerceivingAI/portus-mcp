@@ -1,6 +1,6 @@
 import path from "node:path";
 import { lstatSync, realpathSync, statSync } from "node:fs";
-import { loadPolicyConfig } from "./policyConfig.js";
+import { getPolicyConfig } from "./policyConfig.js";
 import { getProject } from "../state/ProjectRegistry.js";
 import type { SkillRegistrySnapshot } from "../skills/SkillRegistry.js";
 
@@ -11,7 +11,7 @@ function isContained(root: string, target: string): boolean {
 
 function assertNotBlocked(target: string): void {
   const normalizedTarget = target.toLowerCase();
-  for (const blocked of loadPolicyConfig().pathPolicy.blockedPatterns) {
+  for (const blocked of getPolicyConfig().pathPolicy.blockedPatterns) {
     if (normalizedTarget.includes(blocked.toLowerCase())) {
       throw new Error("Blocked path pattern.");
     }

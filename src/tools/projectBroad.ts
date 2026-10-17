@@ -12,7 +12,7 @@ import { getProject, listProjects } from "../state/ProjectRegistry.js";
 import { stateStore } from "../state/StateStore.js";
 import { resolveProjectPath, resolveReadablePath } from "../policy/pathPolicy.js";
 import { assertMainAgentCommandAllowed, assertMainAgentPermission } from "../policy/permissionPolicy.js";
-import { loadPolicyConfig, policyPermissions, type PortusPolicyConfig } from "../policy/policyConfig.js";
+import { getPolicyConfig, policyPermissions, type PortusPolicyConfig } from "../policy/policyConfig.js";
 import { countChars, limitText } from "../runtime/outputLimits.js";
 import { runProjectCheck, runProjectScript } from "../runtime/checks.js";
 import { runProjectCommand } from "../runtime/commands.js";
@@ -147,7 +147,7 @@ function pathMetadata(projectAlias: string, relativePath: string, includeHash: b
 function packageScripts(projectAlias: string): string[] {
   const pkg = resolveProjectPath(projectAlias, "package.json");
   assertCanReadProjectPath(projectAlias, pkg, "package.json");
-  const limited = limitText(readFileSync(pkg, "utf8"), loadPolicyConfig().limits.fileRead.maxChars);
+  const limited = limitText(readFileSync(pkg, "utf8"), getPolicyConfig().limits.fileRead.maxChars);
   if (limited.truncated) throw new Error("Unable to inspect package scripts: package.json exceeds the configured read limit");
   const parsed: unknown = JSON.parse(limited.text);
   if (!parsed || typeof parsed !== "object" || !("scripts" in parsed) || !parsed.scripts || typeof parsed.scripts !== "object") return [];
@@ -438,7 +438,7 @@ const expectedFileSchema = z.object({
   isTextLikely: z.boolean().optional()
 }).strict();
 
-export function registerProjectReadTool(server: McpServer, registry: SkillRegistrySnapshot, policy: PortusPolicyConfig = loadPolicyConfig()): void {
+export function registerProjectReadTool(server: McpServer, registry: SkillRegistrySnapshot, policy: PortusPolicyConfig = getPolicyConfig()): void {
   registerStrictProjectTool(server, "project_read", "Read files from a registered project or available skill. Pass a registered project alias or a skill rootAlias returned by project_context and batch up to 50 requests.\n\nModes:\n- content: Read text content. Optionally pass startLine and endLine for a line range. Requires readGitIgnoredFiles for Git-ignored paths.\n- binary: Read binary file data. Requires readGitIgnoredFiles for Git-ignored paths.\n- metadata: Read file metadata. Git-ignored paths require statGitIgnoredFiles or readGitIgnoredFiles.\n- exists: Check whether a path exists. Git-ignored paths require statGitIgnoredFiles or readGitIgnoredFiles.\n\nstatGitIgnoredFiles exposes metadata and existence only; it never grants content access. Text reads return the complete file hash, including bounded and truncated reads.", {
     projectAlias: z.string().min(1),
     requests: z.array(z.object({ relativePath: z.string().min(1), mode: z.enum(["content", "binary", "metadata", "exists"]).default("content"), startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional() }).strict().superRefine((request, context) => { if (request.mode !== "content" && (request.startLine !== undefined || request.endLine !== undefined)) context.addIssue({ code: z.ZodIssueCode.custom, message: "Line ranges are only valid for content mode" }); })).min(1).max(50)
@@ -502,7 +502,7 @@ function verifyProjectEditResult(projectAlias: string, result: ProjectEditBatchR
   return { files };
 }
 
-export function registerBroadProjectTools(server: McpServer, registry: SkillRegistrySnapshot, policy: PortusPolicyConfig = loadPolicyConfig()): void {
+export function registerBroadProjectTools(server: McpServer, registry: SkillRegistrySnapshot, policy: PortusPolicyConfig = getPolicyConfig()): void {
   registerProjectReadTool(server, registry, policy);
 
   const treeSchema = z.object({ relativePath: z.string().min(1).optional(), maxDepth: z.number().int().positive().max(20).optional(), includeFiles: z.boolean().optional(), includeDirs: z.boolean().optional(), maxEntries: z.number().int().positive().max(20000).optional(), format: z.enum(["tree", "json", "flat"]).optional() }).strict();

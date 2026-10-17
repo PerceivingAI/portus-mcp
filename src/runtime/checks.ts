@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { runCapturedProcess, type ProcessResult } from "./commands.js";
-import { loadPolicyConfig } from "../policy/policyConfig.js";
+import { getPolicyConfig } from "../policy/policyConfig.js";
 
 
 export type ProjectScriptResult = ProcessResult & {
@@ -27,7 +27,7 @@ export async function runProjectScript(
   const packageJsonPath = path.join(rootPath, "package.json");
   const packageJson = packageJsonInput ?? JSON.parse(readFileSync(packageJsonPath, "utf8")) as { scripts?: Record<string, string> };
   if (!packageJson.scripts?.[scriptName]) throw new Error(`Missing package.json script: ${scriptName}`);
-  const policy = loadPolicyConfig();
+  const policy = getPolicyConfig();
 
   const npmExecPath = process.env.npm_execpath;
   const command = process.platform === "win32" && npmExecPath ? process.execPath : "npm";

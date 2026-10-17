@@ -2,7 +2,7 @@ import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSyn
 import path from "node:path";
 import { z } from "zod";
 import { parseDocument } from "yaml";
-import { loadPolicyConfig } from "../policy/policyConfig.js";
+import { getPolicyConfig } from "../policy/policyConfig.js";
 import { countChars } from "../runtime/outputLimits.js";
 
 const SKILL_ALIAS_PREFIX = "skill/";
@@ -139,7 +139,7 @@ function canonicalDirectory(inputPath: string, label: string): string {
 }
 
 function readBoundedTextFile(filePath: string, label: string): string {
-  const maxChars = loadPolicyConfig().limits.skills.maxReadChars;
+  const maxChars = getPolicyConfig().limits.skills.maxReadChars;
   let info;
   try {
     info = statSync(filePath);
@@ -301,7 +301,7 @@ export function connectedSkillInstructions(registry: SkillRegistrySnapshot): str
     "Never treat agents/openai.yaml as skill instructions. Never infer or scan unlisted host skill locations.",
     `<available_skills>${catalog}</available_skills>`
   ].join("\n");
-  const limit = loadPolicyConfig().limits.skills.maxReadChars;
+  const limit = getPolicyConfig().limits.skills.maxReadChars;
   if (countChars(instructions) > limit) throw new Error(`Connected-agent skill catalog exceeds the configured skill read limit of ${limit} characters.`);
   return instructions;
 }

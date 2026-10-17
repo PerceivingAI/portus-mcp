@@ -1,6 +1,6 @@
 # Tailscale Integration & Setup Guide
 
-**Updated:** 2026-10-17T09:54:50Z
+**Updated:** 2026-10-17T19:07:48Z
 
 This guide is the authoritative reference for setting up, configuring, and using **Tailscale** (Tailscale Serve & Tailscale Funnel) with **Portus MCP**.
 
@@ -127,24 +127,11 @@ Backend downtime alone is not a companion failure. An unexpected owned CLI exit 
 - Configuration reads and the CLI's write are not a cross-operator transaction. Do not concurrently reconfigure Serve/Funnel while a launcher is starting or stopping. Observed unrelated changes cause failure, not global rollback.
 - Shutdown stops only child trees started by that launcher. Windows uses awaited tree termination; foreground release is then confirmed with bounded read-only configuration observations. No arbitrary process is adopted because it answers a health URL.
 - These are local ownership guarantees. Actual daemon watch-session behavior, public reachability, and live OpenAI/client interoperability require the separately planned live verification. Windows process-tree and isolated route-fixture behavior were exercised; equivalent POSIX behavior was not exercised.
-- Required owned backend/foreground-service exit or spawn error makes a standalone launcher failed, including unexpected exit zero. Attach-only commands own no backend; after initial attachment they can recover an unexpected owned CLI exit within the I2 limits below. Non-retryable errors, unsafe cleanup, and exhausted recovery produce failure/nonzero completion. No continuous public-route or application-health polling is added.
+- Required owned backend/foreground-service exit or spawn error makes a standalone launcher failed, including unexpected exit zero. Attach-only commands own no backend; after initial attachment they can recover an unexpected owned CLI exit within the bounded recovery limits below. Non-retryable errors, unsafe cleanup, and exhausted recovery produce failure/nonzero completion. No continuous public-route or application-health polling is added.
 - Intentional Ctrl+C/stop is distinct from dependency failure. Expected child exits during teardown do not turn a clean stop into failure or an existing failure into success.
 - Teardown retains its separate five-second budget. On Windows, an already exited root uses bounded process snapshots and creation-time-checked native handles for eligible descendants. Ambiguous identity, inaccessible processes, or incomplete teardown produce explicit unverified cleanup and exit 1, not speculative PID termination or a clean-shutdown claim.
 - A returning dependency cannot restart a terminal launcher. Only the attach-mode Tailscale CLI is eligible for bounded automatic replacement; no backend, OpenAI connection, or system daemon is restarted, and no authentication change or tool-call replay is added.
 
-### F3 local verification and limits
-
-The approved affected checks passed after correcting startup error propagation and Windows orphan fixtures. Real Windows proof includes a descendant still serving after its root exited, its actual native termination, and an out-of-window candidate left alive. Other focused cases covered unexpected zero/signal exits, backend loss, unrelated-service preservation, explicit unverified cleanup, and intentional shutdown.
-
-The real CLI smoke exited 1 and reported external failure/confirmed cleanup. Its wrapper failed an incidental punctuation assertion before its socket probe; the separately approved single later observation returned `ECONNREFUSED` for that recorded listener. Local acceptance uses this combined evidence, not a claimed passed wrapper or an immediate smoke teardown measurement. The plan/report preserve the original failures and approvals.
-
-F1–F3 are complete locally, not end-to-end public hardening. Native Tailscale daemon/public-route behavior, actual clients/OpenAI interoperability, equivalent POSIX behavior, and latency improvements remain separately unverified. Cleanup uncertainty may leave resources behind; an explicit failure is not a guarantee that everything stopped.
-
-### I1 local verification status
-
-The historical I1 focused invocation passed 62 checks, including both attach modes, real backend restart with updated synthetic project aliases through a local proxy, optional/configured authentication, cancellation, conflict refusal, independent teardown, and standalone regressions. Both actual npm attach commands passed rejection-only CLI smoke checks. The later I2 invocation below reran the affected behavior with recovery enabled.
-
-The independent lifecycle smoke passed after a separately approved correction to its throwaway harness. It used the production standalone and attach APIs, observed HTTP 502 while the backend was down, then read the changed project aliases after restarting the backend at the same endpoint with the companion unchanged. Manual companion stop preserved the backend and controlled tunnel fixture; final owned teardown removed temporary state. The original pre-execution harness syntax failure remains recorded. I1 is locally accepted; native Tailscale daemon/public-route behavior and an actual agent's continuation after an error remain unverified. See [the I1 evidence](../notes/TUNNEL_REPORT.md#i1-attach-only-implementation-evidence) for outcomes and proof limits.
 
 ### Automatic recovery for attach-only commands
 
@@ -171,7 +158,6 @@ Each replacement prints one attempt message, then a route-restored confirmation 
 
 Serve uses `Tailscale Serve` in those messages. Route restoration is not a public/client or ongoing backend-health claim. Exhaustion or terminal errors report failure and exit nonzero. Ctrl+C cancels pending recovery, waits for bounded owned cleanup, and prevents late replacements; it does not stop MCP or `tunnel-client`.
 
-The single I2 focused invocation passed 76 checks, including actual 1/2/4-second delays, three successful restoration cycles, attempt/time exhaustion, terminal refusal, backend-independent recovery, and stop races. An independent local recovery smoke also passed, including updated project discovery after manual backend restart and manual companion stop preserving the backend/tunnel fixture. These used real loopback processes and controlled route/session fixtures, not native Tailscale or live OpenAI/agents. See [I2 evidence](../notes/TUNNEL_REPORT.md#i2-bounded-attach-only-recovery-evidence).
 
 
 

@@ -132,15 +132,19 @@ export const discriminatedScreenshotSchema = z.discriminatedUnion("operation", [
     }
   }
 });
-// the same binding-availability cache. Limits come from server-startup policy.
-let sharedSystem: ScreenshotSystem | null = null;
+// Each backend owns its limits, capture context and binding-availability cache.
+const sharedSystems = new WeakMap<PortusPolicyConfig, ScreenshotSystem>();
 
 export function getScreenshotSystem(policy: PortusPolicyConfig): ScreenshotSystem {
-  sharedSystem ??= createScreenshotSystem({
-    limits: loadScreenshotLimits(policy),
-    subscribeSessionExit: subscribeExecutionSessionExit
-  });
-  return sharedSystem;
+  let system = sharedSystems.get(policy);
+  if (!system) {
+    system = createScreenshotSystem({
+      limits: loadScreenshotLimits(policy),
+      subscribeSessionExit: subscribeExecutionSessionExit
+    });
+    sharedSystems.set(policy, system);
+  }
+  return system;
 }
 
 /** Warms (once) the cached binding-availability probe without blocking startup. */

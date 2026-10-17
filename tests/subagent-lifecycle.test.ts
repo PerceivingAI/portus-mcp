@@ -1,4 +1,4 @@
-import test, { after } from "node:test";
+import { after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -218,6 +218,20 @@ const { getSubagentLimits, runFlueTask, stopFlueTask } = await import("../src/fl
 const { getSession } = await import("../src/state/SessionRegistry.js");
 const { readSessionEvents } = await import("../src/state/SessionEvents.js");
 const { collectFlueResult } = await import("../src/flue/collectResult.js");
+// Delay policy bootstrap until the isolated fixture environment is installed.
+const { createPolicyTest } = await import("./fixtures/policyScope.js");
+const { test, run: runWithTestPolicy } = createPolicyTest();
+
+function testWithPolicy(name: string, overrides: DeepPartial<typeof defaultPolicy>, action: () => Promise<void>): void {
+  test(name, async () => {
+    writePolicy(overrides);
+    try {
+      await createPolicyTest().run(action);
+    } finally {
+      writePolicy();
+    }
+  });
+}
 
 
 async function waitForSession(sessionId: string, expected: "completed" | "failed" | "stopped") {
@@ -320,26 +334,33 @@ test("stopFlueTask stops a running mocked Flue session", async () => {
   assert.equal(eventTypes.includes("stopped"), true);
 });
 
-test("hung attempt times out and transitions to failed", async () => {
+test("subagent attempt deadline reaps a genuinely running child", async () => {
+  const pidPath = path.join(root, "timeout-child.pid");
   writeFileSync(fakeFluePath, `
-await new Promise(() => {});
+import { writeFileSync, renameSync } from "node:fs";
+writeFileSync(${JSON.stringify(pidPath + ".tmp")}, String(process.pid));
+renameSync(${JSON.stringify(pidPath + ".tmp")}, ${JSON.stringify(pidPath)});
+console.log("timeout-child-ready");
+setInterval(() => {}, 1000);
 `, "utf8");
 
+  const began = Date.now();
   const started = await runFlueTask({
     projectAlias: "agent",
     task: "HANG TASK",
     agentTemplate: "ephemeral-project-subagent",
     timeoutSecs: 1
   });
+  const startupDeadline = Date.now() + 3000;
+  while (!existsSync(pidPath) && Date.now() < startupDeadline) await sleep(10);
+  assert.equal(existsSync(pidPath), true);
+  const pid = Number(readFileSync(pidPath, "utf8"));
+  assert(Number.isInteger(pid) && pid > 0);
+  process.kill(pid, 0);
   const failed = await waitForSession(started.sessionId, "failed");
   assert.equal(failed.status, "failed");
-  const metadata = JSON.parse(readFileSync(failed.metadataPath, "utf8"));
-  assert.equal(Array.isArray(metadata.attempts), true);
-  assert.equal(metadata.attempts.length >= 1, true);
-  assert.equal(typeof metadata.failureType, "string");
-  const eventTypes = readSessionEvents({ sessionId: started.sessionId }).events.map((event) => event.type);
-  assert.equal(eventTypes.includes("attempt_finished"), true);
-  assert.equal(eventTypes.includes("failed"), true);
+  assert.equal(Date.now() - began >= 800, true);
+  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
 });
 
 test("missing flue cli path fails fast with flue_cli_missing", async () => {
@@ -358,8 +379,8 @@ test("missing flue cli path fails fast with flue_cli_missing", async () => {
   process.env.PORTUS_MCP_FLUE_CLI_PATH = original;
 });
 
-test("queue disabled rejects when concurrency limits are reached", async () => {
-  writePolicy({ subagents: { concurrency: { maxConcurrent: 1, maxConcurrentPerProject: 1, queueEnabled: false } } });
+testWithPolicy("queue disabled rejects when concurrency limits are reached",
+  { subagents: { concurrency: { maxConcurrent: 1, maxConcurrentPerProject: 1, queueEnabled: false } } }, async () => {
   writeDefaultFakeFlue();
 
   const first = await runFlueTask({ projectAlias: "agent", task: "SLEEP TASK", agentTemplate: "ephemeral-project-subagent" });
@@ -370,11 +391,10 @@ test("queue disabled rejects when concurrency limits are reached", async () => {
   );
   await stopFlueTask(first.sessionId);
   await waitForSession(first.sessionId, "stopped");
-  writePolicy();
 });
 
-test("subagent run is disabled when max concurrent subagents is zero", async () => {
-  writePolicy({ subagents: { concurrency: { maxConcurrent: 0 } } });
+testWithPolicy("subagent run is disabled when max concurrent subagents is zero",
+  { subagents: { concurrency: { maxConcurrent: 0 } } }, async () => {
 
   await assert.rejects(
     () => runFlueTask({ projectAlias: "agent", task: "SUCCESS TASK", agentTemplate: "ephemeral-project-subagent" }),
@@ -383,11 +403,10 @@ test("subagent run is disabled when max concurrent subagents is zero", async () 
   const limits = getSubagentLimits("agent");
   assert.equal(limits.maxConcurrentAgents, 0);
 
-  writePolicy();
 });
 
-test("subagent run is disabled when max concurrent subagents per project is zero", async () => {
-  writePolicy({ subagents: { concurrency: { maxConcurrentPerProject: 0 } } });
+testWithPolicy("subagent run is disabled when max concurrent subagents per project is zero",
+  { subagents: { concurrency: { maxConcurrentPerProject: 0 } } }, async () => {
 
   await assert.rejects(
     () => runFlueTask({ projectAlias: "agent", task: "SUCCESS TASK", agentTemplate: "ephemeral-project-subagent" }),
@@ -396,11 +415,10 @@ test("subagent run is disabled when max concurrent subagents per project is zero
   const limits = getSubagentLimits("agent");
   assert.equal(limits.maxConcurrentAgentsPerProject, 0);
 
-  writePolicy();
 });
 
-test("queue enabled enqueues and eventually executes task in order", async () => {
-  writePolicy({ subagents: { concurrency: { maxConcurrent: 1, maxConcurrentPerProject: 1, queueEnabled: true, maxQueueDepth: 10 }, lifecycle: { queuedTaskTtlSecs: 300 } } });
+testWithPolicy("queue enabled enqueues and eventually executes task in order",
+  { subagents: { concurrency: { maxConcurrent: 1, maxConcurrentPerProject: 1, queueEnabled: true, maxQueueDepth: 10 }, lifecycle: { queuedTaskTtlSecs: 300 } } }, async () => {
   writeDefaultFakeFlue();
 
   const first = await runFlueTask({ projectAlias: "agent", task: "SLEEP TASK", agentTemplate: "ephemeral-project-subagent" });
@@ -420,7 +438,6 @@ test("queue enabled enqueues and eventually executes task in order", async () =>
   assert.equal(secondEventTypes.includes("completed"), true);
   const limits = getSubagentLimits("agent");
   assert.equal(limits.queueDepth, 0);
-  writePolicy();
 });
 
 test("stopFlueTask terminates descendants before reporting stopped", async () => {
@@ -452,13 +469,13 @@ test("termination outcome follows verification rather than the action exit statu
   const started = await runFlueTask({ projectAlias: "agent", task: "BLOCK TASK", agentTemplate: "ephemeral-project-subagent" });
   const originalPath = process.env.PATH;
   const originalKill = process.kill;
-  t.after(async () => {
+  t.after(() => runWithTestPolicy(async () => {
     process.env.PATH = originalPath;
     process.kill = originalKill;
     if (getSession(started.sessionId).status === "running") {
       await stopFlueTask(started.sessionId);
     }
-  });
+  }));
 
   if (process.platform === "win32") {
     const failingBin = path.join(root, "failing-bin");
@@ -488,8 +505,8 @@ test("termination outcome follows verification rather than the action exit statu
   );
 });
 
-test("stopping running session releases lock for subsequent sessions", async () => {
-  writePolicy({ subagents: { concurrency: { maxConcurrent: 1, maxConcurrentPerProject: 1, queueEnabled: false } } });
+testWithPolicy("stopping running session releases lock for subsequent sessions",
+  { subagents: { concurrency: { maxConcurrent: 1, maxConcurrentPerProject: 1, queueEnabled: false } } }, async () => {
   writeDefaultFakeFlue();
 
   const first = await runFlueTask({ projectAlias: "agent", task: "SLEEP TASK", agentTemplate: "ephemeral-project-subagent" });
@@ -504,5 +521,4 @@ test("stopping running session releases lock for subsequent sessions", async () 
   const second = await runFlueTask({ projectAlias: "agent", task: "SUCCESS AFTER STOP", agentTemplate: "ephemeral-project-subagent" });
   const completed = await waitForSession(second.sessionId, "completed");
   assert.equal(completed.status, "completed");
-  writePolicy();
 });

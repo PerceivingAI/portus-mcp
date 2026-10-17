@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter, once } from "node:events";
 import { StringDecoder } from "node:string_decoder";
-import { loadPolicyConfig, policyPermissions, type PortusPolicyConfig } from "../policy/policyConfig.js";
+import { getPolicyConfig, policyPermissions, type PortusPolicyConfig } from "../policy/policyConfig.js";
 import { limitText } from "./outputLimits.js";
 import { terminateProcessTree, type ProcessTreeTerminationResult, type ProcessLifecycle } from "./processTermination.js";
 
@@ -99,7 +99,7 @@ function limitProcessOutput(raw: RawProcessResult, policy: PortusPolicyConfig): 
 }
 
 export async function runCapturedProcess(options: CapturedProcessOptions): Promise<ProcessResult> {
-  const policy = options.policy ?? loadPolicyConfig();
+  const policy = options.policy ?? getPolicyConfig();
   const maxBufferBytes = Math.floor(policy.limits.process.maxOutputBufferMb * 1024 * 1024);
   const startedAt = performance.now();
   const stdoutCapture: StreamCapture = { decoder: new StringDecoder("utf8"), chunks: [], bytes: 0, ended: false, captureTruncated: false };
@@ -335,7 +335,7 @@ export async function runProjectCommand(
   command: string,
   args: string[],
   timeoutMs = 120000,
-  policy: PortusPolicyConfig = loadPolicyConfig()
+  policy: PortusPolicyConfig = getPolicyConfig()
 ): Promise<ProjectCommandResult> {
   const allowShell = policyPermissions(policy).main_agent.allowShell;
   const isWin = process.platform === "win32";

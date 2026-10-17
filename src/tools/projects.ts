@@ -8,7 +8,7 @@ import { loadConfig } from "../config.js";
 import { getProject } from "../state/ProjectRegistry.js";
 import { stateStore } from "../state/StateStore.js";
 import { resolveProjectPath, resolveReadablePath } from "../policy/pathPolicy.js";
-import { loadPolicyConfig, policyPermissions, type PortusPolicyConfig } from "../policy/policyConfig.js";
+import { getPolicyConfig, policyPermissions, type PortusPolicyConfig } from "../policy/policyConfig.js";
 import { limitText } from "../runtime/outputLimits.js";
 import type { SkillRegistrySnapshot } from "../skills/SkillRegistry.js";
 
@@ -42,7 +42,7 @@ function resolveReadableTextFile(projectAlias: string, relativePath: string, reg
 }
 
 export async function readProjectTextFile(input: { projectAlias: string; relativePath: string }, registry: SkillRegistrySnapshot) {
-  const readLimit = loadPolicyConfig().limits.fileRead.maxChars;
+  const readLimit = getPolicyConfig().limits.fileRead.maxChars;
   const target = resolveReadableTextFile(input.projectAlias, input.relativePath, registry);
   let content: Buffer;
   try {
@@ -105,7 +105,7 @@ export async function readProjectTextFileRange(input: { projectAlias: string; re
   }
 
   const lineCount = lines.length;
-  const limited = limitText(lines.join("\n"), loadPolicyConfig().limits.fileRead.maxChars);
+  const limited = limitText(lines.join("\n"), getPolicyConfig().limits.fileRead.maxChars);
   return {
     projectAlias: input.projectAlias,
     relativePath: input.relativePath,
@@ -135,7 +135,7 @@ export async function readProjectBinaryFile(input: { projectAlias: string; relat
   if (!existsSync(target)) throw new Error(`File does not exist: ${input.relativePath}`);
   const info = statSync(target);
   if (!info.isFile()) throw new Error(`Path is not a file: ${input.relativePath}`);
-  const limit = loadPolicyConfig().limits.fileRead.maxChars;
+  const limit = getPolicyConfig().limits.fileRead.maxChars;
   const encodedChars = Math.ceil(info.size / 3) * 4;
   if (encodedChars > limit) {
     throw new Error(`Binary file exceeds the configured read limit: ${input.relativePath}`);
@@ -213,7 +213,7 @@ export function assertCanReadProjectPath(
   target: string,
   relativePath: string,
   registry?: SkillRegistrySnapshot,
-  policy: PortusPolicyConfig = loadPolicyConfig()
+  policy: PortusPolicyConfig = getPolicyConfig()
 ): void {
   if (registry?.connected.byAlias.has(projectAlias)) return;
   const permissions = policyPermissions(policy).main_agent;
@@ -228,7 +228,7 @@ export function assertCanStatProjectPath(
   target: string,
   relativePath: string,
   registry?: SkillRegistrySnapshot,
-  policy: PortusPolicyConfig = loadPolicyConfig()
+  policy: PortusPolicyConfig = getPolicyConfig()
 ): void {
   if (registry?.connected.byAlias.has(projectAlias)) return;
   const permissions = policyPermissions(policy).main_agent;
@@ -400,7 +400,7 @@ export async function collectPaths(
   includeDirs: boolean,
   registry?: SkillRegistrySnapshot,
   includeGitIgnored?: boolean,
-  policy: PortusPolicyConfig = loadPolicyConfig()
+  policy: PortusPolicyConfig = getPolicyConfig()
 ): Promise<TraversalResult> {
   const startedAt = Date.now();
   const excludedPatterns = getExcludedTraversalPatterns();
@@ -450,7 +450,7 @@ export async function collectSearchableFiles(
   relativePath: string,
   maxEntries: number,
   includeGitIgnored = false,
-  policy: PortusPolicyConfig = loadPolicyConfig(),
+  policy: PortusPolicyConfig = getPolicyConfig(),
   excludedPatterns: readonly string[] = getExcludedTraversalPatterns()
 ): Promise<TraversalResult> {
   const startedAt = Date.now();

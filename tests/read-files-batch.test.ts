@@ -208,9 +208,11 @@ test("project_read exposes and enforces its complete MCP batch contract", async 
   });
 
 
-  await t.test("applies the server limit independently and counts Unicode code points", async () => {
+  await t.test("applies the server startup limit independently and counts Unicode code points", async (t) => {
+    t.after(() => writePolicy());
     writePolicy(3);
-    const batch = resultOf(await callRead(client, [{ relativePath: "unicode.txt", mode: "content" }, { relativePath: "two.txt", mode: "content" }]));
+    const limitedClient = await withClient(t);
+    const batch = resultOf(await callRead(limitedClient, [{ relativePath: "unicode.txt", mode: "content" }, { relativePath: "two.txt", mode: "content" }]));
     const successes = z.array(successSchema).parse(batch.results);
     for (const item of successes) {
       assert.equal(item.limit, 3);

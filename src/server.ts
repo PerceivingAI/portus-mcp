@@ -5,12 +5,13 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { optionalEnv } from "./env.js";
-import { loadPolicyConfig, type PortusPolicyConfig } from "./policy/policyConfig.js";
+import { createPolicySnapshot, getPolicyConfig, loadPolicyConfig, runWithPolicyConfig, type PortusPolicyConfig } from "./policy/policyConfig.js";
 import { registerBroadProjectTools } from "./tools/projectBroad.js";
 import { registerSubagentTools } from "./tools/subagents.js";
 import { registerBroadPolicyTools } from "./tools/config.js";
 import { probeScreenshotBinding, registerScreenshotTool } from "./tools/projectScreenshot.js";
 import { readSessionEvents } from "./state/SessionEvents.js";
+import type { SessionEvent } from "./state/SessionEvents.js";
 import { connectedSkillInstructions, loadSkillRegistry } from "./skills/SkillRegistry.js";
 import type { SkillRegistrySnapshot } from "./skills/SkillRegistry.js";
 
@@ -20,7 +21,7 @@ export type PolicyProvider = () => PortusPolicyConfig;
 
 export function createMcpServer(
   skillRegistry: SkillRegistrySnapshot = loadSkillRegistry(),
-  policy: PortusPolicyConfig = loadPolicyConfig()
+  policy: PortusPolicyConfig = getPolicyConfig()
 ): McpServer {
   const server = new McpServer({
     name: "portus-mcp",
@@ -28,13 +29,17 @@ export function createMcpServer(
   }, {
     instructions: `${PROJECT_DISCOVERY_INSTRUCTIONS}\n${connectedSkillInstructions(skillRegistry)}`
   });
-  registerBroadProjectTools(server, skillRegistry, policy);
-  registerBroadPolicyTools(server, policy);
-  registerSubagentTools(server, skillRegistry, policy);
-  registerScreenshotTool(server, policy);
-  probeScreenshotBinding(policy);
-
-  return server;
+  try {
+    registerBroadProjectTools(server, skillRegistry, policy);
+    registerBroadPolicyTools(server, policy);
+    registerSubagentTools(server, skillRegistry, policy);
+    registerScreenshotTool(server, policy);
+    probeScreenshotBinding(policy);
+    return server;
+  } catch (error) {
+    void server.close().catch((closeError) => console.error(closeError));
+    throw error;
+  }
 }
 
 export function extractTailscaleUser(headers: IncomingMessage["headers"]): { userLogin?: string; userName?: string } {
@@ -54,8 +59,8 @@ export function createHttpServer(
   mcpPath = optionalEnv("PORTUS_MCP_PATH", "/mcp"),
   policyProvider: PolicyProvider = loadPolicyConfig
 ) {
-  policyProvider();
-  const skillRegistry = loadSkillRegistry();
+  const policy = createPolicySnapshot(policyProvider());
+  const skillRegistry = runWithPolicyConfig(policy, loadSkillRegistry);
   const bearerToken = optionalEnv("PORTUS_MCP_BEARER_TOKEN", "").trim();
 
   const hasValidBearerToken = (authorization: string | undefined): boolean => {
@@ -68,7 +73,7 @@ export function createHttpServer(
     return expected.length === supplied.length && timingSafeEqual(expected, supplied);
   };
 
-  return createServer(async (req: IncomingMessage, res: ServerResponse) => {
+  async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (!req.url) {
     res.writeHead(400).end("Missing URL");
     return;
@@ -107,7 +112,7 @@ export function createHttpServer(
   }
 
   if (isMcpRoute && req.method === "GET" && url.pathname === `${mcpPath}/events`) {
-    const sessionId = url.searchParams.get("sessionId");
+    const sessionId = url.searchParams.get("sessionId") ?? "";
     if (!sessionId) {
       res.writeHead(400, { ...corsHeaders, "content-type": "text/plain" }).end("Missing sessionId");
       return;
@@ -120,23 +125,86 @@ export function createHttpServer(
       "cache-control": "no-cache",
       connection: "keep-alive"
     });
-    const sendEvents = () => {
+    let page: SessionEvent[] | undefined;
+    let pageIndex = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
+
+    function cleanup(): void {
+      stopped = true;
+      clearTimeout(timer);
+      timer = undefined;
+      page = undefined;
+      pageIndex = 0;
+      res.off("drain", onDrain);
+      res.off("close", cleanup);
+      res.off("error", onError);
+    }
+
+    function onError(error: unknown): void {
+      console.error(error);
+      cleanup();
+      res.destroy();
+    }
+
+    function onDrain(): void {
+      runWithPolicyConfig(policy, sendEvents);
+    }
+
+    function pollEvents(): void {
+      timer = undefined;
+      runWithPolicyConfig(policy, sendEvents);
+    }
+
+    function schedulePoll(): void {
+      if (!stopped) timer = setTimeout(pollEvents, 1000);
+    }
+
+    function writeFrame(frame: string): boolean {
       try {
-        const page = readSessionEvents({ sessionId, afterSequence });
-        for (const event of page.events) {
-          res.write(`id: ${event.sequence}\n`);
-          res.write(`event: ${event.type}\n`);
-          res.write(`data: ${JSON.stringify(event)}\n\n`);
-          afterSequence = event.sequence;
-        }
+        const writable = res.write(frame);
+        if (!writable && !stopped) res.once("drain", onDrain);
+        return writable;
       } catch (error) {
-        res.write(`event: error\n`);
-        res.write(`data: ${JSON.stringify({ message: error instanceof Error ? error.message : String(error) })}\n\n`);
+        onError(error);
+        return false;
       }
-    };
+    }
+
+    function sendEvents(): void {
+      if (stopped) return;
+      if (res.destroyed || res.writableEnded) {
+        cleanup();
+        return;
+      }
+      if (!page) {
+        try {
+          page = readSessionEvents({ sessionId, afterSequence }).events;
+          pageIndex = 0;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (writeFrame(`event: error\ndata: ${JSON.stringify({ message })}\n\n`)) schedulePoll();
+          return;
+        }
+      }
+      while (pageIndex < page.length) {
+        const event = page[pageIndex]!;
+        const writable = writeFrame(`id: ${event.sequence}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+        if (stopped) return;
+        // A false return still accepted this complete frame into Node's buffer.
+        afterSequence = event.sequence;
+        pageIndex++;
+        if (!writable) return;
+      }
+      page = undefined;
+      pageIndex = 0;
+      schedulePoll();
+    }
+
+    res.once("close", cleanup);
+    res.once("error", onError);
+    res.flushHeaders();
     sendEvents();
-    const interval = setInterval(sendEvents, 1000);
-    res.on("close", () => clearInterval(interval));
     return;
   }
 
@@ -180,29 +248,47 @@ export function createHttpServer(
         req.rawHeaders.push("accept", normalizedAccept);
       }
     }
-    const server = createMcpServer(skillRegistry, policyProvider());
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-      enableJsonResponse: true
-    });
-
-    res.on("close", () => {
-      transport.close();
-      server.close();
-    });
+    let server: McpServer | undefined;
+    let transport: StreamableHTTPServerTransport | undefined;
+    let closing: Promise<void> | undefined;
+    const closeOwned = () => closing ??= (async () => {
+      try {
+        await server?.close();
+      } finally {
+        await transport?.close();
+      }
+    })().catch((error) => console.error(error));
+    res.once("close", () => { void closeOwned(); });
 
     try {
+      server = createMcpServer(skillRegistry, policy);
+      transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true
+      });
       await server.connect(transport);
       await transport.handleRequest(req, res);
     } catch (error) {
-      console.error(error);
-      if (!res.headersSent) res.writeHead(500).end("Internal server error");
+      await closeOwned();
+      throw error;
     }
     return;
   }
 
   res.writeHead(404).end("Not Found");
-});
+  }
+
+  return createServer((req, res) => {
+    void runWithPolicyConfig(policy, () => handleRequest(req, res)).catch((error) => {
+      console.error(error);
+      if (res.destroyed || res.writableEnded) return;
+      if (res.headersSent) {
+        res.destroy();
+      } else {
+        res.writeHead(500).end("Internal server error");
+      }
+    });
+  });
 }
 
 export function startServer(): void {

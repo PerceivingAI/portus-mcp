@@ -1,4 +1,4 @@
-import test, { after } from "node:test";
+import { after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -134,6 +134,9 @@ process.env.PORTUS_MCP_STATE_DIR = stateDir;
 const { runProjectCheck } = await import("../src/runtime/checks.js");
 const { limitText } = await import("../src/runtime/outputLimits.js");
 const { listAgentProviderDefinitions, loadAgentProviderConfig, loadConfig } = await import("../src/config.js");
+// Delay policy bootstrap until the isolated fixture environment is installed.
+const { createPolicyTest } = await import("./fixtures/policyScope.js");
+const { test } = createPolicyTest();
 
 test("project checks return successful stdout", async () => {
   const result = await runProjectCheck(projectRoot, "check", 10000);

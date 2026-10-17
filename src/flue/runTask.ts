@@ -4,20 +4,41 @@ import { ChildProcess, spawn } from "node:child_process";
 import { loadAgentProviderConfig, loadConfig } from "../config.js";
 import type { AgentProviderConfig } from "../config.js";
 import { stateStore } from "../state/StateStore.js";
-import { SessionRecord, getSession, listActiveSessions, upsertSession } from "../state/SessionRegistry.js";
+import { getSession, listActiveSessions, upsertSession } from "../state/SessionRegistry.js";
+import type { SessionRecord } from "../state/SessionRegistry.js";
 import { appendSessionEvent, appendSessionEventById } from "../state/SessionEvents.js";
 import { getProject } from "../state/ProjectRegistry.js";
 import { optionalEnv } from "../env.js";
 import { assertSubagentPermission } from "../policy/permissionPolicy.js";
-import { loadSubagentCommandConfig, loadPolicyConfig, policyPermissions } from "../policy/policyConfig.js";
+import { loadSubagentCommandConfig, getPolicyConfig, policyPermissions, runWithPolicyConfig } from "../policy/policyConfig.js";
+import type { PortusPolicyConfig } from "../policy/policyConfig.js";
 import { countChars } from "../runtime/outputLimits.js";
 import { terminateProcessTree } from "../runtime/processTermination.js";
 import type { SkillAudienceRegistry } from "../skills/SkillRegistry.js";
 
-const runningProcesses = new Map<string, ChildProcess>();
-const runningStops = new Set<string>();
-const projectLocks = new Map<string, { sessionId: string; acquiredAtMs: number }>();
-const pendingQueue: QueueItem[] = [];
+type SubagentRuntime = {
+  runningProcesses: Map<string, ChildProcess>;
+  runningStops: Set<string>;
+  projectLocks: Map<string, { sessionId: string; acquiredAtMs: number }>;
+  pendingQueue: QueueItem[];
+};
+
+const runtimes = new WeakMap<PortusPolicyConfig, SubagentRuntime>();
+
+function getRuntime(): SubagentRuntime {
+  const policy = getPolicyConfig();
+  let runtime = runtimes.get(policy);
+  if (!runtime) {
+    runtime = {
+      runningProcesses: new Map(),
+      runningStops: new Set(),
+      projectLocks: new Map(),
+      pendingQueue: []
+    };
+    runtimes.set(policy, runtime);
+  }
+  return runtime;
+}
 
 type FailureType =
   | "flue_cli_missing"
@@ -57,6 +78,7 @@ type QueueItem = {
 };
 
 export async function runFlueTask(input: RunFlueTaskInput): Promise<SessionRecord> {
+  const { pendingQueue } = getRuntime();
   // Reject unknown projects before admitting work to the queue.
   getProject(input.projectAlias);
   assertSubagentPermission("network");
@@ -121,7 +143,7 @@ export async function runFlueTask(input: RunFlueTaskInput): Promise<SessionRecor
   });
 
   if (isBlocked && limits.queueEnabled) {
-    const maxQueueDepth = loadPolicyConfig().subagents.concurrency.maxQueueDepth;
+    const maxQueueDepth = getPolicyConfig().subagents.concurrency.maxQueueDepth;
     if (pendingQueue.length >= maxQueueDepth) {
       const failed = failQueuedRecord(record, "queue_ttl_expired", "Queue is full and cannot accept more tasks.");
       appendSessionEvent(failed, "queue_full", "Queue is full and cannot accept more tasks.", { queueDepth: pendingQueue.length });
@@ -154,7 +176,7 @@ async function startSessionExecution(input: RunFlueTaskInput, record: SessionRec
 
   const commandConfig = loadSubagentCommandConfig();
   const grantedCommands = grantedCommandsForProject(input.projectAlias, commandConfig.allowedCommands);
-  const maxSkillReadBytes = loadPolicyConfig().limits.skills.maxReadChars * 4;
+  const maxSkillReadBytes = getPolicyConfig().limits.skills.maxReadChars * 4;
   const subagentSkills = (input.subagentSkills?.skills ?? []).map((skill) => ({
     name: skill.name,
     description: skill.description,
@@ -350,15 +372,17 @@ function failQueuedRecord(record: SessionRecord, failureType: FailureType, messa
 }
 
 function scheduleQueueDrain(): void {
-  const delayMs = loadPolicyConfig().subagents.lifecycle.queueDrainDelayMs;
-  setTimeout(() => {
+  const policy = getPolicyConfig();
+  const delayMs = policy.subagents.lifecycle.queueDrainDelayMs;
+  setTimeout(() => runWithPolicyConfig(policy, () => {
     void drainQueue();
-  }, delayMs);
+  }), delayMs);
 }
 
 async function drainQueue(): Promise<void> {
+  const { pendingQueue } = getRuntime();
   if (pendingQueue.length === 0) return;
-  const queueTtlMs = loadPolicyConfig().subagents.lifecycle.queuedTaskTtlSecs * 1000;
+  const queueTtlMs = getPolicyConfig().subagents.lifecycle.queuedTaskTtlSecs * 1000;
   const now = Date.now();
   for (let i = pendingQueue.length - 1; i >= 0; i -= 1) {
     const item = pendingQueue[i]!;
@@ -384,9 +408,10 @@ async function drainQueue(): Promise<void> {
 }
 
 function canAcquireProjectLock(projectAlias: string): boolean {
+  const { projectLocks } = getRuntime();
   const existing = projectLocks.get(projectAlias);
   if (!existing) return true;
-  const lockTimeoutMs = loadPolicyConfig().subagents.lifecycle.projectLockTimeoutSecs * 1000;
+  const lockTimeoutMs = getPolicyConfig().subagents.lifecycle.projectLockTimeoutSecs * 1000;
   if (Date.now() - existing.acquiredAtMs > lockTimeoutMs) {
     projectLocks.delete(projectAlias);
     appendSessionEventById(existing.sessionId, "lock_expired", "Project lock expired and was released.", { projectAlias });
@@ -397,12 +422,14 @@ function canAcquireProjectLock(projectAlias: string): boolean {
 }
 
 function acquireProjectLock(projectAlias: string, sessionId: string): void {
+  const { projectLocks } = getRuntime();
   projectLocks.set(projectAlias, { sessionId, acquiredAtMs: Date.now() });
   appendSessionEventById(sessionId, "lock_acquired", "Project lock acquired.", { projectAlias });
   stateStore.audit({ tool: "project_lock", projectAlias, action: "acquire", sessionId });
 }
 
 function releaseProjectLock(projectAlias: string, sessionId: string): void {
+  const { projectLocks } = getRuntime();
   const lock = projectLocks.get(projectAlias);
   if (!lock) return;
   if (lock.sessionId !== sessionId) return;
@@ -460,7 +487,8 @@ export function getSubagentLimits(projectAlias?: string): {
   sessionLockTimeoutSecs: number;
   lockedProjects: Array<{ projectAlias: string; sessionId: string; acquiredAt: string }>;
 } {
-  const policy = loadPolicyConfig();
+  const { pendingQueue, projectLocks } = getRuntime();
+  const policy = getPolicyConfig();
   const maxConcurrentAgents = policy.subagents.concurrency.maxConcurrent;
   const maxConcurrentAgentsPerProject = policy.subagents.concurrency.maxConcurrentPerProject;
   const activeSessions = listActiveSessions().length;
@@ -489,6 +517,7 @@ export function getSubagentLimits(projectAlias?: string): {
 }
 
 export async function stopFlueTask(sessionId: string): Promise<SessionRecord> {
+  const { pendingQueue, runningProcesses, runningStops } = getRuntime();
   const session = getSession(sessionId);
   if (session.status === "queued") {
     const idx = pendingQueue.findIndex((item) => item.record.sessionId === sessionId);
@@ -555,6 +584,7 @@ async function runSessionAttempts(params: {
   grantedCommands: string[];
   cleanup?: () => void;
 }) {
+  const { runningStops } = getRuntime();
   try {
     const started = Date.now();
     const attempts: Array<Record<string, unknown>> = [];
@@ -627,6 +657,8 @@ async function runSingleAttempt(params: {
   timeoutSecs: number;
   providerConfig: AgentProviderConfig;
 }, attempt: number): Promise<{ exitCode: number | null; signal: string | null; stdout: string; stderr: string; startupHang: boolean }> {
+  const { runningProcesses } = getRuntime();
+  const policy = getPolicyConfig();
   const child = spawn(process.execPath, params.args, {
     cwd: params.projectRoot,
     env: buildAgentChildEnv(params.providerConfig),
@@ -652,19 +684,19 @@ async function runSingleAttempt(params: {
   let stderr = "";
   let emittedOutput = false;
   let startupHang = false;
-  const agentPolicy = loadPolicyConfig().subagents.lifecycle;
-  child.stdout?.on("data", (chunk) => {
+  const agentPolicy = policy.subagents.lifecycle;
+  child.stdout?.on("data", (chunk) => runWithPolicyConfig(policy, () => {
     emittedOutput = true;
     const text = chunk.toString("utf8");
     stdout += text;
     appendSessionEventById(params.sessionId, "stdout", "stdout chunk", { attempt, text, chars: countChars(text) });
-  });
-  child.stderr?.on("data", (chunk) => {
+  }));
+  child.stderr?.on("data", (chunk) => runWithPolicyConfig(policy, () => {
     emittedOutput = true;
     const text = chunk.toString("utf8");
     stderr += text;
     appendSessionEventById(params.sessionId, "stderr", "stderr chunk", { attempt, text, chars: countChars(text) });
-  });
+  }));
   child.stdout?.pipe(stdoutStream);
   child.stderr?.pipe(stderrStream);
 
@@ -690,13 +722,13 @@ async function runSingleAttempt(params: {
   }, agentPolicy.startupWatchdogMs);
 
   const { promise: closeResultPromise, resolve: resolveCloseResult } = deferred<{ exitCode: number | null; signal: string | null; stdout: string; stderr: string; closed: boolean; startupHang: boolean }>();
-  child.on("error", (error) => {
+  child.on("error", (error) => runWithPolicyConfig(policy, () => {
     const text = String(error);
     stderr += text;
     safeWrite(stderrStream, text);
     appendSessionEventById(params.sessionId, "stderr", "child process error", { attempt, text, chars: countChars(text) });
-  });
-  child.on("close", (code, signal) => {
+  }));
+  child.on("close", (code, signal) => runWithPolicyConfig(policy, () => {
     runningProcesses.delete(params.sessionId);
     safeWrite(stdoutStream, `\n[attempt ${attempt} end]\n`);
     safeWrite(stderrStream, `\n[attempt ${attempt} end]\n`);
@@ -709,7 +741,7 @@ async function runSingleAttempt(params: {
     } else {
       resolveCloseResult(result);
     }
-  });
+  }));
   let closeResult;
   try {
     closeResult = await Promise.race([closeResultPromise, terminationFailure]);
@@ -893,7 +925,7 @@ function delay(ms: number) {
 }
 
 async function terminateChildTree(child: ChildProcess, reason: string): Promise<void> {
-  const lifecycle = loadPolicyConfig().subagents.lifecycle;
+  const lifecycle = getPolicyConfig().subagents.lifecycle;
   const result = await terminateProcessTree(child, {
     escalationDelayMs: lifecycle.killEscalationDelayMs,
     forcedCloseGraceMs: lifecycle.forcedCloseGraceMs,

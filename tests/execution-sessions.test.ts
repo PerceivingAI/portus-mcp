@@ -1,8 +1,9 @@
-import test, { after } from "node:test";
+import { after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import {
   startExecutionSession,
   pollExecutionSession,
@@ -23,6 +24,9 @@ process.env.PORTUS_MCP_PROJECTS = `test=${root}`;
 after(() => rmSync(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 100 }));
 
 const selectedPolicy = loadPolicyConfig();
+// Delay policy bootstrap until the isolated fixture environment is installed.
+const { createPolicyTest } = await import("./fixtures/policyScope.js");
+const { test } = createPolicyTest(selectedPolicy);
 const withMainAgentPermissions = (
   permissions: Partial<typeof selectedPolicy.main_agent.permissions>
 ): typeof selectedPolicy => ({
@@ -136,6 +140,40 @@ test("Execution sessions spawn a resolved executable while preserving the logica
   assert.match(pollResult.stdoutChunk, /resolved-launch/);
   assert.equal(getExecutionSession(session.sessionId).command, "chrome.exe");
 });
+
+test("Execution sessions preserve the owned child exit result before reconciliation", async () => {
+  const ready = path.join(root, "exit-race-ready");
+  const release = path.join(root, "exit-race-release");
+  const session = await startExecutionSession({
+    projectAlias: "test",
+    rootPath: root,
+    command: "chrome.exe",
+    executablePath: process.execPath,
+    args: ["-e", `const fs=require("node:fs");fs.writeFileSync(${JSON.stringify(ready)},"ready");const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(release)})){clearInterval(timer);console.log("exit-race-output");process.exit(0);}},5);setTimeout(()=>process.exit(93),5000).unref();`],
+    timeoutSecs: 8,
+    policy: withMainAgentPermissions({ allowedCommands: ["chrome.exe"] })
+  });
+  const startupDeadline = Date.now() + 3000;
+  while (!existsSync(ready) && Date.now() < startupDeadline) await delay(10);
+  assert.equal(existsSync(ready), true);
+  const record = getExecutionSession(session.sessionId);
+  assert(record.pid);
+  writeFileSync(release, "release");
+  // Hold the event loop until OS exit, before Node can publish exit/stdio events.
+  execFileSync(process.execPath, ["-e", `const deadline=Date.now()+3000;const timer=setInterval(()=>{try{process.kill(${record.pid},0);}catch(error){if(error.code==="ESRCH"){clearInterval(timer);process.exit(0);}throw error;}if(Date.now()>deadline)process.exit(2);},5);`], { timeout: 4000, stdio: "pipe" });
+  const beforeCallbacks = pollExecutionSession({ sessionId: session.sessionId, cursor: 0 });
+  assert.equal(beforeCallbacks.status, "running");
+  let completed = beforeCallbacks;
+  const completionDeadline = Date.now() + 3000;
+  while (completed.status === "running" && Date.now() < completionDeadline) {
+    await delay(10);
+    completed = pollExecutionSession({ sessionId: session.sessionId, cursor: 0 });
+  }
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.exitCode, 0);
+  assert.match(completed.stdoutChunk, /exit-race-output/);
+});
+
 
 test("Execution sessions flush short-lived output before finalization", async () => {
   const testPolicy = withMainAgentPermissions({

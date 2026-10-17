@@ -72,6 +72,16 @@ Enable the tool with `main_agent.permissions.projectScreenshot`. Every request u
 
 Both `capture_launch` and `capture_running` require `closeSession: boolean` (to auto-close the GUI/session or leave it running), and support bounded `waitForWindowMs`, `format`, `jpegQuality`, `maxWidth`, and `maxHeight`. In `capture_running`, if several eligible windows exist and no `windowId` is supplied, the error is `multiple_session_windows` and includes scoped candidates. `capture_launch`, `capture_running`, and `delete` require `confirm=true` when `main_agent.permissions.requireConfirmation=true`. Windows, macOS, and Linux X11 use the isolated npm-installed worker; Wayland fails closed with `unsupported_session_window_capture`. (`scripts/screenshot-worker.mjs`, `src/runtime/screenshotSystem.ts`)
 
+### Operation lifetime and cancellation
+
+A dropped HTTP connection is not a cancellation request. Already-started one-shot work continues under its existing execution/batch deadlines, output limits, and ordinary failure conditions. Losing the response does not prove that work failed, never ran, or rolled back; Portus does not automatically replay it.
+
+Execution sessions and subagent tasks outlive their start request. They continue until completion, configured timeout, or an explicit supported stop: `project_run` with `sessionAction.type="terminate"`, or `subagent_task` with a `stop` action. These controls terminate the owned process tree and report the observed termination outcome. Poll session/output state when a start response was received rather than assuming connection closure stopped the work.
+
+Separate-POST one-shot cancellation is not supported by the current stateless request ownership model. HTTP 202 for a cancellation notification acknowledges that notification, not successful termination of another request. JSON-RPC IDs can collide between clients; no shared request-ID-only cancellation map or automatic cancellation on response close is used. Authentication remains optional.
+
+Tracked execution sessions finalize through their owned child exit/close, bounded stdio-drain, or deadline paths. A poll observing PID absence before Node has delivered the exit result must not publish a false failure or discard pending output. Untracked/orphan records retain their reconciliation behavior. Mutation consistency safeguards remain unchanged; response loss does not add rollback or interrupt a partially applied edit. (`src/runtime/executionSessions.ts:226-257`, `src/runtime/commands.ts:149-174,202`, `src/tools/projectToolUtils.ts:32-56`, `src/flue/runTask.ts:705-715`)
+
 ### `project_patch` Input and Result Contract
 
 `project_patch` supports both raw unified diff strings and structured patch objects:
@@ -160,6 +170,8 @@ Enabled planning details appear only where usable: `project_run.allowedCommands`
 
 The read-only `config` check reports `permissionSource: "operator_policy"`, `policySelection: "shipped" | "configured"`, effective permissions, and redacted path/traversal patterns without exposing the selected absolute policy path. These actions preserve canonical project-root handling, redacted audit projections, strict schemas, and safe errors. Operator configuration, policy editing, environment pre-registration, and filesystem/state administration remain operator-only. No MCP action accepts permission changes.
 
+Effective policy is the backend's validated startup snapshot. Operator policy-file edits require an explicit backend restart; they do not change checks or newly started operations on the running backend. `project_policy` remains read-only and does not reload or inspect pending on-disk policy changes. See [Policy lifetime and restart](CONFIG.md#policy-lifetime-and-restart).
+
 Capability discovery requires `projectContext`, not `projectPolicy`, so a client can inspect its positive effective authority without administrative policy access. `allowedCommands` means permitted to attempt through `project_run`, not verified installed. Skill `rootAlias` values do not support capability context.
 
 ## Security and Policy
@@ -185,6 +197,17 @@ The shipped direct-agent allowlist contains only `git`. Operators explicitly gra
 ## Subagent Tool Consolidation
 
 Subagent execution, context, lifecycle, and cleanup are managed via `subagent_task` and `subagent_context`. `subagentTask` controls start, stop, and cleanup; `subagentContext` independently controls session listings, status, outputs, events, and capability inspection. Sessions remain internal runtime records used for asynchronous execution, queueing, retries, logs, process control, and cleanup, and do not exist as a separate MCP tool family.
+
+### Application session event stream
+
+`GET <MCP_PATH>/events?sessionId=<id>` streams application session events. It is separate from the SDK's optional GET stream at `<MCP_PATH>` and is not a prerequisite for ordinary MCP POST calls. Authentication remains optional; when a bearer token is configured, the event route uses the same check.
+
+Accepted streams flush their headers immediately, including when a valid session has no events. No synthetic event or heartbeat is required. A missing session ID still returns HTTP 400; an unknown session retains HTTP 200 with SSE `event: error` frames.
+
+Delivery writes complete frames and retains at most the current policy-bounded page plus Node's writable buffer. When a write reports backpressure, that frame has already been accepted into the buffer: its cursor advances once, and delivery and polling pause until `drain`. Resume preserves ordering without resending that frame. Polling continues one second after a page completes; full-log read/storage behavior is unchanged.
+
+Reconnect using the last received sequence in `Last-Event-ID` or `afterSequence`; an explicit query cursor takes precedence. This resumes event delivery only, never tool execution. Closing or failing a connection releases its poll timer, drain wait/listeners, and pending page. Event-read errors retain the error-frame behavior; a response-write failure closes only the affected stream. Neither connection closure nor cursor reconnection stops/replays session work. (`src/server.ts:114-208`, `src/state/SessionEvents.ts:53-79`)
+
 ## Verification Contract
 
 Surface tests must establish that default discovery is exactly ten tools, obsolete names are absent, schemas reject unknown or bypass-looking fields, and broad workflows preserve permission, path, Git-ignore, confirmation, limit, audit, ordering, and safe-error behavior. Screenshot regressions additionally cover process ownership, unrelated-window exclusion, native image results, repository confinement, explicit-delete persistence, and platform capability behavior.

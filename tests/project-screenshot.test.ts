@@ -6,7 +6,7 @@
  * execution-session records — no desktop and no native binding required.
  */
 
-import test, { after } from "node:test";
+import { after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -15,7 +15,7 @@ import path from "node:path";
 const root = mkdtempSync(path.join(process.cwd(), ".portus-shot-test-"));
 const stateDir = path.join(root, "state");
 process.env.PORTUS_MCP_STATE_DIR = stateDir;
-// The shipped policy is valid today; path-policy containment checks load it.
+// Containment checks use a snapshot of the isolated startup policy.
 process.env.PORTUS_MCP_POLICY_PATH = path.join(root, "policy.json");
 writeFileSync(path.join(root, "policy.json"), readFileSync(path.resolve("portus-mcp.policy.json"), "utf8"));
 after(() => rmSync(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 100 }));
@@ -32,6 +32,9 @@ const { stateStore } = await import("../src/state/StateStore.js");
 const screenshot = await import("../src/runtime/screenshotSystem.js");
 const screenshotTool = await import("../src/tools/projectScreenshot.js");
 const toolUtils = await import("../src/tools/projectToolUtils.js");
+// Delay policy bootstrap until the isolated fixture environment is installed.
+const { createPolicyTest } = await import("./fixtures/policyScope.js");
+const { test } = createPolicyTest();
 let sessionCounter = 0;
 function addSession(overrides: Record<string, unknown> = {}): string {
   sessionCounter += 1;

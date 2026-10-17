@@ -1,7 +1,7 @@
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { optionalEnv } from "../env.js";
-import { loadPolicyConfig } from "../policy/policyConfig.js";
+import { getPolicyConfig } from "../policy/policyConfig.js";
 
 export class StateStore {
   get root(): string {
@@ -58,6 +58,6 @@ export class StateStore {
 export const stateStore = new StateStore();
 
 function isAuditStrictMode(): boolean {
-  return loadPolicyConfig().audit.strictMode;
+  return getPolicyConfig().audit.strictMode;
 }
 

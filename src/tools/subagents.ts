@@ -11,7 +11,7 @@ import { limitText } from "../runtime/outputLimits.js";
 import { stateStore } from "../state/StateStore.js";
 import { assertMainAgentPermission } from "../policy/permissionPolicy.js";
 import { appendSessionEvent, readSessionEvents } from "../state/SessionEvents.js";
-import { loadPolicyConfig, type PortusPolicyConfig } from "../policy/policyConfig.js";
+import { getPolicyConfig, type PortusPolicyConfig } from "../policy/policyConfig.js";
 import { asErrorMessage } from "../errors.js";
 import type { SkillRegistrySnapshot } from "../skills/SkillRegistry.js";
 
@@ -82,7 +82,7 @@ const subagentContextRequestSchema = z.discriminatedUnion("type", [
   capabilitiesRequestSchema
 ]);
 
-export function registerSubagentTools(server: McpServer, registry: SkillRegistrySnapshot, policy: PortusPolicyConfig = loadPolicyConfig()): void {
+export function registerSubagentTools(server: McpServer, registry: SkillRegistrySnapshot, policy: PortusPolicyConfig = getPolicyConfig()): void {
   registerTool(
     server,
     "subagent_task",
@@ -258,7 +258,7 @@ export function registerSubagentTools(server: McpServer, registry: SkillRegistry
               });
             } else {
               const target = stream === "stdout" ? session.stdoutPath : stream === "stderr" ? session.stderrPath : session.resultPath;
-              const policy = loadPolicyConfig().limits;
+              const policy = getPolicyConfig().limits;
               const limit = stream === "stdout"
                 ? policy.subagentOutput.maxStdoutChars
                 : stream === "stderr"

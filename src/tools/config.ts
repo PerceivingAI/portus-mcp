@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import path from "node:path";
 import { z } from "zod";
 import { loadConfig } from "../config.js";
-import { loadPolicyConfig, policyPermissions, policySelection, type PortusPolicyConfig } from "../policy/policyConfig.js";
+import { getPolicyConfig, policyPermissions, policySelection, type PortusPolicyConfig } from "../policy/policyConfig.js";
 import { resolveProjectPath } from "../policy/pathPolicy.js";
 import { stateStore } from "../state/StateStore.js";
 import { assertMainAgentPermission } from "../policy/permissionPolicy.js";
@@ -156,7 +156,7 @@ export function toPublicAuditEvent(event: Record<string, unknown>): PublicAuditE
   return output;
 }
 
-export function registerBroadPolicyTools(server: McpServer, policy: PortusPolicyConfig = loadPolicyConfig()): void {
+export function registerBroadPolicyTools(server: McpServer, policy: PortusPolicyConfig = getPolicyConfig()): void {
   registerStrictProjectTool(server, "project_policy", "Check effective project policy or inspect audit records. Provide checks or one action, never both.\n\nInputs:\n- checks: Evaluate permission, path, configuration, command, or related policy decisions.\n- action list_audit: List available audit events.\n- action read_audit: Read selected audit records.\n\nThis tool does not change policy.", {
     checks: z.array(policyCheckSchema).min(1).max(250).optional(),
     action: policyActionSchema.optional()

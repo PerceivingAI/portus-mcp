@@ -139,8 +139,6 @@ test("permission gates cover every selected-policy permission", () => {
 });
 
 test("MCP tools use their matching selected-policy permission", async (t) => {
-  let activePolicy = selectedPolicy;
-  const client = await withClient(t, () => activePolicy);
   const projectAlias = "broad-gates";
   registerProject(projectAlias, projectRoot);
   const cases = [
@@ -155,24 +153,24 @@ test("MCP tools use their matching selected-policy permission", async (t) => {
   ] as const;
 
   for (const entry of cases) {
-    activePolicy = withMainAgentPermissions({ [entry.permission]: false });
-    const denied = await client.callTool({ name: entry.tool, arguments: entry.arguments });
+    const deniedPolicy = withMainAgentPermissions({ [entry.permission]: false });
+    const deniedClient = await withClient(t, () => deniedPolicy);
+    const denied = await deniedClient.callTool({ name: entry.tool, arguments: entry.arguments });
     assert.equal(denied.isError, true, `${entry.tool} should be denied`);
     assert.match(
       JSON.stringify(denied.structuredContent),
       new RegExp(`main_agent\\.${entry.permission}`)
     );
 
-    activePolicy = selectedPolicy;
-    const allowed = await client.callTool({ name: entry.tool, arguments: entry.arguments });
+    const allowedClient = await withClient(t);
+    const allowed = await allowedClient.callTool({ name: entry.tool, arguments: entry.arguments });
     assert.equal(allowed.isError, undefined, `${entry.tool} should be allowed: ${JSON.stringify(allowed)}`);
   }
 });
 
 test("project_screenshot gates on its dedicated projectScreenshot permission", async (t) => {
   const { upsertExecutionSession } = await import("../src/runtime/executionSessions.js");
-  let activePolicy = selectedPolicy;
-  const client = await withClient(t, () => activePolicy);
+  const deniedClient = await withClient(t);
   const projectAlias = "screenshot-gates";
   registerProject(projectAlias, projectRoot);
 
@@ -209,18 +207,18 @@ test("project_screenshot gates on its dedicated projectScreenshot permission", a
 
   // Shipped default keeps the permission off.
   assert.equal(selectedPolicy.main_agent.permissions.projectScreenshot, false);
-  const denied = await client.callTool({ name: "project_screenshot", arguments: arguments_ });
+  const denied = await deniedClient.callTool({ name: "project_screenshot", arguments: arguments_ });
   assert.equal(denied.isError, true);
   assert.match(JSON.stringify(denied.structuredContent), /main_agent\.projectScreenshot/);
 
-  // Granting the dedicated permission admits the operation.
-  activePolicy = withMainAgentPermissions({ projectScreenshot: true });
-  const allowed = await client.callTool({ name: "project_screenshot", arguments: arguments_ });
+  // A new backend applies the granted permission.
+  const allowedPolicy = withMainAgentPermissions({ projectScreenshot: true });
+  const allowedClient = await withClient(t, () => allowedPolicy);
+  const allowed = await allowedClient.callTool({ name: "project_screenshot", arguments: arguments_ });
   assert.equal(allowed.isError, undefined, JSON.stringify(allowed.structuredContent));
 
   // Cross-session access stays denied under the granted permission.
-  activePolicy = withMainAgentPermissions({ projectScreenshot: true });
-  const crossSession = await client.callTool({
+  const crossSession = await allowedClient.callTool({
     name: "project_screenshot",
     arguments: { operation: "list", projectAlias: "other-project", executionSessionId: sessionId }
   });

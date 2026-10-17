@@ -91,16 +91,22 @@ PORTUS_MCP_PROJECTS='
 
 ### 4. Launch Portus MCP
 
-Use one of the unified single-command launchers:
+Use a standalone launcher to start a backend, or attach a Tailscale companion to an existing backend:
 
 | Connection Target | Command | Description |
 | :--- | :--- | :--- |
 | **ChatGPT via OpenAI Tunnel** | `npm run start:tunnel` | Launches Portus MCP (`8789`) + `tunnel-client` daemon concurrently. |
 | **Public Agents (Perplexity)** | `npm run start:funnel` | Launches Portus MCP + Tailscale Funnel for public cloud access. |
 | **Private Mesh (Personal Devices)** | `npm run start:serve` | Launches Portus MCP + Tailscale Serve for private Tailnet access. |
-| **Local Stdio / HTTP Direct** | `npm start` | Launches standalone HTTP server on `http://127.0.0.1:8789/mcp`. |
+| **Local HTTP Direct** | `npm start` | Launches the standalone HTTP server on `http://127.0.0.1:8789/mcp`. |
+| **Private Mesh, Existing Backend** | `npm run attach:serve` | Starts only a Tailscale Serve companion for the configured backend. |
+| **Public Agents, Existing Backend** | `npm run attach:funnel` | Starts only a Tailscale Funnel companion for the configured backend. |
 
-*(Press `Ctrl+C` once to stop all processes cleanly).*
+Each standalone launcher owns its backend. Do not run two standalone launchers on the same host/port. To keep OpenAI and Tailscale on one backend, run `npm run start:tunnel` in terminal 1 and an `attach:*` command in terminal 2.
+
+Press `Ctrl+C` to stop the processes owned by that launcher. Stopping an attach companion leaves the backend and OpenAI tunnel running. If you manually restart the backend at the same host, port, and MCP path, the companion stays running and subsequent requests reach the restarted backend. Failed or interrupted tool calls are not replayed.
+
+MCP and new companions start only when explicitly launched. After a reboot, launch them again manually. Bearer authentication is optional in every mode, including Funnel; an unauthenticated public endpoint exposes its tools to anyone who can reach it. See [`docs/TAILSCALE.md`](./docs/TAILSCALE.md) for ownership and bounded attach-companion recovery.
 
 ---
 
@@ -127,6 +133,8 @@ Portus ships with `portus-mcp.policy.json` as its complete default policy. To ma
 1. Copy `portus-mcp.policy.json` to **`portus-mcp.policy.local.json`** (automatically Git-ignored).
 2. Set `PORTUS_MCP_POLICY_PATH=./portus-mcp.policy.local.json` in `.env`.
 3. The selected policy file is a **strict replacement**, never an overlay.
+
+The selected policy is validated once at backend startup and held as an immutable snapshot. External policy edits require an explicit backend restart; they do not change the running backend. `project_policy` is read-only and reports the effective policy, not pending file edits.
 
 ### Command Execution Allowlists
 

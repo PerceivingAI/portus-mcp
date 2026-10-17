@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import type { Server as HttpServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { FlueContext, FlueSession, SessionInit } from "@flue/sdk/client";
@@ -94,6 +93,9 @@ process.env.PORTUS_MCP_STATE_DIR = stateDir;
 process.env.PORTUS_MCP_PROJECTS = "";
 delete process.env.AGENT_SKILL_PATHS;
 delete process.env.SUBAGENTS_SKILL_PATHS;
+// Delay policy bootstrap until the isolated fixture environment is installed.
+const { createPolicyTest } = await import("./fixtures/policyScope.js");
+const { test } = createPolicyTest();
 
 test.after(() => {
   for (const [name, value] of Object.entries(previousEnvironment)) {

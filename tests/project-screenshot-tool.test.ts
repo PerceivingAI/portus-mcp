@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
-import test from "node:test";
+import type { TestContext } from "node:test";
 import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -22,6 +22,9 @@ const { SCREENSHOT_ERROR_CODES, ScreenshotError } = await import("../src/runtime
 const { registerScreenshotTool } = await import("../src/tools/projectScreenshot.js");
 
 const basePolicy = parsePolicyConfig(JSON.parse(readFileSync("portus-mcp.policy.json", "utf8")));
+// Delay policy bootstrap until the isolated fixture environment is installed.
+const { createPolicyTest } = await import("./fixtures/policyScope.js");
+const { test } = createPolicyTest(basePolicy);
 const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const screenshotId = "20260822T100000Z_abcdef12.png";
 
@@ -120,16 +123,19 @@ function runningSession(options: StartExecutionSessionOptions): PublicExecutionS
 }
 
 async function createHarness(
-  t: test.TestContext,
+  t: TestContext,
   policy: PortusPolicyConfig,
   system: ScreenshotSystem,
   dependencies: Omit<ScreenshotToolDependencies, "system"> = {}
 ) {
+  const scope = createPolicyTest(policy);
   const server = new McpServer({ name: "screenshot-tool-unit", version: "0.1.1" });
-  registerScreenshotTool(server, policy, { system, ...dependencies });
+  scope.run(() => registerScreenshotTool(server, scope.policy, { system, ...dependencies }));
   const client = new Client({ name: "screenshot-tool-unit-client", version: "0.1.1" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
+  const handleMessage = serverTransport.onmessage;
+  serverTransport.onmessage = (...args) => scope.run(() => handleMessage?.(...args));
   await client.connect(clientTransport);
   t.after(async () => {
     await client.close();

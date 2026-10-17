@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { getSession } from "../state/SessionRegistry.js";
 import { limitText } from "../runtime/outputLimits.js";
-import { loadPolicyConfig } from "../policy/policyConfig.js";
+import { getPolicyConfig } from "../policy/policyConfig.js";
 
 function readLimited(file: string, limit: number): string {
   if (!existsSync(file)) return "";
@@ -10,7 +10,7 @@ function readLimited(file: string, limit: number): string {
 
 export function collectFlueResult(sessionId: string): { result: string; stdout: string; stderr: string; summary: Record<string, unknown> | null } {
   const session = getSession(sessionId);
-  const policy = loadPolicyConfig();
+  const policy = getPolicyConfig();
   const stdoutMax = Math.max(1000, policy.limits.subagentOutput.maxStdoutChars);
   const stderrMax = Math.max(1000, policy.limits.subagentOutput.maxStderrChars);
   const stdout = readLimited(session.stdoutPath, stdoutMax);

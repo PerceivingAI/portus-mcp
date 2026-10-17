@@ -3,7 +3,7 @@ import { runProjectCommand } from "../src/runtime/commands.js";
 import { collectDescendantPids, collectPosixSessionPids } from "../src/runtime/processTermination.js";
 import { assertProjectCommandStaysInProject, commandRequiresConfirmation } from "../src/tools/projects.js";
 import { toPublicAuditEvent, type PublicAuditEvent } from "../src/tools/config.js";
-import test, { after } from "node:test";
+import { after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -53,6 +53,9 @@ const { resolveProjectPath } = await import("../src/policy/pathPolicy.js");
 const { assertMainAgentPermission, assertMainAgentCommandAllowed } = await import("../src/policy/permissionPolicy.js");
 const { loadPolicyConfig, parsePolicyConfig, policyPermissions } = await import("../src/policy/policyConfig.js");
 const selectedPolicy = loadPolicyConfig();
+// Delay policy bootstrap until the isolated fixture environment is installed.
+const { createPolicyTest } = await import("./fixtures/policyScope.js");
+const { test } = createPolicyTest(selectedPolicy);
 const withMainAgentPermissions = (
   permissions: Partial<typeof selectedPolicy.main_agent.permissions>
 ): typeof selectedPolicy => ({

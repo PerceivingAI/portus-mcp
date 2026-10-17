@@ -1,4 +1,4 @@
-import test, { after } from "node:test";
+import { after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -101,6 +101,9 @@ const { loadSkillRegistry, parseSkillFrontmatter } = await import("../src/skills
 const { assertProjectAlias } = await import("../src/state/ProjectRegistry.js");
 const { getSession, upsertSession } = await import("../src/state/SessionRegistry.js");
 const selectedPolicy = loadPolicyConfig();
+// Delay policy bootstrap until the isolated fixture environment is installed.
+const { createPolicyTest } = await import("./fixtures/policyScope.js");
+const { test } = createPolicyTest(selectedPolicy);
 const expectedCapabilities = {
   complete: true,
   availableTools: {

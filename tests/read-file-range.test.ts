@@ -287,7 +287,8 @@ test("project_read range operation exposes and enforces its complete MCP contrac
     assert.equal(beyondEof.content, "");
     assert.equal(beyondEof.hasMore, false);
   });
-  await t.test("returns the complete raw-file hash for full, bounded, and truncated reads", async () => {
+  await t.test("returns the complete raw-file hash for full, bounded, and truncated reads", async (t) => {
+    t.after(() => writePolicy());
     const rawContent = Array.from({ length: 10 }, (_, index) => `line ${index + 1}`).join("\n") + "\n";
     const expectedSha256 = sha256(rawContent);
     const full = resultOf(await callFull(client, "lines.txt"), fullResultSchema);
@@ -302,7 +303,8 @@ test("project_read range operation exposes and enforces its complete MCP contrac
     assert.equal(bounded.content, "line 4");
 
     writePolicy(8);
-    const truncated = resultOf(await callFull(client, "lines.txt"), fullResultSchema);
+    const limitedClient = await withClient(t);
+    const truncated = resultOf(await callFull(limitedClient, "lines.txt"), fullResultSchema);
     assert.equal(truncated.truncated, true);
     assert.equal(truncated.sha256, expectedSha256);
     writePolicy();
@@ -352,9 +354,11 @@ test("project_read range operation exposes and enforces its complete MCP contrac
     }
   });
 
-  await t.test("uses the server character limit and counts Unicode code points", async () => {
+  await t.test("uses the server startup character limit and counts Unicode code points", async (t) => {
+    t.after(() => writePolicy());
     writePolicy(8);
-    const limited = resultOf(await callRange(client, {
+    const limitedClient = await withClient(t);
+    const limited = resultOf(await callRange(limitedClient, {
       projectAlias: "range",
       relativePath: "lines.txt",
       startLine: 1,
@@ -378,7 +382,8 @@ test("project_read range operation exposes and enforces its complete MCP contrac
     assert.deepEqual(limited.actual, { startLine: 1, endLine: 2, lineCount: 2 });
 
     writePolicy(1);
-    const unicode = resultOf(await callRange(client, {
+    const unicodeClient = await withClient(t);
+    const unicode = resultOf(await callRange(unicodeClient, {
       projectAlias: "range",
       relativePath: "unicode.txt",
       startLine: 1,

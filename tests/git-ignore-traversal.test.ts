@@ -1,4 +1,4 @@
-import test, { after } from "node:test";
+import { after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -95,6 +95,9 @@ process.env.PORTUS_MCP_PROJECTS = `git-shapes=${gitProjectRoot};non-git-shape=${
 const { collectSearchableFiles } = await import("../src/tools/projects.js");
 const { loadPolicyConfig } = await import("../src/policy/policyConfig.js");
 const policy = loadPolicyConfig();
+// Delay policy bootstrap until the isolated fixture environment is installed.
+const { createPolicyTest } = await import("./fixtures/policyScope.js");
+const { test } = createPolicyTest(policy);
 
 execFileSync("git", ["init", "--quiet"], { cwd: gitProjectRoot, stdio: "ignore" });
 writeFileSync(path.join(gitProjectRoot, ".gitignore"), "ignored/\n", "utf8");

@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { getSession, type SessionRecord } from "./SessionRegistry.js";
-import { loadPolicyConfig } from "../policy/policyConfig.js";
+import { getPolicyConfig } from "../policy/policyConfig.js";
 import { limitText } from "../runtime/outputLimits.js";
 
 export type SessionEvent = {
@@ -56,7 +56,7 @@ export function readSessionEvents(input: {
 }): { sessionId: string; events: SessionEvent[]; nextSequence: number; hasMore: boolean } {
   const session = getSession(input.sessionId);
   const filePath = sessionEventsPath(session);
-  const policy = loadPolicyConfig().limits.sessionEvents;
+  const policy = getPolicyConfig().limits.sessionEvents;
   const afterSequence = Math.max(0, input.afterSequence ?? 0);
   const limit = policy.maxEvents;
   if (!existsSync(filePath)) {
@@ -91,7 +91,7 @@ function nextSequence(filePath: string): number {
 }
 
 function limitEventData(data: Record<string, unknown>): Record<string, unknown> {
-  const maxChunkChars = loadPolicyConfig().limits.sessionEvents.maxChunkChars;
+  const maxChunkChars = getPolicyConfig().limits.sessionEvents.maxChunkChars;
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(data)) {
     out[key] = typeof value === "string"
