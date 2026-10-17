@@ -1,5 +1,7 @@
 # Tailscale Integration & Setup Guide
 
+**Updated:** 2026-10-17T06:14:05Z
+
 This guide is the authoritative reference for setting up, configuring, and using **Tailscale** (Tailscale Serve & Tailscale Funnel) with **Portus MCP**.
 
 ---
@@ -107,6 +109,8 @@ Portus MCP provides environment variables to tune network exposure and paths:
 | `PORTUS_MCP_PORT` | `8789` | Local TCP port for the HTTP MCP server. |
 | `PORTUS_MCP_PATH` | `/mcp` | Base HTTP path for MCP routes. Supports secret paths (e.g. `/secret-key/mcp`). |
 | `PORTUS_MCP_BEARER_TOKEN` | *(empty)* | Static bearer token. Recommended for public Funnel endpoints. |
+| `PORTUS_TAILSCALE_PATH` | PATH, then supported installation locations | Explicit Tailscale executable override, shared by startup and status. An invalid override fails instead of silently selecting another installation. |
+| `PORTUS_MCP_FORWARD_EXTERNAL_LOGS` | Disabled | Tailscale essential diagnostics remain visible when disabled. Enabling it adds bounded diagnostic categories, not raw CLI output. OpenAI logging behavior is unchanged. |
 
 ### Secure Configuration Example
 
@@ -124,32 +128,39 @@ PORTUS_MCP_BEARER_TOKEN=replace-with-a-long-random-secret
 ```
 *(Do not commit `.env` to git repository. Portus automatically redacts `Authorization` headers from session audit logs).*
 
-## 6. Tailscale Status & Endpoint Helper (`npm run tailscale:status`)
+## 6. Tailscale status and endpoint helper
 
-Portus MCP includes a CLI status helper script to inspect your active Tailscale configuration:
+Inspect the configured Portus endpoint without enabling Serve/Funnel or changing the daemon:
 
 ```bash
 npm run tailscale:status
 ```
 
-### Example Output
-```text
-==================================================
-  Portus MCP - Tailscale Status Summary
-==================================================
-Portus Bind Address:  127.0.0.1:8789
-MCP Route:            /mcp
-Authentication:       Required (Bearer Token set)
-Tailscale Status:     Connected (desktop-main.tail1234.ts.net)
-Exposure Mode:        PUBLIC FUNNEL (tailscale funnel)
-Public Exposure:      YES (Accessible from public internet)
-Identity Headers:     None (Funnel traffic carries no Tailnet identity)
-Target MCP URL:       https://desktop-main.tail1234.ts.net/mcp
-External Readiness:   Funnel active. Verify external HTTPS reachability and Bearer-token authentication before adding to Perplexity.
-==================================================
+For structured output:
+
+```bash
+npm run tailscale:status -- --json
 ```
 
-This helper automatically detects whether Tailscale is running, checks if Serve or Funnel is active on port `8789`, and outputs ready-to-copy target URLs.
+The helper records observation timestamps and separates these claims:
+
+| Observation | Meaning |
+| --- | --- |
+| Daemon | `connected` requires Running, Online true, and a usable DNS name. `not-ready` and `unknown` are not success. |
+| Portus route | `configured` requires a matching hostname, HTTPS listener, mount/path, and backend. Exposure is public only when the matching `AllowFunnel` boolean is true. Foreground/background scope is reported, but ownership is not verified. |
+| Absent/mismatched route | Empty recognized configuration and unrelated configuration are distinct. Neither supplies a Portus URL. Malformed, unsupported, or ambiguous configuration is reported without guessing an endpoint. |
+| Local MCP | `verified` means authenticated local initialization, initialized notification, and tool discovery succeeded. This invokes no tools. A root health payload is insufficient. |
+| Public MCP | Always `not-checked` by this helper. Public proof requires an authenticated probe from outside the tailnet and actual-client validation. |
+
+Configured URLs include the actual listener port when non-default. Mount prefixes and proxy target paths are accounted for, including more-specific handlers that shadow another route. Tailnet Services and unknown configuration extensions are conservatively unsupported rather than treated as ready.
+
+Status commands and the entire local protocol probe each have a five-second deadline and run concurrently. CLI output is limited to 256 KiB per captured stream; local JSON responses are limited to 1 MiB. Missing executables, command failures, timeouts, and malformed output remain explicit errors. Unsupported local endpoints are not probed with credentials.
+
+Exit code `0` means the daemon is connected, the intended route is configured, and local MCP is verified. It does **not** mean the public endpoint works. Other outcomes return `1`. A bearer being configured does not prove compatibility with a URL client.
+
+Tailscale launcher output retains startup, failure, and closure diagnostics even with verbose forwarding disabled. It emits fixed categories rather than raw external text, deduplicates them, caps each child at 16 diagnostic categories, and bounds pending input to 4 KiB per stream. Raw credentials, identities, URLs, and local paths are withheld even in verbose mode. Configured endpoint URLs in intentional status output still contain the hostname/path; treat that output as private.
+
+These are diagnostic fixes only. They add no automatic restart, attach-only mode, persistent route, public authentication design, or claim of continuous reachability.
 
 ---
 

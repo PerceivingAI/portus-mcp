@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
+import { resolveTailscalePath, collectTailscaleStatus, tailscaleStatusSummary, monitorTailscaleProcess } from "./tailscale.mjs";
 
 export function shouldForwardExternalLogs(env = process.env) {
   const value = env.PORTUS_MCP_FORWARD_EXTERNAL_LOGS;
@@ -64,33 +65,6 @@ function resolveProfileDir() {
   }
   return candidates[0];
 }
-function resolveTailscalePath() {
-  if (process.env.PORTUS_TAILSCALE_PATH && existsSync(process.env.PORTUS_TAILSCALE_PATH)) {
-    return process.env.PORTUS_TAILSCALE_PATH;
-  }
-
-  const isWin = os.platform() === "win32";
-  const exeName = isWin ? "tailscale.exe" : "tailscale";
-
-  try {
-    const checkCmd = isWin ? `where ${exeName}` : `which ${exeName}`;
-    const found = execSync(checkCmd, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim().split(/\r?\n/)[0];
-    if (found && existsSync(found)) return found;
-  } catch {
-    // Not in PATH
-  }
-
-  const searchLocations = [
-    isWin ? "C:\\Program Files\\Tailscale\\tailscale.exe" : "/usr/bin/tailscale",
-    "/usr/local/bin/tailscale"
-  ];
-
-  for (const candidate of searchLocations) {
-    if (existsSync(candidate)) return candidate;
-  }
-
-  return exeName;
-}
 
 const children = [];
 
@@ -103,22 +77,28 @@ function log(prefix, colorCode, data) {
 
 export function startProcess(name, colorCode, command, args, {
   env = process.env,
-  forwardOutput = true
+  forwardOutput = true,
+  tailscaleDiagnostics = false,
+  onAnnounced
 } = {}) {
-  const output = forwardOutput ? "pipe" : "ignore";
+  const output = forwardOutput || tailscaleDiagnostics ? "pipe" : "ignore";
   const proc = spawn(command, args, { stdio: ["ignore", output, output], env });
   children.push(proc);
 
-  if (forwardOutput) {
+  if (tailscaleDiagnostics) {
+    monitorTailscaleProcess(proc, { report: (message) => log(name, colorCode, message), verbose: forwardOutput, onAnnounced });
+  } else if (forwardOutput) {
     proc.stdout.on("data", (data) => log(name, colorCode, data));
     proc.stderr.on("data", (data) => log(name, colorCode, data));
   }
 
   proc.on("error", (err) => {
+    if (tailscaleDiagnostics) return;
     log(name, "31", `Failed to start: ${err.message}`);
   });
 
   proc.on("exit", (code, signal) => {
+    if (tailscaleDiagnostics) return;
     if (code !== null && code !== 0) {
       log(name, "31", `Exited with code ${code}`);
     } else if (signal) {
@@ -258,15 +238,18 @@ async function main() {
       env,
       forwardOutput: forwardExternalLogs
     });
-  } else if (mode === "funnel") {
+  } else if (mode === "funnel" || mode === "serve") {
     const tailscaleBin = resolveTailscalePath();
-    startProcess("funnel", "33", tailscaleBin, ["funnel", port], {
-      forwardOutput: forwardExternalLogs
-    });
-  } else if (mode === "serve") {
-    const tailscaleBin = resolveTailscalePath();
-    startProcess("serve", "34", tailscaleBin, ["serve", port], {
-      forwardOutput: forwardExternalLogs
+    const colorCode = mode === "funnel" ? "33" : "34";
+    const reportStatus = async () => {
+      const status = await collectTailscaleStatus();
+      log(mode, colorCode, tailscaleStatusSummary(status));
+    };
+    await reportStatus();
+    startProcess(mode, colorCode, tailscaleBin, [mode, port], {
+      forwardOutput: forwardExternalLogs,
+      tailscaleDiagnostics: true,
+      onAnnounced: () => { void reportStatus().catch(() => log(mode, "31", "Tailscale status inspection failed; public MCP remains unverified.")); }
     });
   }
 }
