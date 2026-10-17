@@ -1,6 +1,6 @@
 # Tailscale Integration & Setup Guide
 
-**Updated:** 2026-10-17T07:40:52Z
+**Updated:** 2026-10-17T08:30:28Z
 
 This guide is the authoritative reference for setting up, configuring, and using **Tailscale** (Tailscale Serve & Tailscale Funnel) with **Portus MCP**.
 
@@ -181,7 +181,7 @@ The helper records observation timestamps and separates these claims:
 | Local MCP | `verified` means authenticated local initialization, initialized notification, and tool discovery succeeded. This invokes no tools. A root health payload is insufficient. |
 | Public MCP | Always `not-checked` by this helper. Public proof requires an authenticated probe from outside the tailnet and actual-client validation. |
 
-Configured URLs include the actual listener port when non-default. Mount prefixes and proxy target paths are accounted for, including more-specific handlers that shadow another route. Tailnet Services and unknown configuration extensions are conservatively unsupported rather than treated as ready.
+Configured URLs include the actual listener port when non-default. Mount prefixes and proxy target paths are accounted for. Handler selection follows Tailscale: an exact request path wins first; otherwise parent paths are checked from most specific to root, with the slash form before the non-slash form at each level. Non-slash mounts also handle descendant paths, and an unrelated handler in either form can shadow a matching root proxy. Tailnet Services and unknown configuration extensions are conservatively unsupported rather than treated as ready.
 
 Status commands and the entire local protocol probe each have a five-second deadline and run concurrently. CLI output is limited to 256 KiB per captured stream; local JSON responses are limited to 1 MiB. Missing executables, command failures, timeouts, and malformed output remain explicit errors. Unsupported local endpoints are not probed with credentials.
 

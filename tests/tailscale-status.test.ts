@@ -58,12 +58,43 @@ test("a more specific unrelated handler shadows the matching root proxy", () => 
   assert.equal(status.url, undefined);
 });
 
-test("exact mounts cannot be guessed as subtree routes", () => {
-  const status = inspectTailscaleConfig(config({ mount: "/bridge" }), endpoint);
-  assert.equal(status.state, "mismatch");
+test("F1 route selection accepts non-slash mounts for descendant paths", () => {
+  const status = inspectTailscaleConfig(config({ mount: "/bridge", allowed: true }), endpoint);
+  assert.equal(status.state, "configured");
+  assert.equal(status.url, `https://${hostname}/bridge/private/mcp`);
 });
 
-test("a subtree slash redirect cannot be mistaken for an exact MCP route", () => {
+test("F1 route selection rejects a non-slash unrelated backend shadowing the root", () => {
+  const status = inspectTailscaleConfig(config({ allowed: true, handlers: { "/": { Proxy: "8789" }, "/private": { Proxy: "9999" } } }), endpoint);
+  assert.equal(status.state, "mismatch");
+  assert.equal(status.url, undefined);
+});
+
+test("F1 route selection prefers the slash form at a parent over its non-slash proxy", () => {
+  const status = inspectTailscaleConfig(config({ handlers: { "/": { Proxy: "8789" }, "/private": { Proxy: "8789" }, "/private/": { Proxy: "9999" } } }), endpoint);
+  assert.equal(status.state, "mismatch");
+  assert.equal(status.url, undefined);
+});
+
+test("F1 route selection checks an exact path before its slash sibling", () => {
+  const status = inspectTailscaleConfig(config({ handlers: { "/bridge": { Proxy: "http://127.0.0.1:8789/private/mcp" }, "/bridge/": { Proxy: "9999" } } }), endpoint);
+  assert.equal(status.state, "configured");
+  assert.equal(status.url, `https://${hostname}/bridge`);
+});
+
+test("F1 route selection can select a slash handler without redirecting an exact proxy target", () => {
+  const status = inspectTailscaleConfig(config({ mount: "/bridge/", backend: "http://127.0.0.1:8789/private/mcp" }), endpoint);
+  assert.equal(status.state, "configured");
+  assert.equal(status.url, `https://${hostname}/bridge`);
+});
+
+test("F1 route selection respects segment boundaries rather than arbitrary prefixes", () => {
+  const status = inspectTailscaleConfig(config({ handlers: { "/": { Proxy: "8789" }, "/priv": { Proxy: "9999" } } }), endpoint);
+  assert.equal(status.state, "configured");
+  assert.equal(status.url, `https://${hostname}/private/mcp`);
+});
+
+test("a subtree slash handler can shadow the root even when the request omits the slash", () => {
   const status = inspectTailscaleConfig(config({ handlers: { "/": { Proxy: "8789" }, "/private/mcp/": { Proxy: "9999" } } }), endpoint);
   assert.equal(status.state, "mismatch");
 });

@@ -125,8 +125,18 @@ function configurations(config) {
   ];
 }
 
-function mountMatches(mount, requestPath) {
-  return mount.endsWith("/") ? requestPath.startsWith(mount) : requestPath === mount;
+function selectTailscaleMount(handlers, requestPath) {
+  // Match Tailscale getServeHandler: exact request first, then both forms at
+  // each cleaned path level. Non-slash mounts also handle descendant paths.
+  if (Object.hasOwn(handlers, requestPath)) return requestPath;
+  let current = path.posix.normalize(requestPath).replace(/\/$/, "") || "/";
+  while (true) {
+    const withSlash = `${current}/`;
+    if (Object.hasOwn(handlers, withSlash)) return withSlash;
+    if (Object.hasOwn(handlers, current)) return current;
+    if (current === "/") return undefined;
+    current = path.posix.dirname(current);
+  }
 }
 
 export function inspectTailscaleConfig(config, { hostname, host = "127.0.0.1", port = 8789, mcpPath = "/mcp" }) {
@@ -149,10 +159,7 @@ export function inspectTailscaleConfig(config, { hostname, host = "127.0.0.1", p
         const suffix = mcpPath.slice(base.length);
         const externalPath = `${mount === "/" ? "" : mount.replace(/\/$/, "")}${suffix}` || "/";
         if (suffix === "" && mount === "/") continue;
-        if (!web.Handlers[externalPath] && web.Handlers[`${externalPath}/`]) continue;
-        if (!mountMatches(mount, externalPath)) continue;
-        // Go ServeMux chooses the exact/longest matching mount. A shadowing handler wins.
-        const selected = Object.keys(web.Handlers).filter((key) => mountMatches(key, externalPath)).sort((a, b) => b.length - a.length)[0];
+        const selected = selectTailscaleMount(web.Handlers, externalPath);
         if (selected !== mount) continue;
         const url = new URL(`https://${hostname}:${listener}`);
         url.pathname = externalPath;
