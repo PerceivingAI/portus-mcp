@@ -1,9 +1,10 @@
 import { after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, WriteStream } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import path from "node:path";
 import { ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import {
   startExecutionSession,
   pollExecutionSession,
@@ -221,6 +222,73 @@ test("Execution sessions flush short-lived output before finalization", async ()
   const output = readFileSync(current.stdoutPath);
   assert.equal(output.length, expectedBytes);
   assert.equal(output.every((byte) => byte === 0x78), true);
+});
+
+test("Execution sessions publish completion only after stdout and stderr are readable", async (t) => {
+  const release = path.join(root, "drain-release");
+  const held: Array<{ stream: WriteStream; args: unknown[] }> = [];
+  const outputRoot = path.join(stateDir, "executions") + path.sep;
+  const originalWrite = WriteStream.prototype._write;
+  const writes = t.mock.method(WriteStream.prototype, "_write", function(this: WriteStream, ...args: unknown[]) {
+    if (typeof this.path === "string" && this.path.startsWith(outputRoot)) {
+      held.push({ stream: this, args });
+      return;
+    }
+    return Reflect.apply(originalWrite, this, args);
+  });
+  let pid: number | undefined;
+  let sessionId: string | undefined;
+  let childClosed = false;
+  const notifications: Array<{ status: string; stdout: string; stderr: string }> = [];
+  const originalEmit = ChildProcess.prototype.emit;
+  const events = t.mock.method(ChildProcess.prototype, "emit", function(this: ChildProcess, event: string, ...args: unknown[]) {
+    if (this.pid === pid && event === "close") childClosed = true;
+    return Reflect.apply(originalEmit, this, [event, ...args]);
+  });
+  const unsubscribe = subscribeExecutionSessionExit(id => {
+    if (id !== sessionId) return;
+    const record = getExecutionSession(id);
+    notifications.push({ status: record.status, stdout: readFileSync(record.stdoutPath, "utf8"), stderr: readFileSync(record.stderrPath, "utf8") });
+  });
+  t.after(unsubscribe);
+  let stopping: ReturnType<typeof terminateExecutionSession> | undefined;
+  let stopResolved = false;
+  try {
+    const session = await startExecutionSession({
+      projectAlias: "test", rootPath: root, command: "node",
+      args: ["-e", `const fs=require("node:fs");const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(release)})){clearInterval(timer);process.stdout.write("drained-out");process.stderr.write("drained-err");}},5);setTimeout(()=>process.exit(94),5000).unref();`],
+      timeoutSecs: 8, policy: withMainAgentPermissions({ allowedCommands: ["node"] })
+    });
+    sessionId = session.sessionId;
+    pid = getExecutionSession(sessionId).pid;
+    assert(pid);
+    writeFileSync(release, "release");
+    const deadline = Date.now() + 3000;
+    while ((!childClosed || new Set(held.map(item => item.stream)).size < 2) && Date.now() < deadline) await delay(10);
+    assert(childClosed, "the real child must close while disk writes are held");
+    assert.equal(new Set(held.map(item => item.stream)).size, 2, "both output streams must have pending real writes");
+    assert.equal(pollExecutionSession({ sessionId, cursor: 0 }).status, "running");
+    assert.equal(listExecutionSessions("test").find(item => item.sessionId === sessionId)?.status, "running");
+    assert.deepEqual(notifications, []);
+    stopping = terminateExecutionSession(sessionId).then(result => { stopResolved = true; return result; });
+    await Promise.resolve();
+    assert.equal(stopResolved, false, "stop must await an already-exited child's pending output");
+  } finally {
+    writes.mock.restore();
+    events.mock.restore();
+    const closed = held.map(item => once(item.stream, "close", { signal: AbortSignal.timeout(3000) }));
+    for (const item of held) Reflect.apply(originalWrite, item.stream, item.args);
+    await Promise.all(closed);
+  }
+  assert(sessionId);
+  assert(stopping);
+  assert.equal((await stopping).status, "completed");
+  const completed = pollExecutionSession({ sessionId, cursor: 0, stream: "both" });
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.exitCode, 0);
+  assert.equal(completed.stdoutChunk, "drained-out");
+  assert.equal(completed.stderrChunk, "drained-err");
+  assert.deepEqual(notifications, [{ status: "completed", stdout: "drained-out", stderr: "drained-err" }]);
 });
 
 test("Execution sessions: terminate reaps background process tree", async () => {

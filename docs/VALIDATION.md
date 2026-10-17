@@ -15,7 +15,7 @@ npm run flue:check
 
 ## Continuous integration
 
-GitHub Actions runs the standard checks on `ubuntu-latest` and `windows-latest` with Node.js 20. Both matrix jobs run to completion independently when either job fails.
+GitHub Actions runs the standard checks on `ubuntu-latest` and `windows-latest` with Node.js 24. Checkout and Node setup also use Node 24-based actions. Both matrix jobs run to completion independently when either job fails.
 
 `npm test` enumerates the top-level `tests/*.test.ts` files in a Node launcher rather than relying on shell wildcard expansion. It keeps file concurrency at two and accepts Node test-runner options, for example `npm test -- --test-name-pattern="owned child exit"`.
 
