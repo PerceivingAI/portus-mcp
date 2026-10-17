@@ -311,12 +311,13 @@ export function tailscaleStatusSummary(status) {
 
 // Only fixed diagnostic categories leave this boundary. Raw output never becomes a log,
 // including verbose mode: an arbitrary CLI line can contain unlabelled credentials.
-export function monitorTailscaleProcess(proc, { report, verbose = false, onAnnounced } = {}) {
+export function monitorTailscaleProcess(proc, { report, verbose = false, onAnnounced, onDiagnostic, recoveryEnabled = false } = {}) {
   const reported = new Set();
   let announced = false;
   function emit(category, message) {
     if (reported.size >= 16 || reported.has(category)) return;
     reported.add(category);
+    onDiagnostic?.(category);
     report(message);
   }
   function line(text) {
@@ -326,6 +327,7 @@ export function monitorTailscaleProcess(proc, { report, verbose = false, onAnnou
     else if (/already.*(?:use|serv)|address.*use|conflict/i.test(text)) emit("conflict", "Tailscale reported a listener/configuration conflict; no route ownership is established.");
     else if (/certificate|\bTLS\b|\bHTTPS.*fail/i.test(text)) emit("tls", "Tailscale reported a TLS/certificate diagnostic; public TLS is not verified.");
     else if (/connection refused|backend.*(?:fail|unreach)/i.test(text)) emit("backend", "Tailscale reported an unreachable backend; verify local MCP separately.");
+    else if (/invalid (?:argument|flag|target|proxy)|unknown (?:flag|command)|(?:invalid|unsupported|malformed|bad)\s+(?:serve\s+|funnel\s+)?config(?:uration)?|(?:cannot|unable|failed) to (?:read|parse|load) config/i.test(text)) emit("configuration", "Tailscale reported an invalid command/configuration; correct it before restarting.");
     else if (/error|fail|cannot|unable|fatal/i.test(text)) emit("error", "Tailscale reported a CLI error; raw details were withheld to protect credentials and paths.");
     else if (/available on|https:\/\//i.test(text)) {
       if (!announced) { announced = true; onAnnounced?.(); }
@@ -350,5 +352,5 @@ export function monitorTailscaleProcess(proc, { report, verbose = false, onAnnou
     stream.on("end", () => { consume(decoder.end()); if (pending) line(pending); });
   }
   proc.once("error", (error) => emit("spawn-error", `Tailscale CLI could not start [${["ENOENT", "EACCES", "EPERM"].includes(error.code) ? error.code : "spawn-error"}]; check the configured binary.`));
-  proc.once("close", (code, signal) => emit("closed", `Tailscale CLI closed (${code === null ? "signal" : `exit ${code}`}${signal ? ", signalled" : ""}); no automatic recovery was attempted.`));
+  proc.once("close", (code, signal) => emit("closed", `Tailscale CLI closed (${code === null ? "signal" : `exit ${code}`}${signal ? ", signalled" : ""})${recoveryEnabled ? "." : "; no automatic recovery was attempted."}`));
 }

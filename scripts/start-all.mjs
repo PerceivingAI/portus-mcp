@@ -78,6 +78,8 @@ export function startProcess(name, colorCode, command, args, {
   forwardOutput = true,
   tailscaleDiagnostics = false,
   onAnnounced,
+  onDiagnostic,
+  recoveryEnabled = false,
   ipc = false,
   processGroup = false,
   expectedExit
@@ -88,7 +90,7 @@ export function startProcess(name, colorCode, command, args, {
   const proc = spawn(command, args, { stdio, env, detached: processGroup && os.platform() !== "win32" });
 
   if (tailscaleDiagnostics) {
-    monitorTailscaleProcess(proc, { report: (message) => log(name, colorCode, message), verbose: forwardOutput, onAnnounced });
+    monitorTailscaleProcess(proc, { report: (message) => log(name, colorCode, message), verbose: forwardOutput, onAnnounced, onDiagnostic, recoveryEnabled });
   } else if (forwardOutput) {
     proc.stdout.on("data", (data) => log(name, colorCode, data));
     proc.stderr.on("data", (data) => log(name, colorCode, data));
@@ -239,10 +241,12 @@ export function createLauncher({
   const profile = env.PORTUS_TUNNEL_PROFILE || "portus-local";
   const forwardExternalLogs = shouldForwardExternalLogs(env);
   const isTailscale = mode === "funnel" || mode === "serve";
+  const terminalDiagnostics = new Set(["auth", "policy", "configuration", "conflict", "spawn-error"]);
+  const recoveryDelays = [1_000, 2_000, 4_000];
   let binary;
   let baseline;
-  let lease;
   let external;
+  let externalOwner;
   let hostname;
   let stopPromise;
   let startCalled = false;
@@ -250,6 +254,9 @@ export function createLauncher({
   let shutdownStarted = false;
   let failure;
   let failureDetectedAt;
+  let recoveryTask;
+  let recoveryDeadline;
+  let recoveryAttempts = 0;
   let finishCompletion;
   const completion = new Promise((resolve) => { finishCompletion = resolve; });
 
@@ -261,21 +268,33 @@ export function createLauncher({
     void stop().catch(() => {}); // Completion carries cleanup failure without an unhandled rejection.
   }
 
-  function track(proc, role, startedAtMs) {
-    const owner = { process: proc, role, startedAtMs, exitedAtMs: undefined, closed: false };
+  function track(proc, role, startedAtMs, diagnostics = {}) {
+    const owner = { process: proc, role, startedAtMs, exitedAtMs: undefined, closed: false, cleaned: false, controller: new AbortController(), diagnostics };
     children.push(owner);
+    if (role === "external") externalOwner = owner;
     proc.once("close", () => { owner.closed = true; });
     proc.once("error", () => {
       const description = role === "backend" ? "Owned Portus backend failed to spawn."
         : isTailscale ? "Owned Tailscale CLI failed before foreground route readiness." : "Owned tunnel service failed to spawn.";
+      // Spawn failures are terminal even during recovery; do not retry a bad binary.
       fail(new Error(description));
     });
     proc.once("exit", (code, signal) => {
       owner.exitedAtMs = Date.now();
-      if (shutdownStarted) return;
       const service = role === "backend" ? "Portus backend" : isTailscale ? "Tailscale CLI" : "tunnel service";
       const transition = phase === "starting" ? "exited before readiness" : "exited unexpectedly";
-      fail(new Error(`Owned ${service} ${transition} (${code === null ? `signal ${signal ?? "unknown"}` : `exit ${code}`}).`));
+      owner.exitError = new Error(`Owned ${service} ${transition} (${code === null ? `signal ${signal ?? "unknown"}` : `exit ${code}`}).`);
+      owner.controller.abort(owner.exitError);
+      if (shutdownStarted) return;
+      if (attachOnly && role === "external" && phase === "running") {
+        phase = "recovering";
+        recoveryDeadline = owner.exitedAtMs + 30_000;
+        recoveryTask = recover(owner, recoveryDeadline).catch((error) => {
+          if (!shutdownStarted) fail(error);
+        });
+      } else if (!(attachOnly && role === "external" && phase === "recovering")) {
+        fail(owner.exitError);
+      }
     });
     return proc;
   }
@@ -307,27 +326,126 @@ export function createLauncher({
     return command.value;
   }
 
+  async function preflight(deadline) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error("Tailscale recovery time budget exhausted.");
+    const [status, config] = await Promise.all([
+      executeTailscale(binary, ["status", "--json"], { env, timeoutMs: Math.min(5_000, remaining), signal: controller.signal }),
+      readConfig(deadline, controller.signal)
+    ]);
+    controller.signal.throwIfAborted();
+    const daemon = inspectDaemon(status);
+    if (daemon.state !== "connected") throw new Error(`Tailscale daemon is ${daemon.state}; establish connectivity separately before Tailscale exposure.`);
+    baseline = assertTailscaleListenerFree(config);
+    hostname = daemon.hostname;
+  }
+
+  function spawnTailscale() {
+    controller.signal.throwIfAborted();
+    const diagnostics = {};
+    const color = mode === "funnel" ? "33" : "34";
+    const options = {
+      env, forwardOutput: forwardExternalLogs, tailscaleDiagnostics: true, processGroup: true,
+      recoveryEnabled: attachOnly, expectedExit: () => shutdownStarted,
+      onDiagnostic: (category) => {
+        if (terminalDiagnostics.has(category)) diagnostics.terminal = category;
+      }
+    };
+    const startedAt = Date.now();
+    external = track(launchTailscale
+      ? launchTailscale(binary, [mode, port], options)
+      : startProcess(mode, color, binary, [mode, port], options), "external", startedAt, diagnostics);
+    externalOwner.baseline = baseline;
+    return externalOwner;
+  }
+
+  async function waitForRoute(owner, deadline) {
+    const signal = AbortSignal.any([controller.signal, owner.controller.signal]);
+    while (Date.now() < deadline) {
+      signal.throwIfAborted();
+      const config = await readConfig(deadline, signal);
+      signal.throwIfAborted();
+      owner.lease = findOwnedTailscaleRoute(owner.baseline, config, { hostname, host, port, mcpPath, mode });
+      if (owner.lease) return owner.lease.route;
+      await delay(Math.min(100, Math.max(1, deadline - Date.now())), undefined, { signal });
+    }
+    throw new Error("Owned Tailscale foreground route startup deadline exceeded.");
+  }
+
+  function cleanupOwner(owner, deadline) {
+    if (owner.cleaned) return Promise.resolve();
+    // One cleanup per exact owned generation, shared by recovery and shutdown.
+    // Never issue another tree kill against a historical PID after confirmation.
+    owner.cleanupPromise ??= (async () => {
+      await terminateOwnedTree(owner, deadline, cleanupExited);
+      if (owner.baseline) {
+        let released = false;
+        while (Date.now() < deadline) {
+          const current = await readConfig(deadline);
+          if (tailscaleForegroundReleased(owner.baseline, current, owner.lease?.session)) {
+            released = true;
+            break;
+          }
+          await delay(Math.min(100, Math.max(1, deadline - Date.now())));
+        }
+        if (!released) throw new Error("Owned foreground route release was not confirmed within the teardown deadline; no reset/off was attempted.");
+      }
+      owner.cleaned = true;
+    })();
+    return owner.cleanupPromise;
+  }
+
+  async function recover(previous, deadline) {
+    // Reserve final cleanup inside the same 30-second episode, not after it.
+    const workDeadline = deadline - 5_000;
+    while (true) {
+      await cleanupOwner(previous, Math.min(Date.now() + 5_000, deadline));
+      controller.signal.throwIfAborted();
+      // Cleanup waits for close/stream flush, so even a last unterminated stderr
+      // diagnostic is classified before deciding to replace this generation.
+      if (previous.diagnostics.terminal) throw new Error(`Tailscale recovery refused a non-retryable ${previous.diagnostics.terminal} diagnostic.`);
+      if (recoveryAttempts === recoveryDelays.length) throw new Error("Tailscale recovery exhausted its three replacement attempts.");
+      const backoff = recoveryDelays[recoveryAttempts];
+      if (Date.now() + backoff >= workDeadline) throw new Error("Tailscale recovery time budget exhausted.");
+      await delay(backoff, undefined, { signal: controller.signal });
+      controller.signal.throwIfAborted();
+      await preflight(workDeadline);
+      controller.signal.throwIfAborted();
+      if (Date.now() >= workDeadline) throw new Error("Tailscale recovery time budget exhausted.");
+      recoveryAttempts++;
+      log("orchestrator", "33", `Tailscale ${mode === "funnel" ? "Funnel" : "Serve"} recovery attempt ${recoveryAttempts}/3.`);
+      previous = spawnTailscale();
+      try {
+        await waitForRoute(previous, workDeadline);
+        previous.controller.signal.throwIfAborted();
+      } catch (error) {
+        controller.signal.throwIfAborted();
+        if (previous.exitError) continue; // A failed replacement consumes the same episode budget.
+        throw error;
+      }
+      controller.signal.throwIfAborted();
+      phase = "running";
+      recoveryDeadline = undefined;
+      log("orchestrator", "32", `Tailscale ${mode === "funnel" ? "Funnel" : "Serve"} route restored. Press Ctrl+C to stop the companion.`);
+      return;
+    }
+  }
+
   function stop() {
     if (stopPromise) return stopPromise;
     shutdownStarted = true;
     if (!failure) phase = "stopping";
     controller.abort(failure ?? new DOMException("Launcher shutdown requested.", "AbortError"));
+    const deadline = Math.min(Date.now() + 5_000, recoveryDeadline ?? Infinity);
     stopPromise = (async () => {
-      const deadline = Date.now() + 5_000;
       let cleanup = "confirmed";
       let cleanupError;
       try {
-        const outcomes = await Promise.allSettled(children.map((owner) => terminateOwnedTree(owner, deadline, cleanupExited)));
+        // A cancelled recovery must settle before the final child inventory.
+        if (recoveryTask) await withinDeadline(recoveryTask, deadline, "Recovery cancellation");
+        const outcomes = await Promise.allSettled(children.map((owner) => cleanupOwner(owner, deadline)));
         const failed = outcomes.find((result) => result.status === "rejected");
         if (failed) throw failed.reason;
-        if (external && baseline) {
-          while (Date.now() < deadline) {
-            const current = await readConfig(deadline);
-            if (tailscaleForegroundReleased(baseline, current, lease?.session)) return;
-            await delay(Math.min(100, Math.max(1, deadline - Date.now())));
-          }
-          throw new Error("Owned foreground route release was not confirmed within the teardown deadline; no reset/off was attempted.");
-        }
       } catch (error) {
         cleanup = "unverified";
         cleanupError = "Owned cleanup could not be confirmed within its identity and time bounds.";
@@ -342,8 +460,7 @@ export function createLauncher({
           ...(cleanupError ? { cleanupError } : {})
         }));
         if (cleanup === "unverified") {
-          // A terminal failure must not hang on owned handles after the bounded
-          // cleanup failed. Releasing handles is not a claim that processes died.
+          // Releasing handles is not a claim that unverified processes died.
           for (const { process: proc } of children) {
             proc.stdout?.destroy();
             proc.stderr?.destroy();
@@ -368,16 +485,7 @@ export function createLauncher({
       if (isTailscale) {
         validateTailscaleBind(env);
         binary = resolveTailscalePath(env);
-        const preflightDeadline = Date.now() + 5_000;
-        const [status, config] = await Promise.all([
-          executeTailscale(binary, ["status", "--json"], { env, timeoutMs: 5_000, signal: controller.signal }),
-          readConfig(preflightDeadline, controller.signal)
-        ]);
-        controller.signal.throwIfAborted();
-        const daemon = inspectDaemon(status);
-        if (daemon.state !== "connected") throw new Error(`Tailscale daemon is ${daemon.state}; establish connectivity separately before Tailscale exposure.`);
-        baseline = assertTailscaleListenerFree(config);
-        hostname = daemon.hostname;
+        await preflight(Date.now() + 5_000);
       }
 
       let backend;
@@ -386,8 +494,7 @@ export function createLauncher({
         const local = await probeLocalMcp(endpoint, { signal: controller.signal });
         controller.signal.throwIfAborted();
         if (local.state !== "verified") throw new Error(`Existing Portus backend could not be verified [${local.reason}]; no Tailscale exposure was started.`);
-        // The backend is borrowed, not a child. Do not track its PID, lifetime,
-        // or health after attachment; the route survives operator restarts.
+        // Borrowed backend lifetime is deliberately independent of this launcher.
       } else {
         const backendStartedAt = Date.now();
         backend = track(startProcess("portus", "36", process.execPath, ["--import", "tsx", "src/server.ts"], {
@@ -417,30 +524,14 @@ export function createLauncher({
         return { backend, external };
       }
 
-      // Recheck immediately before configuring: a port being free during the initial
-      // preflight is not permission to replace a listener created during backend verification.
-      const current = await readConfig(Date.now() + 5_000, controller.signal);
-      baseline = assertTailscaleListenerFree(current);
-      const color = mode === "funnel" ? "33" : "34";
-      const options = { env, forwardOutput: forwardExternalLogs, tailscaleDiagnostics: true, processGroup: true, expectedExit: () => shutdownStarted };
-      const startedAt = Date.now();
-      external = track(launchTailscale
-        ? launchTailscale(binary, [mode, port], options)
-        : startProcess(mode, color, binary, [mode, port], options), "external", startedAt);
-      const routeDeadline = Date.now() + 30_000;
-      while (Date.now() < routeDeadline) {
-        controller.signal.throwIfAborted();
-        const config = await readConfig(routeDeadline, controller.signal);
-        controller.signal.throwIfAborted();
-        lease = findOwnedTailscaleRoute(baseline, config, { hostname, host, port, mcpPath, mode });
-        if (lease) {
-          phase = "running";
-          if (attachOnly) log("orchestrator", "32", `Tailscale ${mode === "funnel" ? "Funnel" : "Serve"} attached to the existing MCP backend. Press Ctrl+C to stop the companion.`);
-          return { backend, external, route: lease.route };
-        }
-        await delay(100, undefined, { signal: controller.signal });
-      }
-      throw new Error("Owned Tailscale foreground route startup deadline exceeded.");
+      // Recheck immediately before configuring; initial availability is not ownership.
+      baseline = assertTailscaleListenerFree(await readConfig(Date.now() + 5_000, controller.signal));
+      const owner = spawnTailscale();
+      const route = await waitForRoute(owner, Date.now() + 30_000);
+      controller.signal.throwIfAborted();
+      phase = "running";
+      if (attachOnly) log("orchestrator", "32", `Tailscale ${mode === "funnel" ? "Funnel" : "Serve"} attached to the existing MCP backend. Press Ctrl+C to stop the companion.`);
+      return { backend, external, route };
     } catch (error) {
       if (!shutdownStarted) {
         failure ??= error;
@@ -453,7 +544,7 @@ export function createLauncher({
       throw startupError;
     }
   }
-  return { start, stop, completion, get state() { return phase; } };
+  return { start, stop, completion, get state() { return phase; }, get recovery() { return recoveryTask; } };
 }
 
 async function main() {

@@ -1,6 +1,6 @@
 # Tailscale Integration & Setup Guide
 
-**Updated:** 2026-10-17T09:33:09Z
+**Updated:** 2026-10-17T09:54:50Z
 
 This guide is the authoritative reference for setting up, configuring, and using **Tailscale** (Tailscale Serve & Tailscale Funnel) with **Portus MCP**.
 
@@ -116,7 +116,7 @@ After attachment, the companion does not monitor backend lifetime or health. If 
 
 Changing the backend host, port, or MCP path requires explicitly updating/restarting the companion and client configuration as applicable. If you change the optional bearer, clients also need the new credential. Stop terminal 2 manually when access is no longer needed, even if the backend is currently down. The companion does not restart the backend, `tunnel-client`, or Tailscale daemon.
 
-The owned CLI's unexpected exit remains a companion failure with bounded owned cleanup. Backend downtime alone is not a companion failure. No periodic probes, recovery loop, `--bg`, or request replay is added.
+Backend downtime alone is not a companion failure. An unexpected owned CLI exit after successful attachment now uses the bounded recovery policy below. Initial attachment failures remain terminal. No periodic backend probes, `--bg`, or request replay is added.
 
 
 ### Startup and shutdown guarantees
@@ -127,10 +127,10 @@ The owned CLI's unexpected exit remains a companion failure with bounded owned c
 - Configuration reads and the CLI's write are not a cross-operator transaction. Do not concurrently reconfigure Serve/Funnel while a launcher is starting or stopping. Observed unrelated changes cause failure, not global rollback.
 - Shutdown stops only child trees started by that launcher. Windows uses awaited tree termination; foreground release is then confirmed with bounded read-only configuration observations. No arbitrary process is adopted because it answers a health URL.
 - These are local ownership guarantees. Actual daemon watch-session behavior, public reachability, and live OpenAI/client interoperability require the separately planned live verification. Windows process-tree and isolated route-fixture behavior were exercised; equivalent POSIX behavior was not exercised.
-- Required owned backend/foreground-service exit or spawn error makes a standalone launcher failed, including unexpected exit zero. Attach-only commands own no backend and fail-stop only for their owned CLI or cleanup failure. Child events are monitored within a five-second detection bound; this is not continuous public-route or application-health polling.
+- Required owned backend/foreground-service exit or spawn error makes a standalone launcher failed, including unexpected exit zero. Attach-only commands own no backend; after initial attachment they can recover an unexpected owned CLI exit within the I2 limits below. Non-retryable errors, unsafe cleanup, and exhausted recovery produce failure/nonzero completion. No continuous public-route or application-health polling is added.
 - Intentional Ctrl+C/stop is distinct from dependency failure. Expected child exits during teardown do not turn a clean stop into failure or an existing failure into success.
 - Teardown retains its separate five-second budget. On Windows, an already exited root uses bounded process snapshots and creation-time-checked native handles for eligible descendants. Ambiguous identity, inaccessible processes, or incomplete teardown produce explicit unverified cleanup and exit 1, not speculative PID termination or a clean-shutdown claim.
-- The actual launcher exits nonzero on terminal dependency/cleanup failure. A returning dependency cannot restart a terminal launcher. No automatic recovery, daemon restart, authentication change, or tool-call replay is added; recovery remains separate I2 work.
+- A returning dependency cannot restart a terminal launcher. Only the attach-mode Tailscale CLI is eligible for bounded automatic replacement; no backend, OpenAI connection, or system daemon is restarted, and no authentication change or tool-call replay is added.
 
 ### F3 local verification and limits
 
@@ -142,9 +142,37 @@ F1–F3 are complete locally, not end-to-end public hardening. Native Tailscale 
 
 ### I1 local verification status
 
-The focused invocation passed 62 checks, including both attach modes, real backend restart with updated synthetic project aliases through a local proxy, optional/configured authentication, cancellation, conflict refusal, independent teardown, and existing standalone regressions. Both actual npm attach commands passed rejection-only CLI smoke checks.
+The historical I1 focused invocation passed 62 checks, including both attach modes, real backend restart with updated synthetic project aliases through a local proxy, optional/configured authentication, cancellation, conflict refusal, independent teardown, and standalone regressions. Both actual npm attach commands passed rejection-only CLI smoke checks. The later I2 invocation below reran the affected behavior with recovery enabled.
 
 The independent lifecycle smoke passed after a separately approved correction to its throwaway harness. It used the production standalone and attach APIs, observed HTTP 502 while the backend was down, then read the changed project aliases after restarting the backend at the same endpoint with the companion unchanged. Manual companion stop preserved the backend and controlled tunnel fixture; final owned teardown removed temporary state. The original pre-execution harness syntax failure remains recorded. I1 is locally accepted; native Tailscale daemon/public-route behavior and an actual agent's continuation after an error remain unverified. See [the I1 evidence](../notes/TUNNEL_REPORT.md#i1-attach-only-implementation-evidence) for outcomes and proof limits.
+
+### Automatic recovery for attach-only commands
+
+`npm run attach:serve` and `npm run attach:funnel` automatically replace their owned Tailscale CLI after an unexpected exit following successful attachment, including exit zero. The standalone `start:*` commands keep their existing fail-stop behavior.
+
+| Limit | Behavior |
+| --- | --- |
+| Replacement allowance | Three attempts for the entire companion invocation. The original attachment does not count; failed replacement startups do. Successful recovery never replenishes attempts. |
+| Delay before replacement | 1 second for attempt 1, 2 seconds for attempt 2, 4 seconds for attempt 3, after confirming prior owned cleanup. |
+| Episode deadline | 30 seconds from the unexpected exit, including cleanup, delays, preflight, and route readiness. The final five seconds are reserved for cleanup. Failed replacements do not reset the clock. |
+| Later failure after restoration | A new episode clock, but only the unused invocation-wide attempts remain. A fourth loss after three successful replacements is terminal. |
+| Non-retryable outcomes | Invalid/missing executable, recognized authentication/policy/configuration errors, listener conflicts, failed daemon preflight, or unverified child/route cleanup. |
+
+Before replacement, the launcher confirms the old owned child tree and foreground route are gone, then rechecks daemon readiness and listener availability. It never adopts another route, globally resets Serve/Funnel, or retries uncertain cleanup against an old PID.
+
+Recovery does not repeat initial MCP verification or wait for the backend to return. It can restore the route while the backend is down; requests fail until the operator restarts MCP at the same endpoint. Later requests then reach its updated project configuration. No failed or in-flight request is replayed.
+
+Each replacement prints one attempt message, then a route-restored confirmation on success. For Funnel:
+
+```text
+[orchestrator] Tailscale Funnel recovery attempt 1/3.
+[orchestrator] Tailscale Funnel route restored. Press Ctrl+C to stop the companion.
+```
+
+Serve uses `Tailscale Serve` in those messages. Route restoration is not a public/client or ongoing backend-health claim. Exhaustion or terminal errors report failure and exit nonzero. Ctrl+C cancels pending recovery, waits for bounded owned cleanup, and prevents late replacements; it does not stop MCP or `tunnel-client`.
+
+The single I2 focused invocation passed 76 checks, including actual 1/2/4-second delays, three successful restoration cycles, attempt/time exhaustion, terminal refusal, backend-independent recovery, and stop races. An independent local recovery smoke also passed, including updated project discovery after manual backend restart and manual companion stop preserving the backend/tunnel fixture. These used real loopback processes and controlled route/session fixtures, not native Tailscale or live OpenAI/agents. See [I2 evidence](../notes/TUNNEL_REPORT.md#i2-bounded-attach-only-recovery-evidence).
+
 
 
 ---
@@ -210,7 +238,7 @@ Exit code `0` means the daemon is connected, the intended route is configured, a
 
 Tailscale launcher output retains startup, failure, and closure diagnostics even with verbose forwarding disabled. It emits fixed categories rather than raw external text, deduplicates them, caps each child at 16 diagnostic categories, and bounds pending input to 4 KiB per stream. Raw credentials, identities, URLs, and local paths are withheld even in verbose mode. Configured endpoint URLs in intentional status output still contain the hostname/path; treat that output as private.
 
-The status helper alone does not prove runtime ownership. Standalone and attach-only launchers separately track their owned CLI and newly observed foreground session. Only standalone launchers own a backend; attach-only launchers leave the borrowed backend untouched. Neither status nor launcher configuration proof establishes public reachability. No persistence, mandatory authentication, or automatic recovery is added.
+The status helper alone does not prove runtime ownership. Standalone and attach-only launchers separately track their owned CLI and newly observed foreground session. Only standalone launchers own a backend; attach-only launchers leave the borrowed backend untouched. Neither status nor launcher configuration proof establishes public reachability. Attach-only CLI recovery is bounded as documented above; no persistence or mandatory authentication is added.
 
 ---
 

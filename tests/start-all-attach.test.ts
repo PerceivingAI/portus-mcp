@@ -382,22 +382,6 @@ test("attach-only real CLI spawn failure cleans up without stopping borrowed bac
   await assertAliases(f.url(), "", ["before"]);
 });
 
-test("attach-only unexpected zero CLI exit is failure with bounded owned cleanup", { timeout: 25000 }, async t => {
-  const initial = route(9999, "serve", 8443);
-  const f = await fixture(t, { initial });
-  const backend = await f.startBackend();
-  const launcher = f.makeLauncher();
-  await launcher.start();
-  await f.proxyReady();
-  f.proxy().send({ type: "exit" });
-  const terminal = await deadline(launcher.completion, 6000, "unexpected CLI exit cleanup");
-  assert.equal(terminal.state, "failed");
-  assert.equal(terminal.exitCode, 1);
-  assert.equal(terminal.cleanup, "confirmed");
-  assert.deepEqual(f.state(), initial);
-  assert.equal(backend.exitCode, null);
-  await assertAliases(f.url(), "", ["before"]);
-});
 
 test("attach-only intentional stop cancels an in-flight initial probe without exposure", { timeout: 10000 }, async t => {
   const f = await fixture(t);
