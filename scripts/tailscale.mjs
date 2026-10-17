@@ -321,7 +321,6 @@ export function monitorTailscaleProcess(proc, { report, verbose = false, onAnnou
     else if (/connection refused|backend.*(?:fail|unreach)/i.test(text)) emit("backend", "Tailscale reported an unreachable backend; verify local MCP separately.");
     else if (/error|fail|cannot|unable|fatal/i.test(text)) emit("error", "Tailscale reported a CLI error; raw details were withheld to protect credentials and paths.");
     else if (/available on|https:\/\//i.test(text)) {
-      emit("announced", "Tailscale announced a listener; configuration and public reachability are not implied.");
       if (!announced) { announced = true; onAnnounced?.(); }
     }
     else if (verbose && text.trim()) emit("other", "Tailscale produced additional output; raw identifiers and paths were withheld.");
@@ -343,7 +342,6 @@ export function monitorTailscaleProcess(proc, { report, verbose = false, onAnnou
     stream.on("data", (chunk) => consume(decoder.write(chunk)));
     stream.on("end", () => { consume(decoder.end()); if (pending) line(pending); });
   }
-  proc.once("spawn", () => emit("spawn", "Tailscale CLI started; route ownership and public MCP remain unverified."));
   proc.once("error", (error) => emit("spawn-error", `Tailscale CLI could not start [${["ENOENT", "EACCES", "EPERM"].includes(error.code) ? error.code : "spawn-error"}]; check the configured binary.`));
   proc.once("close", (code, signal) => emit("closed", `Tailscale CLI closed (${code === null ? "signal" : `exit ${code}`}${signal ? ", signalled" : ""}); no automatic recovery was attempted.`));
 }

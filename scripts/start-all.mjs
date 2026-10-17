@@ -422,7 +422,6 @@ export function createStandaloneLauncher({
         lease = findOwnedTailscaleRoute(baseline, config, { hostname, host, port, mcpPath, mode });
         if (lease) {
           phase = "running";
-          log(mode, color, "Owned foreground listener 443 configured; public MCP remains unverified.");
           return { backend, external, route: lease.route };
         }
         await delay(100, undefined, { signal: controller.signal });
@@ -445,6 +444,10 @@ export function createStandaloneLauncher({
 
 async function main() {
   const mode = process.argv.find((arg) => arg.startsWith("--"))?.slice(2) || "tunnel";
+  const host = process.env.PORTUS_MCP_HOST || "127.0.0.1";
+  const port = process.env.PORTUS_MCP_PORT || "8789";
+  const mcpPath = process.env.PORTUS_MCP_PATH || "/mcp";
+  const profile = process.env.PORTUS_TUNNEL_PROFILE || "portus-local";
   const launcher = createStandaloneLauncher({ mode });
   const requestShutdown = () => {
     log("orchestrator", "33", "Stopping owned processes and awaiting bounded teardown.");
@@ -452,6 +455,20 @@ async function main() {
   };
   process.on("SIGINT", requestShutdown);
   process.on("SIGTERM", requestShutdown);
+
+  console.log("==================================================");
+  console.log(`  Portus MCP Orchestrator (Mode: ${mode})`);
+  console.log(`  • Server:  http://${host}:${port}${mcpPath}`);
+  if (mode === "tunnel") {
+    console.log(`  • Service: OpenAI tunnel-client (Profile: ${profile})`);
+  } else if (mode === "funnel") {
+    console.log(`  • Service: Tailscale Funnel (Port: ${port})`);
+  } else if (mode === "serve") {
+    console.log(`  • Service: Tailscale Serve (Port: ${port})`);
+  }
+  console.log("  Press Ctrl+C to stop all processes cleanly.");
+  console.log("==================================================");
+
   try {
     try { await launcher.start(); } catch { /* Startup outcome is preserved in completion. */ }
     const result = await launcher.completion;
