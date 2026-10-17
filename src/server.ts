@@ -209,8 +209,13 @@ export function startServer(): void {
   const host = optionalEnv("PORTUS_MCP_HOST", "127.0.0.1");
   const port = Number(optionalEnv("PORTUS_MCP_PORT", "8789"));
   const mcpPath = optionalEnv("PORTUS_MCP_PATH", "/mcp");
-  createHttpServer(mcpPath).listen(port, host, () => {
+  const server = createHttpServer(mcpPath);
+  server.listen(port, host, () => {
     console.log(`portus-mcp MCP server listening on http://${host}:${port}${mcpPath}`);
+    const address = server.address();
+    if (process.connected && process.send && address && typeof address === "object") {
+      process.send({ type: "portus-mcp:listening", pid: process.pid, host, port: address.port, mcpPath });
+    }
   });
 }
 

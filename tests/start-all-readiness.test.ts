@@ -1,71 +1,55 @@
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { createServer, type RequestListener } from "node:http";
+import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { waitForMcpReady } from "../scripts/start-all.mjs";
 
-
-async function listen(handler: RequestListener) {
-  const server = createServer(handler);
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+async function reservePort() {
+  const server = createServer();
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   assert(address && typeof address === "object");
-  return {
-    server,
-    url: `http://127.0.0.1:${address.port}/secret/mcp`
-  };
+  await new Promise<void>((resolve,reject) => server.close(error => error ? reject(error) : resolve()));
+  return address.port;
 }
 
-test("orchestrator waits for the Portus MCP readiness payload", async (t) => {
-  let probes = 0;
-  const { server, url } = await listen((_request, response) => {
-    probes += 1;
-    if (probes < 3) {
-      response.writeHead(503).end("starting");
-      return;
-    }
-    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
-      name: "portus-mcp",
-      status: "ok"
-    }));
+async function ownedOrigin(t: TestContext, { token = "", validPayload = true, wrongAck = false } = {}) {
+  const port = await reservePort();
+  const source = `
+    const http=require('node:http');
+    const server=http.createServer((req,res)=>{
+      if(${JSON.stringify(token)} && req.headers.authorization!==${JSON.stringify(`Bearer ${token}`)}) return res.writeHead(401).end();
+      res.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify(${JSON.stringify(validPayload ? {name:"portus-mcp",status:"ok"} : {name:"other-service",status:"ok"})}));
+    });
+    server.listen(${port},'127.0.0.1',()=>process.send({type:'portus-mcp:listening',pid:process.pid${wrongAck ? "+1" : ""},host:'127.0.0.1',port:${port},mcpPath:'/private/mcp'}));
+  `;
+  const child = spawn(process.execPath,["-e",source],{stdio:["ignore","ignore","ignore","ipc"]});
+  t.after(async () => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const closed = new Promise<void>(resolve => child.once("close",() => resolve()));
+    child.kill();
+    await closed;
   });
-  t.after(() => server.close());
+  return {child,url:`http://127.0.0.1:${port}/private/mcp`};
+}
 
-  await waitForMcpReady({ url, timeoutMs: 1_000, retryDelayMs: 5 });
-  assert.equal(probes, 3);
+test("owned listener acknowledgement plus authenticated health confirms readiness", async t => {
+  const {child,url} = await ownedOrigin(t,{token:"readiness-secret"});
+  await waitForMcpReady({child,url,bearerToken:"readiness-secret",timeoutMs:3000});
 });
 
-test("orchestrator readiness probe supports configured bearer authentication", async (t) => {
-  const { server, url } = await listen((request, response) => {
-    if (request.headers.authorization !== "Bearer readiness-secret") {
-      response.writeHead(401).end("unauthorized");
-      return;
-    }
-    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
-      name: "portus-mcp",
-      status: "ok"
-    }));
-  });
-  t.after(() => server.close());
-
-  await waitForMcpReady({
-    url,
-    bearerToken: "readiness-secret",
-    timeoutMs: 1_000,
-    retryDelayMs: 5
-  });
+test("owned readiness still rejects incorrect authentication", async t => {
+  const {child,url} = await ownedOrigin(t,{token:"readiness-secret"});
+  await assert.rejects(waitForMcpReady({child,url,bearerToken:"wrong",timeoutMs:3000}),/HTTP 401/);
 });
 
-test("orchestrator fails instead of launching dependents when Portus never becomes ready", async (t) => {
-  const { server, url } = await listen((_request, response) => {
-    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
-      name: "another-service",
-      status: "ok"
-    }));
-  });
-  t.after(() => server.close());
+test("a different payload or child identity cannot confirm owned readiness", async t => {
+  const first = await ownedOrigin(t,{validPayload:false});
+  await assert.rejects(waitForMcpReady({...first,timeoutMs:3000}),/not confirmed/);
+  const second = await ownedOrigin(t,{wrongAck:true});
+  await assert.rejects(waitForMcpReady({...second,timeoutMs:3000}),/different bound endpoint/);
+});
 
-  await assert.rejects(
-    waitForMcpReady({ url, timeoutMs: 100, retryDelayMs: 5 }),
-    /Timed out waiting for Portus MCP/
-  );
+test("an HTTP endpoint alone cannot supply process ownership", async () => {
+  await assert.rejects(waitForMcpReady({url:"http://127.0.0.1:8789/mcp"}),/private IPC channel/);
 });

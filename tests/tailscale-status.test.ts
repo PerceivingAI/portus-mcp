@@ -5,7 +5,8 @@ import { createServer, type RequestListener } from "node:http";
 import path from "node:path";
 import {
   inspectTailscaleConfig, inspectDaemon, collectTailscaleStatus, probeLocalMcp,
-  runTailscaleCommand, tailscaleEndpoint, tailscaleStatusExitCode
+  runTailscaleCommand, tailscaleEndpoint, tailscaleStatusExitCode,
+  assertTailscaleListenerFree, findOwnedTailscaleRoute
 } from "../scripts/tailscale.mjs";
 
 const hostname = "fixture.example.ts.net";
@@ -194,3 +195,18 @@ for(const verbose of [false,true]) {
     assert.ok(result.stdout.length < 4096);
   });
 }
+
+test("listener preflight refuses unknown schemas rather than assuming a free port", () => {
+  for (const value of [{NewSchema:{}},{Services:{"svc:unrelated":{}}},{TCP:{443:{HTTPS:"true"}}}]) {
+    assert.throws(() => assertTailscaleListenerFree(value), /unsupported or malformed/);
+  }
+});
+
+test("route ownership cannot be established after unrelated configuration changes", () => {
+  const unrelated = config({listener:8443,backend:"http://127.0.0.1:9999"});
+  const before = assertTailscaleListenerFree(unrelated);
+  const foreground = {owned:config({allowed:true})};
+  const changedBackground = config({listener:8443,backend:"http://127.0.0.1:9998"});
+  assert.throws(() => findOwnedTailscaleRoute(before,{...changedBackground,Foreground:foreground},{...endpoint,mode:"funnel"}), /Background.*changed/);
+  assert.throws(() => findOwnedTailscaleRoute(before,{...unrelated,Foreground:{...foreground,another:config({listener:10000})}},{...endpoint,mode:"funnel"}), /ambiguous/);
+});

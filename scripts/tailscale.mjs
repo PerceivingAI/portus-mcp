@@ -3,6 +3,7 @@ import { statSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { StringDecoder } from "node:string_decoder";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 
 const COMMAND_TIMEOUT_MS = 5_000;
@@ -21,11 +22,12 @@ export function resolveTailscalePath(env = process.env, platform = os.platform()
   return locations.find(isFile) ?? executable;
 }
 
-export function runTailscaleCommand(binary, args, { timeoutMs = COMMAND_TIMEOUT_MS, env = process.env } = {}) {
+export function runTailscaleCommand(binary, args, { timeoutMs = COMMAND_TIMEOUT_MS, env = process.env, signal } = {}) {
   return new Promise((resolve) => {
-    execFile(binary, args, { encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: MAX_COMMAND_BYTES, windowsHide: true, env }, (error, stdout) => {
+    execFile(binary, args, { encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: MAX_COMMAND_BYTES, windowsHide: true, env, signal }, (error, stdout) => {
       if (error) {
         const reason = error.code === "ENOENT" ? "cli-unavailable"
+          : error.code === "ABORT_ERR" ? "command-cancelled"
           : error.code === "EACCES" || error.code === "EPERM" ? "cli-permission-denied"
           : error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? "command-output-limit"
           : error.killed ? "command-timeout" : "command-failed";
@@ -161,6 +163,61 @@ export function inspectTailscaleConfig(config, { hostname, host = "127.0.0.1", p
   if (matches.length > 1) return { state: "ambiguous", reason: "multiple-matching-routes", matchCount: matches.length };
   if (matches.length === 0) return { state: hasConfiguration ? "mismatch" : "absent", reason: "no-matching-endpoint" };
   return { state: "configured", ...matches[0], ownership: "not-verified" };
+}
+
+export function validateTailscaleBind(env = process.env) {
+  const host = env.PORTUS_MCP_HOST || "127.0.0.1";
+  const port = env.PORTUS_MCP_PORT || "8789";
+  if (host !== "127.0.0.1") throw new Error("Tailscale standalone modes require PORTUS_MCP_HOST=127.0.0.1; other binds do not match the IPv4 loopback proxy target.");
+  if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error("Tailscale standalone modes require a valid local backend port.");
+}
+
+function parsedServeConfig(config) {
+  const parsed = serveSchema.safeParse(config);
+  if (!parsed.success) throw new Error("Tailscale configuration is unsupported or malformed; refusing to change any listener.");
+  return parsed.data;
+}
+
+function usesListener(config, listener) {
+  return Object.hasOwn(config.TCP ?? {}, String(listener)) ||
+    Object.keys(config.Web ?? {}).some((key) => key.endsWith(`:${listener}`)) ||
+    Object.keys(config.AllowFunnel ?? {}).some((key) => key.endsWith(`:${listener}`));
+}
+
+export function assertTailscaleListenerFree(config, listener = 443) {
+  const parsed = parsedServeConfig(config);
+  if ([parsed, ...Object.values(parsed.Foreground ?? {})].some((value) => usesListener(value, listener))) {
+    throw new Error(`Tailscale listener ${listener} already has unowned configuration; refusing to replace or adopt it.`);
+  }
+  return parsed;
+}
+
+function listenerContent(config) {
+  return { TCP: config.TCP ?? {}, Web: config.Web ?? {}, AllowFunnel: config.AllowFunnel ?? {}, Services: config.Services ?? {} };
+}
+
+export function findOwnedTailscaleRoute(before, current, endpoint) {
+  const after = parsedServeConfig(current);
+  if (!isDeepStrictEqual(listenerContent(before), listenerContent(after))) throw new Error("Background Tailscale configuration changed during startup; ownership is not established.");
+  for (const [key, value] of Object.entries(before.Foreground ?? {})) {
+    if (!isDeepStrictEqual(value, after.Foreground?.[key])) throw new Error("An unrelated foreground route changed during startup; ownership is not established.");
+  }
+  const added = Object.keys(after.Foreground ?? {}).filter((key) => !Object.hasOwn(before.Foreground ?? {}, key));
+  if (!added.length) return undefined;
+  if (added.length !== 1) throw new Error("Multiple new Tailscale sessions appeared; route ownership is ambiguous.");
+  const route = inspectTailscaleConfig({ Foreground: { [added[0]]: after.Foreground[added[0]] } }, endpoint);
+  if (route.state !== "configured" || route.listenerPort !== 443 || route.exposure !== (endpoint.mode === "funnel" ? "public" : "private")) {
+    throw new Error("The new foreground route does not match the owned Portus endpoint.");
+  }
+  return { session: added[0], route };
+}
+
+export function tailscaleForegroundReleased(before, current, ownedSession) {
+  const after = parsedServeConfig(current);
+  if (ownedSession) return !Object.hasOwn(after.Foreground ?? {}, ownedSession);
+  // Shutdown can race route creation before its session is confirmed. Never delete it;
+  // wait for the CLI watch to release any new foreground use of the selected listener.
+  return !Object.entries(after.Foreground ?? {}).some(([key, value]) => !Object.hasOwn(before.Foreground ?? {}, key) && usesListener(value, 443));
 }
 
 async function jsonResponse(response) {

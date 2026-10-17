@@ -1,6 +1,6 @@
 # Tailscale Integration & Setup Guide
 
-**Updated:** 2026-10-17T06:14:05Z
+**Updated:** 2026-10-17T06:33:52Z
 
 This guide is the authoritative reference for setting up, configuring, and using **Tailscale** (Tailscale Serve & Tailscale Funnel) with **Portus MCP**.
 
@@ -11,8 +11,8 @@ This guide is the authoritative reference for setting up, configuring, and using
 Portus MCP runs locally as a Streamable HTTP Model Context Protocol server.
 
 * **Default Local Endpoint**: `http://127.0.0.1:8789/mcp`
-* **Local Protocol**: Remains plain `http://` because loopback (`127.0.0.1`) traffic is memory-isolated within the host OS kernel. External proxies handle TLS at the network/cloud edge.
-* **Compatibility Invariant**: Tailscale integrations work in parallel with OpenAI `tunnel-client` without requiring changes to local `tunnel-client` daily workflows.
+* **Local protocol**: The backend uses plain HTTP on loopback. For Serve/Funnel, HTTPS terminates in the local Tailscale daemon, not at the public Funnel relay. The relay forwards encrypted TCP.
+* **Standalone ownership**: Each `start:tunnel`, `start:serve`, or `start:funnel` wrapper starts and owns its own backend. Do not run two wrappers against the same bind/port. OpenAI's default command and authentication contract remain unchanged; attach-only Tailscale operation is not implemented.
 * **Authentication**: Bearer authentication (`PORTUS_MCP_BEARER_TOKEN`) is optional for private Serve/tunnel usage, but strongly recommended when exposing Portus to the public internet via Tailscale Funnel.
 ---
 
@@ -41,6 +41,8 @@ npm run start:serve
 ```
 *(Spawns both Portus MCP and `tailscale serve 8789` together in one terminal).*
 
+The standalone wrapper requires `PORTUS_MCP_HOST=127.0.0.1`, a connected daemon, and no existing configuration on external listener `443`. It refuses unknown configuration, occupied listeners, and borrowed backends, even when they appear to be another Portus instance. A private IPC acknowledgement from the spawned backend must confirm its bound listener before exposure starts.
+
 #### Option B: Two-Terminal Setup
 1. Terminal 1: `npm start`
 2. Terminal 2: `tailscale serve 8789`
@@ -50,11 +52,13 @@ npm run start:serve
    ```
 4. Enter this URL into Codex Desktop, Cursor, or your secondary device's MCP client configuration.
 
-### Stopping or Resetting Serve
-```bash
-tailscale serve off
-```
-*Note: Serve and Funnel cannot be concurrently configured on the same port. Running `tailscale serve 8789` will replace any existing Funnel configuration on port 8789.*
+### Stopping Serve safely
+
+Press Ctrl+C in the owning launcher terminal. The wrapper awaits termination of its owned process trees and release of its foreground watch-session configuration, with a five-second teardown deadline. If confirmation fails, it reports failure; it does not reset the daemon or delete unrelated routes.
+
+For the two-terminal workflow, stop the manually started foreground CLI in its own terminal. That CLI and backend are not adopted by another launcher. Do not use global Serve/Funnel reset/off commands as routine recovery.
+
+Serve and Funnel cannot share the same external listener, normally `443`. Backend port `8789` is not that listener. The wrapper refuses to replace existing listener configuration; direct manual CLI commands do not inherit these launcher guards.
 
 ---
 
@@ -69,6 +73,8 @@ Use **Tailscale Funnel** when a cloud-hosted service (such as **Perplexity AI Cu
 npm run start:funnel
 ```
 *(Spawns both Portus MCP and `tailscale funnel 8789` together in one terminal).*
+
+This is standalone operation with the same loopback, connected-daemon, free-listener, and owned-backend requirements as Serve. Public authentication and actual-client compatibility must be established separately before exposing action-capable tools. Starting this wrapper alongside an OpenAI wrapper on the same backend port is not an attach workflow.
 
 #### Option B: Two-Terminal Setup
 1. Terminal 1: `npm start`
@@ -93,10 +99,21 @@ PORTUS_MCP_PATH=/secret-key-1234/mcp
 * **Client URL**: `https://<machine-name>.<tailnet-name>.ts.net/secret-key-1234/mcp`
 * **Security Notice**: A secret route path is **not authentication**. Secret paths can leak in browser history, logs, referrers, error reports, or screenshots. Do not rely on secret paths alone as security for endpoints with sensitive tool capabilities. Require a strong `PORTUS_MCP_BEARER_TOKEN` or OAuth for production deployment.
 
-### Stopping or Resetting Funnel
-```bash
-tailscale funnel off
-```
+### Stopping Funnel safely
+
+Press Ctrl+C in the terminal that owns foreground Funnel. The launcher waits for its owned process trees and observed foreground session to disappear within the five-second teardown budget. It never uses a global reset/off command to remove another service.
+
+No `--bg` flag or persistent route is added. Background services configured elsewhere remain their operator's responsibility. Manual CLI workflows must preserve unrelated listeners and must not start a second backend if Portus is already running.
+
+### Startup and shutdown guarantees
+
+- Tailscale standalone modes accept the literal bind `127.0.0.1`; wildcard, `localhost`, and IPv6 binds are rejected because the port-only proxy target is IPv4 loopback.
+- An occupied backend causes startup failure, not adoption or termination of the process already listening there. Repeated start fails clearly when resources are already owned elsewhere.
+- Listener configuration is inspected before backend startup and again immediately before starting the foreground CLI. Startup tracks one newly observed matching foreground session and rejects ambiguous or changed unrelated configuration.
+- Configuration reads and the CLI's write are not a cross-operator transaction. Do not concurrently reconfigure Serve/Funnel while a launcher is starting or stopping. Observed unrelated changes cause failure, not global rollback.
+- Shutdown stops only child trees started by that launcher. Windows uses awaited tree termination; foreground release is then confirmed with bounded read-only configuration observations. No arbitrary process is adopted because it answers a health URL.
+- These are local ownership guarantees. Actual daemon watch-session behavior, public reachability, and live OpenAI/client interoperability require the separately planned live verification. Windows process-tree and isolated route-fixture behavior were exercised; equivalent POSIX behavior was not exercised.
+- Unexpected failures after successful startup and recovery policy remain separate F3/I2 work. This change adds no restarts or tool-call replay.
 ---
 
 ## 5. Environment Variables
@@ -160,7 +177,7 @@ Exit code `0` means the daemon is connected, the intended route is configured, a
 
 Tailscale launcher output retains startup, failure, and closure diagnostics even with verbose forwarding disabled. It emits fixed categories rather than raw external text, deduplicates them, caps each child at 16 diagnostic categories, and bounds pending input to 4 KiB per stream. Raw credentials, identities, URLs, and local paths are withheld even in verbose mode. Configured endpoint URLs in intentional status output still contain the hostname/path; treat that output as private.
 
-These are diagnostic fixes only. They add no automatic restart, attach-only mode, persistent route, public authentication design, or claim of continuous reachability.
+The status helper alone does not prove runtime ownership. F2's standalone launcher separately tracks the backend child and the newly observed foreground session during its own lifecycle. Neither status nor launcher configuration proof establishes public reachability. No attach-only mode, persistence, public authentication design, or automatic recovery is added.
 
 ---
 
@@ -219,7 +236,7 @@ curl -i \
 
 ## 10. Summary & Best Practices
 
-1. **Keep Local Host as `127.0.0.1`**: Keeps loopback memory-isolated while external proxies handle HTTPS edge encryption.
+1. **Keep Local Host as `127.0.0.1`**: Keep the backend on loopback; the local Tailscale daemon terminates external HTTPS.
 2. **Daily Driver (`tunnel-client`)**: Leave `tunnel-client` connecting locally to `http://127.0.0.1:8789/mcp` for ChatGPT daily use.
 3. **Use Tailscale Serve for Private Devices**: Run `tailscale serve 8789` for laptops, phones, or Cursor/Codex Desktop on other machines. Tailscale identity headers apply here.
 4. **Use Tailscale Funnel for Perplexity**: Run `tailscale funnel 8789` when exposing an endpoint to cloud AI agents like Perplexity. Require a `PORTUS_MCP_BEARER_TOKEN`.
