@@ -23,6 +23,8 @@ Process-ownership regressions exercise Windows descendant-tree cleanup and POSIX
 
 The full outage-deadline recovery case runs in its own file so its real wait overlaps other tests. Native process cleanup and production recovery deadlines/backoffs are unchanged.
 
+Stream timing tests advance only the application's one-second event poll while HTTP/socket timers and bounded I/O readiness stay native. A real-timer background stream failure case and native recovery/deadline cases remain in the suite.
+
 After compilation, CI also runs an execution-session smoke outside the test runner. It checks that successful and failed commands expose their complete stdout/stderr when terminal status is returned, then removes the disposable state.
 
 CI caches installed dependencies only for an exact match of OS, architecture, Node version/ABI, runner image, and package/lockfile hashes. Cache misses run `npm ci`, including lifecycle scripts and auditing. Exact hits reuse that completed installation and run a fresh `npm audit --audit-level=none`, retaining non-blocking vulnerability-severity reporting. Installed snapshots are saved only after the job succeeds; no partial-key or cross-OS reuse is enabled.

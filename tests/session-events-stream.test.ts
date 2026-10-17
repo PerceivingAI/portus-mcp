@@ -5,10 +5,8 @@ import { get, ServerResponse } from "node:http";
 import type { IncomingMessage } from "node:http";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
+import { setTimeout as waitForIO } from "node:timers/promises";
 
-// Keep bounded socket-readiness waits real while application timers are advanced.
-const waitForIO = delay;
 function pollClock(t: TestContext) {
   // Control the application's one-second poll, not HTTP/socket timers.
   const realTimeout = globalThis.setTimeout;
