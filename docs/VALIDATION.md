@@ -17,6 +17,8 @@ npm run flue:check
 
 GitHub Actions runs the standard checks on `ubuntu-latest` and `windows-latest` with Node.js 20. Both matrix jobs run to completion independently when either job fails.
 
+`npm test` enumerates the top-level `tests/*.test.ts` files in a Node launcher rather than relying on shell wildcard expansion. It keeps file concurrency at two and accepts Node test-runner options, for example `npm test -- --test-name-pattern="owned child exit"`.
+
 Process-ownership regressions exercise Windows descendant-tree cleanup and POSIX owned-process-group cleanup. The exit-order regression uses a real child with delayed application callbacks so native process reaping can proceed on either platform.
 
 ## Manual ChatGPT Verification
