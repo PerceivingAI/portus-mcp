@@ -11,16 +11,14 @@ permissions:
 
 jobs:
   test:
-    name: Test (${{ matrix.os }}, concurrency ${{ matrix.test-concurrency }})
+    name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        # Temporary same-revision comparison before selecting the CI default.
-        test-concurrency: [2, 4]
     env:
-      PORTUS_TEST_CONCURRENCY: ${{ matrix.test-concurrency }}
+      PORTUS_TEST_CONCURRENCY: 4
 
     steps:
       - name: Checkout
@@ -32,17 +30,30 @@ jobs:
           node-version: 24
           cache: npm
 
-      - name: Install dependencies
-        id: install
-        env:
-          npm_config_logs_dir: ${{ runner.temp }}/npm-install-logs
-        run: npm ci --timing
+      - name: Identify dependency runtime
+        id: runtime
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from "node:fs";
+          const identity = [process.version, process.versions.modules, process.arch, process.env.ImageOS, process.env.ImageVersion].join("-");
+          appendFileSync(process.env.GITHUB_OUTPUT, `identity=${identity}\n`);
+          NODE
 
-      - name: Report npm install timing
-        if: ${{ !cancelled() && (steps.install.outcome == 'success' || steps.install.outcome == 'failure') }}
-        env:
-          PORTUS_INSTALL_OUTCOME: ${{ steps.install.outcome }}
-        run: node scripts/report-install-timing.mjs "${{ runner.temp }}/npm-install-logs"
+      - name: Cache installed dependencies
+        id: dependencies
+        uses: actions/cache@v5
+        with:
+          path: node_modules
+          key: installed-v1-${{ runner.os }}-${{ steps.runtime.outputs.identity }}-${{ hashFiles('package-lock.json', 'package.json') }}
+
+      - name: Install dependencies
+        if: steps.dependencies.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Audit cached dependencies
+        if: steps.dependencies.outputs.cache-hit == 'true'
+        run: npm audit --audit-level=none
 
       - name: Type check
         run: npm run check

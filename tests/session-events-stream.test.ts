@@ -7,6 +7,13 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
+// Keep bounded socket-readiness waits real while application timers are advanced.
+const waitForIO = delay;
+function pollClock(t: TestContext) {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  return t.mock.timers;
+}
+
 const root = mkdtempSync(path.join(process.cwd(), ".session-events-stream-"));
 const state = path.join(root, "state");
 const project = path.join(root, "project");
@@ -33,7 +40,7 @@ function pending<T>() {
 }
 async function until<T>(probe: () => T, ready: (value: T) => boolean, label: string, milliseconds = 5000): Promise<T> {
   const end = Date.now() + milliseconds;
-  do { const value = probe(); if (ready(value)) return value; await delay(10); } while (Date.now() < end);
+  do { const value = probe(); if (ready(value)) return value; await waitForIO(10); } while (Date.now() < end);
   throw new Error(`Deadline waiting for ${label}`);
 }
 function seed(count: number) {
@@ -131,28 +138,36 @@ test.after(() => {
 
 test("empty application streams expose headers without emitting synthetic data", { timeout: 10000 }, async t => {
   seed(0);
+  const clock = pollClock(t);
   const { url } = await backend(t);
   const connection = connect(url); t.after(() => connection.stop());
   assert.equal((await connection.ready).statusCode, 200);
-  await delay(100);
+  clock.tick(1000);
+  await waitForIO(10);
   assert.deepEqual(connection.frames, []);
 });
 
 for (const blockAt of [1, 2]) {
   test(`backpressure at page frame ${blockAt} pauses delivery and resumes without gaps or duplicates`, { timeout: 15000 }, async t => {
     seed(5);
+    const clock = pollClock(t);
     const control = pressure(t, blockAt);
     const { url } = await backend(t);
     const connection = connect(url); t.after(() => connection.stop());
     await connection.ready;
     await frames(connection, blockAt);
     assert(control.held());
-    await delay(1200);
+    clock.tick(1200);
+    await waitForIO(10);
     assert.deepEqual(connection.frames.map(frame => frame.id), Array.from({ length: blockAt }, (_, index) => index + 1));
     assert.equal(control.writes(), blockAt);
     assert.equal(control.response()!.listenerCount("drain"), 1);
     // This resumes outside the request's policy scope, as a socket drain can.
     control.resume();
+    await frames(connection, 2);
+    clock.tick(1000);
+    await frames(connection, 4);
+    clock.tick(1000);
     await frames(connection, 5);
     assert.deepEqual(connection.frames.map(frame => frame.id), [1, 2, 3, 4, 5]);
     assert.deepEqual(connection.frames.map(frame => frame.data.data.value), [1, 2, 3, 4, 5]);
@@ -163,9 +178,12 @@ for (const blockAt of [1, 2]) {
 
 test("reconnect resumes from Last-Event-ID and an explicit query cursor takes precedence", { timeout: 15000 }, async t => {
   seed(5);
+  const clock = pollClock(t);
   const { url } = await backend(t);
   const byHeader = connect(url, "/events?sessionId=stream", { "last-event-id": "2" }); t.after(() => byHeader.stop());
-  await byHeader.ready; await frames(byHeader, 3);
+  await byHeader.ready; await frames(byHeader, 2);
+  clock.tick(1000);
+  await frames(byHeader, 3);
   assert.deepEqual(byHeader.frames.map(frame => frame.id), [3, 4, 5]);
   byHeader.stop(); await byHeader.closed;
   const byQuery = connect(url, "/events?sessionId=stream&afterSequence=3", { "last-event-id": "1" }); t.after(() => byQuery.stop());
@@ -176,6 +194,7 @@ test("reconnect resumes from Last-Event-ID and an explicit query cursor takes pr
 for (const phase of ["idle", "flowing", "blocked", "error"] as const) {
   test(`closing an ${phase} stream releases delivery waits and stops further output`, { timeout: 10000 }, async t => {
     seed(phase === "idle" ? 0 : 4);
+    const clock = pollClock(t);
     const control = pressure(t, phase === "blocked" || phase === "error" ? 1 : 999);
     const owner = await backend(t);
     const connection = connect(owner.url); t.after(() => connection.stop());
@@ -191,21 +210,25 @@ for (const phase of ["idle", "flowing", "blocked", "error"] as const) {
     await until(() => response.listenerCount("drain"), count => count === 0, "owned drain listener release");
     assert.equal(response.listenerCount("error"), 0);
     const before = control.writes();
-    await delay(1100);
+    clock.tick(1100);
+    await waitForIO(10);
     assert.equal(control.writes(), before);
+    clock.reset();
     await post(owner.url);
   });
 }
 
 test("unknown-session error frames retain HTTP 200 and obey backpressure", { timeout: 10000 }, async t => {
   seed(0);
+  const clock = pollClock(t);
   const control = pressure(t, 1);
   const { url } = await backend(t);
   const connection = connect(url, "/events?sessionId=missing"); t.after(() => connection.stop());
   assert.equal((await connection.ready).statusCode, 200);
   await frames(connection, 1);
   assert.equal(connection.frames[0]!.event, "error");
-  await delay(1200);
+  clock.tick(1200);
+  await waitForIO(10);
   assert.equal(control.writes(), 1);
   control.resume();
   await frames(connection, 2);
