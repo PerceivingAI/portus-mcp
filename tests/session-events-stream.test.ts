@@ -10,7 +10,17 @@ import { setTimeout as delay } from "node:timers/promises";
 // Keep bounded socket-readiness waits real while application timers are advanced.
 const waitForIO = delay;
 function pollClock(t: TestContext) {
+  const realTimeout = globalThis.setTimeout;
   t.mock.timers.enable({ apis: ["setTimeout"] });
+  const schedule = globalThis.setTimeout;
+  const trace = t.mock.method(globalThis, "setTimeout", function(callback: (...args: any[]) => void, milliseconds?: number, ...args: any[]) {
+    t.diagnostic(`stream-clock scheduled ${callback.name || "anonymous"} after ${milliseconds}`);
+    return schedule(function(...values: any[]) {
+      t.diagnostic(`stream-clock fired ${callback.name || "anonymous"}`);
+      callback(...values);
+    }, milliseconds, ...args);
+  });
+  t.after(() => { trace.mock.restore(); t.mock.timers.reset(); globalThis.setTimeout = realTimeout; });
   return t.mock.timers;
 }
 
@@ -121,7 +131,11 @@ function pressure(t: TestContext, blockAt: number) {
   return { response: () => response, writes: () => writes, held: () => held, resume() { assert(response && blocked); blocked = false; response.emit("drain"); } };
 }
 async function frames(connection: ReturnType<typeof connect>, count: number) {
-  await until(() => connection.frames.length, length => length >= count, `${count} complete SSE frames`);
+  try {
+    await until(() => connection.frames.length, length => length >= count, `${count} complete SSE frames`);
+  } catch (error) {
+    throw new Error(`${(error as Error).message}; received ${JSON.stringify(connection.frames)}`);
+  }
   return connection.frames;
 }
 async function post(url: string) {
