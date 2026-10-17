@@ -127,9 +127,14 @@ function pressure(t: TestContext, blockAt: number) {
   });
   return { response: () => response, writes: () => writes, held: () => held, resume() { assert(response && blocked); blocked = false; response.emit("drain"); } };
 }
-async function frames(connection: ReturnType<typeof connect>, count: number) {
+async function frames(connection: ReturnType<typeof connect>, count: number, clock?: ReturnType<typeof pollClock>) {
   try {
-    await until(() => connection.frames.length, length => length >= count, `${count} complete SSE frames`);
+    await until(() => {
+      // Socket callbacks can schedule the next poll after an earlier clock tick.
+      // Advance pending application time while still yielding to real I/O.
+      clock?.tick(1000);
+      return connection.frames.length;
+    }, length => length >= count, `${count} complete SSE frames`);
   } catch (error) {
     throw new Error(`${(error as Error).message}; received ${JSON.stringify(connection.frames)}`);
   }
@@ -175,11 +180,7 @@ for (const blockAt of [1, 2]) {
     assert.equal(control.response()!.listenerCount("drain"), 1);
     // This resumes outside the request's policy scope, as a socket drain can.
     control.resume();
-    await frames(connection, 2);
-    clock.runAll();
-    await frames(connection, 4);
-    clock.runAll();
-    await frames(connection, 5);
+    await frames(connection, 5, clock);
     assert.deepEqual(connection.frames.map(frame => frame.id), [1, 2, 3, 4, 5]);
     assert.deepEqual(connection.frames.map(frame => frame.data.data.value), [1, 2, 3, 4, 5]);
     connection.stop(); await connection.closed;
@@ -192,9 +193,7 @@ test("reconnect resumes from Last-Event-ID and an explicit query cursor takes pr
   const clock = pollClock(t);
   const { url } = await backend(t);
   const byHeader = connect(url, "/events?sessionId=stream", { "last-event-id": "2" }); t.after(() => byHeader.stop());
-  await byHeader.ready; await frames(byHeader, 2);
-  clock.runAll();
-  await frames(byHeader, 3);
+  await byHeader.ready; await frames(byHeader, 3, clock);
   assert.deepEqual(byHeader.frames.map(frame => frame.id), [3, 4, 5]);
   byHeader.stop(); await byHeader.closed;
   const byQuery = connect(url, "/events?sessionId=stream&afterSequence=3", { "last-event-id": "1" }); t.after(() => byQuery.stop());
