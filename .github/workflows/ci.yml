@@ -40,6 +40,55 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Compiled execution output smoke
+        shell: bash
+        timeout-minutes: 1
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+          import path from "node:path";
+          import { setTimeout as delay } from "node:timers/promises";
+          const root = mkdtempSync(path.join(process.cwd(), ".execution-output-smoke-"));
+          process.env.DOTENV_CONFIG_PATH = path.join(root, "empty.env");
+          writeFileSync(process.env.DOTENV_CONFIG_PATH, "");
+          process.env.PORTUS_MCP_POLICY_PATH = path.resolve("portus-mcp.policy.json");
+          process.env.PORTUS_MCP_STATE_DIR = path.join(root, "state");
+          process.env.PORTUS_MCP_PROJECTS = `fixture=${root}`;
+          const { loadPolicyConfig, createPolicySnapshot, runWithPolicyConfig } = await import("./dist/policy/policyConfig.js");
+          const { startExecutionSession, pollExecutionSession, terminateExecutionSession } = await import("./dist/runtime/executionSessions.js");
+          const policy = loadPolicyConfig();
+          policy.main_agent.permissions.allowedCommands = ["node"];
+          try {
+            await runWithPolicyConfig(createPolicySnapshot(policy), async () => {
+              for (const code of [0, 7]) {
+                const session = await startExecutionSession({
+                  projectAlias: "fixture", rootPath: root, command: "node", timeoutSecs: 5,
+                  args: ["-e", `process.stdout.write("smoke-out");process.stderr.write("smoke-err");process.exitCode=${code};`]
+                });
+                try {
+                  const deadline = Date.now() + 5000;
+                  let result;
+                  do {
+                    result = pollExecutionSession({ sessionId: session.sessionId, cursor: 0, stream: "both" });
+                    if (result.status !== "running") break;
+                    await delay(10);
+                  } while (Date.now() < deadline);
+                  assert.equal(result.status, code === 0 ? "completed" : "failed");
+                  assert.equal(result.exitCode, code);
+                  assert.equal(result.stdoutChunk, "smoke-out");
+                  assert.equal(result.stderrChunk, "smoke-err");
+                  console.log(JSON.stringify({ status: result.status, exitCode: code, outputReadable: true }));
+                } finally {
+                  await terminateExecutionSession(session.sessionId);
+                }
+              }
+            });
+          } finally {
+            rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+          }
+          NODE
+
       - name: Flue build check
         run: npm run flue:check
 

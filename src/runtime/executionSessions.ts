@@ -558,6 +558,8 @@ async function handleProcessClosed(
     clearTimeout(entry.drainTimer);
     entry.drainTimer = undefined;
   }
+  // Keep ownership until output is readable; polls must not reconcile this gap.
+  await closeExecutionOutput(entry);
   activeProcesses.delete(sessionId);
 
   const rec = entry.record;
@@ -589,8 +591,6 @@ async function handleProcessClosed(
     signal,
     ...(reconciliationReason ? { reconciliationReason } : {})
   });
-
-  await closeExecutionOutput(entry);
 }
 
 async function handleSessionTimeout(sessionId: string): Promise<void> {
@@ -635,6 +635,11 @@ async function handleSessionTimeout(sessionId: string): Promise<void> {
 
 export async function terminateExecutionSession(sessionId: string): Promise<PublicExecutionSession> {
   const entry = activeProcesses.get(sessionId);
+  if (entry?.finalized) {
+    // Native exit already won. Await its output before reporting completion.
+    await closeExecutionOutput(entry);
+    return toPublicExecutionSession(getExecutionSession(sessionId));
+  }
   if (!entry) {
     const record = getExecutionSession(sessionId);
     if (record.status === "running") {

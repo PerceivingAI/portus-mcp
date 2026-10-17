@@ -21,6 +21,8 @@ GitHub Actions runs the standard checks on `ubuntu-latest` and `windows-latest` 
 
 Process-ownership regressions exercise Windows descendant-tree cleanup and POSIX owned-process-group cleanup. The exit-order regression uses a real child with delayed application callbacks so native process reaping can proceed on either platform.
 
+After compilation, CI also runs an execution-session smoke outside the test runner. It checks that successful and failed commands expose their complete stdout/stderr when terminal status is returned, then removes the disposable state.
+
 ## Manual ChatGPT Verification
 
 Use ChatGPT to verify project discovery, file read/write/move/delete behavior, delete confirmation, package script execution, search, symbol search, path boundary enforcement, spawned-agent lifecycle, session events, cleanup, config inspection, permission inspection, and agent limit inspection.
