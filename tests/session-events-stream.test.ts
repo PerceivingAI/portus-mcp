@@ -11,16 +11,13 @@ import { setTimeout as delay } from "node:timers/promises";
 const waitForIO = delay;
 function pollClock(t: TestContext) {
   const realTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const schedule = globalThis.setTimeout;
-  const trace = t.mock.method(globalThis, "setTimeout", function(callback: (...args: any[]) => void, milliseconds?: number, ...args: any[]) {
-    t.diagnostic(`stream-clock scheduled ${callback.name || "anonymous"} after ${milliseconds}`);
-    return schedule(function(...values: any[]) {
-      t.diagnostic(`stream-clock fired ${callback.name || "anonymous"}`);
-      callback(...values);
-    }, milliseconds, ...args);
+  t.after(() => {
+    t.mock.timers.reset();
+    globalThis.setTimeout = realTimeout;
+    globalThis.clearTimeout = realClearTimeout;
   });
-  t.after(() => { trace.mock.restore(); t.mock.timers.reset(); globalThis.setTimeout = realTimeout; });
   return t.mock.timers;
 }
 
@@ -179,9 +176,9 @@ for (const blockAt of [1, 2]) {
     // This resumes outside the request's policy scope, as a socket drain can.
     control.resume();
     await frames(connection, 2);
-    clock.tick(1000);
+    clock.runAll();
     await frames(connection, 4);
-    clock.tick(1000);
+    clock.runAll();
     await frames(connection, 5);
     assert.deepEqual(connection.frames.map(frame => frame.id), [1, 2, 3, 4, 5]);
     assert.deepEqual(connection.frames.map(frame => frame.data.data.value), [1, 2, 3, 4, 5]);
@@ -196,7 +193,7 @@ test("reconnect resumes from Last-Event-ID and an explicit query cursor takes pr
   const { url } = await backend(t);
   const byHeader = connect(url, "/events?sessionId=stream", { "last-event-id": "2" }); t.after(() => byHeader.stop());
   await byHeader.ready; await frames(byHeader, 2);
-  clock.tick(1000);
+  clock.runAll();
   await frames(byHeader, 3);
   assert.deepEqual(byHeader.frames.map(frame => frame.id), [3, 4, 5]);
   byHeader.stop(); await byHeader.closed;
