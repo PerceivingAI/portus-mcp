@@ -1,6 +1,6 @@
 # Tailscale Integration & Setup Guide
 
-**Updated:** 2026-10-17T08:30:28Z
+**Updated:** 2026-10-17T09:33:09Z
 
 This guide is the authoritative reference for setting up, configuring, and using **Tailscale** (Tailscale Serve & Tailscale Funnel) with **Portus MCP**.
 
@@ -12,8 +12,9 @@ Portus MCP runs locally as a Streamable HTTP Model Context Protocol server.
 
 * **Default Local Endpoint**: `http://127.0.0.1:8789/mcp`
 * **Local protocol**: The backend uses plain HTTP on loopback. For Serve/Funnel, HTTPS terminates in the local Tailscale daemon, not at the public Funnel relay. The relay forwards encrypted TCP.
-* **Standalone ownership**: Each `start:tunnel`, `start:serve`, or `start:funnel` wrapper starts and owns its own backend. Do not run two wrappers against the same bind/port. OpenAI's default command and authentication contract remain unchanged; attach-only Tailscale operation is not implemented.
-* **Authentication**: Bearer authentication (`PORTUS_MCP_BEARER_TOKEN`) is optional for private Serve/tunnel usage, but strongly recommended when exposing Portus to the public internet via Tailscale Funnel.
+* **Standalone ownership**: Each `start:tunnel`, `start:serve`, or `start:funnel` wrapper starts and owns its own backend. Do not run two standalone wrappers against the same bind/port. OpenAI's default command and authentication contract remain unchanged.
+* **Attach-only ownership**: `attach:serve` and `attach:funnel` expose an existing backend without starting another MCP server or `tunnel-client`. Closing the companion leaves that backend and its owning launcher running.
+* **Authentication**: Bearer authentication (`PORTUS_MCP_BEARER_TOKEN`) is optional in every mode, including public Funnel. When configured, both the companion's initial protocol check and clients must use the configured bearer. Without application authentication, a publicly reachable Funnel endpoint makes the exposed tools available to public callers.
 ---
 
 ## 2. Choosing Between Serve and Funnel
@@ -43,10 +44,10 @@ npm run start:serve
 
 The standalone wrapper requires `PORTUS_MCP_HOST=127.0.0.1`, a connected daemon, and no existing configuration on external listener `443`. It refuses unknown configuration, occupied listeners, and borrowed backends, even when they appear to be another Portus instance. A private IPC acknowledgement from the spawned backend must confirm its bound listener before exposure starts.
 
-#### Option B: Two-Terminal Setup
-1. Terminal 1: `npm start`
-2. Terminal 2: `tailscale serve 8789`
-3. Copy the private HTTPS URL displayed:
+#### Option B: Attach to an Existing Backend
+1. Terminal 1: keep `npm run start:tunnel` running, or start Portus separately with `npm start`.
+2. Terminal 2: `npm run attach:serve`.
+3. Run `npm run tailscale:status` to read the configured private HTTPS URL. Its default shape is:
    ```text
    https://<machine-name>.<tailnet-name>.ts.net/mcp
    ```
@@ -56,7 +57,7 @@ The standalone wrapper requires `PORTUS_MCP_HOST=127.0.0.1`, a connected daemon,
 
 Press Ctrl+C in the owning launcher terminal. The wrapper awaits termination of its owned process trees and release of its foreground watch-session configuration, with a five-second teardown deadline. If confirmation fails, it reports failure; it does not reset the daemon or delete unrelated routes.
 
-For the two-terminal workflow, stop the manually started foreground CLI in its own terminal. That CLI and backend are not adopted by another launcher. Do not use global Serve/Funnel reset/off commands as routine recovery.
+For attach-only operation, Ctrl+C in terminal 2 stops only the owned Tailscale CLI and foreground route. It never stops the borrowed backend or `tunnel-client`. Direct manual CLI operation remains possible but does not inherit launcher checks. Do not use global Serve/Funnel reset/off commands as routine recovery.
 
 Serve and Funnel cannot share the same external listener, normally `443`. Backend port `8789` is not that listener. The wrapper refuses to replace existing listener configuration; direct manual CLI commands do not inherit these launcher guards.
 
@@ -74,20 +75,20 @@ npm run start:funnel
 ```
 *(Spawns both Portus MCP and `tailscale funnel 8789` together in one terminal).*
 
-This is standalone operation with the same loopback, connected-daemon, free-listener, and owned-backend requirements as Serve. Public authentication and actual-client compatibility must be established separately before exposing action-capable tools. Starting this wrapper alongside an OpenAI wrapper on the same backend port is not an attach workflow.
+This is standalone operation with the same loopback, connected-daemon, free-listener, and owned-backend requirements as Serve. Starting this wrapper alongside an OpenAI wrapper on the same backend port is not an attach workflow; use `attach:funnel` below. Authentication remains optional, and actual-client compatibility requires separate verification.
 
-#### Option B: Two-Terminal Setup
-1. Terminal 1: `npm start`
-2. Terminal 2: `tailscale funnel 8789`
-3. Copy the public HTTPS URL displayed by Tailscale:
+#### Option B: Attach to an Existing Backend
+1. Terminal 1: keep `npm run start:tunnel` running, or start Portus separately with `npm start`.
+2. Terminal 2: `npm run attach:funnel`.
+3. Run `npm run tailscale:status` to read the configured public HTTPS URL. Its default shape is:
    ```text
    https://<machine-name>.<tailnet-name>.ts.net/mcp
    ```
 4. In Perplexity AI:
    * Go to **Settings** -> **Connectors** -> **Add Custom Remote Connector**.
    * Set **URL**: `https://<machine-name>.<tailnet-name>.ts.net/mcp`
-   * Set **Auth**: Select *Bearer Token* and enter your configured `PORTUS_MCP_BEARER_TOKEN`.
-   * Do not select *No Auth* for a public Funnel endpoint except during a brief, controlled protocol test with no sensitive, privileged, or action-capable tools exposed.
+   * Set **Auth** to *Bearer Token* when `PORTUS_MCP_BEARER_TOKEN` is configured, and supply the same token.
+   * Otherwise use the client's unauthenticated option. Application authentication is optional; without it, anyone who can reach the public endpoint can access the exposed tools.
 
 ### Development-Only Path Obscurity
 If you test Funnel without a Bearer token, setting a secret route path in `.env` reduces automated scanner traffic:
@@ -97,7 +98,7 @@ PORTUS_MCP_PATH=/secret-key-1234/mcp
 ```
 
 * **Client URL**: `https://<machine-name>.<tailnet-name>.ts.net/secret-key-1234/mcp`
-* **Security Notice**: A secret route path is **not authentication**. Secret paths can leak in browser history, logs, referrers, error reports, or screenshots. Do not rely on secret paths alone as security for endpoints with sensitive tool capabilities. Require a strong `PORTUS_MCP_BEARER_TOKEN` or OAuth for production deployment.
+* **Security Notice**: A secret route path is **not authentication**. The root health response advertises the configured MCP path, and paths can also leak through logs, history, or screenshots. A bearer is optional; configure one if you want application-level access control.
 
 ### Stopping Funnel safely
 
@@ -105,15 +106,28 @@ Press Ctrl+C in the terminal that owns foreground Funnel. The launcher waits for
 
 No `--bg` flag or persistent route is added. Background services configured elsewhere remain their operator's responsibility. Manual CLI workflows must preserve unrelated listeners and must not start a second backend if Portus is already running.
 
+### Attach-only operation and backend restarts
+
+The companion initially verifies the configured loopback endpoint with MCP initialization, initialized notification, and tool discovery. A health response alone is insufficient. An unavailable/wrong backend, invalid configured bearer, occupied external listener, or unknown configuration prevents attachment without starting another backend.
+
+After that verification and owned foreground-route confirmation succeed, the companion prints one message: `[orchestrator] Tailscale Funnel attached to the existing MCP backend. Press Ctrl+C to stop the companion.` Private Serve prints `Tailscale Serve` instead. The initial banner alone is not this confirmation; the message describes successful initial attachment, not continuous backend health or verified public reachability.
+
+After attachment, the companion does not monitor backend lifetime or health. If you stop terminal 1, requests through Tailscale fail while MCP is down, but terminal 2 and its foreground route remain running. Restart terminal 1 at the same host, port, and MCP path; subsequent requests use the restarted backend and its updated project list. No restart or reattachment of terminal 2 is needed. Existing in-flight requests or streams can fail; they are not replayed, and client session resumption is not guaranteed.
+
+Changing the backend host, port, or MCP path requires explicitly updating/restarting the companion and client configuration as applicable. If you change the optional bearer, clients also need the new credential. Stop terminal 2 manually when access is no longer needed, even if the backend is currently down. The companion does not restart the backend, `tunnel-client`, or Tailscale daemon.
+
+The owned CLI's unexpected exit remains a companion failure with bounded owned cleanup. Backend downtime alone is not a companion failure. No periodic probes, recovery loop, `--bg`, or request replay is added.
+
+
 ### Startup and shutdown guarantees
 
-- Tailscale standalone modes accept the literal bind `127.0.0.1`; wildcard, `localhost`, and IPv6 binds are rejected because the port-only proxy target is IPv4 loopback.
-- An occupied backend causes startup failure, not adoption or termination of the process already listening there. Repeated start fails clearly when resources are already owned elsewhere.
-- Listener configuration is inspected before backend startup and again immediately before starting the foreground CLI. Startup tracks one newly observed matching foreground session and rejects ambiguous or changed unrelated configuration.
+- All Tailscale launcher modes accept the literal bind `127.0.0.1`; wildcard, `localhost`, and IPv6 binds are rejected because the port-only proxy target is IPv4 loopback.
+- An occupied backend causes standalone startup failure, not adoption or termination of its listener. Attach-only commands instead verify the existing MCP endpoint and never take process ownership. Repeated attachment fails clearly when the external listener is already configured.
+- Listener configuration is inspected before backend startup or initial attachment verification and again immediately before starting the foreground CLI. Startup tracks one newly observed matching foreground session and rejects ambiguous or changed unrelated configuration.
 - Configuration reads and the CLI's write are not a cross-operator transaction. Do not concurrently reconfigure Serve/Funnel while a launcher is starting or stopping. Observed unrelated changes cause failure, not global rollback.
 - Shutdown stops only child trees started by that launcher. Windows uses awaited tree termination; foreground release is then confirmed with bounded read-only configuration observations. No arbitrary process is adopted because it answers a health URL.
 - These are local ownership guarantees. Actual daemon watch-session behavior, public reachability, and live OpenAI/client interoperability require the separately planned live verification. Windows process-tree and isolated route-fixture behavior were exercised; equivalent POSIX behavior was not exercised.
-- Required owned backend/foreground-service exit or spawn error makes the launcher failed, including unexpected exit zero. Child events are monitored for fail-stop handling within a five-second detection bound; this is not continuous public-route or application-health polling.
+- Required owned backend/foreground-service exit or spawn error makes a standalone launcher failed, including unexpected exit zero. Attach-only commands own no backend and fail-stop only for their owned CLI or cleanup failure. Child events are monitored within a five-second detection bound; this is not continuous public-route or application-health polling.
 - Intentional Ctrl+C/stop is distinct from dependency failure. Expected child exits during teardown do not turn a clean stop into failure or an existing failure into success.
 - Teardown retains its separate five-second budget. On Windows, an already exited root uses bounded process snapshots and creation-time-checked native handles for eligible descendants. Ambiguous identity, inaccessible processes, or incomplete teardown produce explicit unverified cleanup and exit 1, not speculative PID termination or a clean-shutdown claim.
 - The actual launcher exits nonzero on terminal dependency/cleanup failure. A returning dependency cannot restart a terminal launcher. No automatic recovery, daemon restart, authentication change, or tool-call replay is added; recovery remains separate I2 work.
@@ -126,6 +140,13 @@ The real CLI smoke exited 1 and reported external failure/confirmed cleanup. Its
 
 F1–F3 are complete locally, not end-to-end public hardening. Native Tailscale daemon/public-route behavior, actual clients/OpenAI interoperability, equivalent POSIX behavior, and latency improvements remain separately unverified. Cleanup uncertainty may leave resources behind; an explicit failure is not a guarantee that everything stopped.
 
+### I1 local verification status
+
+The focused invocation passed 62 checks, including both attach modes, real backend restart with updated synthetic project aliases through a local proxy, optional/configured authentication, cancellation, conflict refusal, independent teardown, and existing standalone regressions. Both actual npm attach commands passed rejection-only CLI smoke checks.
+
+The independent lifecycle smoke passed after a separately approved correction to its throwaway harness. It used the production standalone and attach APIs, observed HTTP 502 while the backend was down, then read the changed project aliases after restarting the backend at the same endpoint with the companion unchanged. Manual companion stop preserved the backend and controlled tunnel fixture; final owned teardown removed temporary state. The original pre-execution harness syntax failure remains recorded. I1 is locally accepted; native Tailscale daemon/public-route behavior and an actual agent's continuation after an error remain unverified. See [the I1 evidence](../notes/TUNNEL_REPORT.md#i1-attach-only-implementation-evidence) for outcomes and proof limits.
+
+
 ---
 
 ## 5. Environment Variables
@@ -137,7 +158,7 @@ Portus MCP provides environment variables to tune network exposure and paths:
 | `PORTUS_MCP_HOST` | `127.0.0.1` | Host adapter binding. Confines unencrypted HTTP to loopback, blocking raw physical LAN exposure. |
 | `PORTUS_MCP_PORT` | `8789` | Local TCP port for the HTTP MCP server. |
 | `PORTUS_MCP_PATH` | `/mcp` | Base HTTP path for MCP routes. Supports secret paths (e.g. `/secret-key/mcp`). |
-| `PORTUS_MCP_BEARER_TOKEN` | *(empty)* | Static bearer token. Recommended for public Funnel endpoints. |
+| `PORTUS_MCP_BEARER_TOKEN` | *(empty)* | Optional static bearer token for any mode, including public Funnel. Attachment uses it only when configured. |
 | `PORTUS_TAILSCALE_PATH` | PATH, then supported installation locations | Explicit Tailscale executable override, shared by startup and status. An invalid override fails instead of silently selecting another installation. |
 | `PORTUS_MCP_FORWARD_EXTERNAL_LOGS` | Disabled | Tailscale essential diagnostics remain visible when disabled. Enabling it adds bounded diagnostic categories, not raw CLI output. OpenAI logging behavior is unchanged. |
 
@@ -178,8 +199,8 @@ The helper records observation timestamps and separates these claims:
 | Daemon | `connected` requires Running, Online true, and a usable DNS name. `not-ready` and `unknown` are not success. |
 | Portus route | `configured` requires a matching hostname, HTTPS listener, mount/path, and backend. Exposure is public only when the matching `AllowFunnel` boolean is true. Foreground/background scope is reported, but ownership is not verified. |
 | Absent/mismatched route | Empty recognized configuration and unrelated configuration are distinct. Neither supplies a Portus URL. Malformed, unsupported, or ambiguous configuration is reported without guessing an endpoint. |
-| Local MCP | `verified` means authenticated local initialization, initialized notification, and tool discovery succeeded. This invokes no tools. A root health payload is insufficient. |
-| Public MCP | Always `not-checked` by this helper. Public proof requires an authenticated probe from outside the tailnet and actual-client validation. |
+| Local MCP | `verified` means local initialization, initialized notification, and tool discovery succeeded, using a bearer only when configured. This invokes no tools. A root health payload is insufficient. |
+| Public MCP | Always `not-checked` by this helper. Public proof requires a probe from outside the tailnet with the selected optional authentication configuration and actual-client validation. |
 
 Configured URLs include the actual listener port when non-default. Mount prefixes and proxy target paths are accounted for. Handler selection follows Tailscale: an exact request path wins first; otherwise parent paths are checked from most specific to root, with the slash form before the non-slash form at each level. Non-slash mounts also handle descendant paths, and an unrelated handler in either form can shadow a matching root proxy. Tailnet Services and unknown configuration extensions are conservatively unsupported rather than treated as ready.
 
@@ -189,7 +210,7 @@ Exit code `0` means the daemon is connected, the intended route is configured, a
 
 Tailscale launcher output retains startup, failure, and closure diagnostics even with verbose forwarding disabled. It emits fixed categories rather than raw external text, deduplicates them, caps each child at 16 diagnostic categories, and bounds pending input to 4 KiB per stream. Raw credentials, identities, URLs, and local paths are withheld even in verbose mode. Configured endpoint URLs in intentional status output still contain the hostname/path; treat that output as private.
 
-The status helper alone does not prove runtime ownership. F2's standalone launcher separately tracks the backend child and the newly observed foreground session during its own lifecycle. Neither status nor launcher configuration proof establishes public reachability. No attach-only mode, persistence, public authentication design, or automatic recovery is added.
+The status helper alone does not prove runtime ownership. Standalone and attach-only launchers separately track their owned CLI and newly observed foreground session. Only standalone launchers own a backend; attach-only launchers leave the borrowed backend untouched. Neither status nor launcher configuration proof establishes public reachability. No persistence, mandatory authentication, or automatic recovery is added.
 
 ---
 
@@ -201,7 +222,7 @@ Tailscale Serve injects verified identity headers for requests coming from devic
 
 Portus MCP inspects these headers and records them in session audit logs (`SessionEvents`), providing cryptographic identity traceability for private inter-device mesh requests.
 
-**Important Note for Funnel Traffic**: Tailscale Funnel proxies public internet traffic and **does not inject Tailscale identity headers**. Funnel requests process as anonymous at the network layer; Portus relies on `PORTUS_MCP_BEARER_TOKEN` or application credentials to authenticate and authorize Funnel requests.
+**Important Note for Funnel Traffic**: Tailscale Funnel proxies public internet traffic and does not inject Tailscale identity headers. Funnel callers have no verified tailnet identity. Optional application bearer authentication can restrict access; without it, the exposed tools accept unauthenticated public callers.
 
 ## 8. Tailscale Prerequisites & Admin Console Policy
 
@@ -229,7 +250,7 @@ In **Access Controls** (ACLs), grant `funnel` capability to designated nodes:
 
 ## 9. Verifying External Endpoint Reachability
 
-After starting `npm run start:funnel` (or `tailscale funnel 8789`), verify reachability from an external network (e.g., a phone connected via cellular data outside your Tailnet):
+After starting `npm run start:funnel` or attaching with `npm run attach:funnel`, verify reachability in an approved live window from an external network, such as a phone on cellular data outside your tailnet:
 
 ### 1. Test HTTPS Handshake
 ```bash
@@ -251,7 +272,7 @@ curl -i \
 1. **Keep Local Host as `127.0.0.1`**: Keep the backend on loopback; the local Tailscale daemon terminates external HTTPS.
 2. **Daily Driver (`tunnel-client`)**: Leave `tunnel-client` connecting locally to `http://127.0.0.1:8789/mcp` for ChatGPT daily use.
 3. **Use Tailscale Serve for Private Devices**: Run `tailscale serve 8789` for laptops, phones, or Cursor/Codex Desktop on other machines. Tailscale identity headers apply here.
-4. **Use Tailscale Funnel for Perplexity**: Run `tailscale funnel 8789` when exposing an endpoint to cloud AI agents like Perplexity. Require a `PORTUS_MCP_BEARER_TOKEN`.
+4. **Use Tailscale Funnel for Perplexity**: Use `npm run attach:funnel` for an existing backend or `npm run start:funnel` for a standalone server. Bearer authentication remains optional.
 5. **Secret Paths Are Not Auth**: Do not rely on secret paths alone to protect endpoints with sensitive tool access.
 6. **Inspect Status Anytime**: Run `npm run tailscale:status` to inspect your active configuration.
 

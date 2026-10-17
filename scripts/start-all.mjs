@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   resolveTailscalePath, runTailscaleCommand, inspectDaemon, monitorTailscaleProcess,
-  validateTailscaleBind, assertTailscaleListenerFree, findOwnedTailscaleRoute, tailscaleForegroundReleased
+  validateTailscaleBind, assertTailscaleListenerFree, findOwnedTailscaleRoute, tailscaleForegroundReleased,
+  tailscaleEndpoint, probeLocalMcp
 } from "./tailscale.mjs";
 
 export function shouldForwardExternalLogs(env = process.env) {
@@ -221,8 +222,9 @@ async function terminateOwnedTree(owner, deadline, cleanupExited) {
   await withinDeadline(closed, deadline, "Owned process exit");
 }
 
-export function createStandaloneLauncher({
+export function createLauncher({
   mode = "tunnel",
+  attachOnly = false,
   env = process.env,
   executeTailscale = runTailscaleCommand,
   launchTailscale,
@@ -355,13 +357,14 @@ export function createStandaloneLauncher({
   }
 
   async function start() {
-    if (startCalled) throw new Error("This standalone launcher already started; it will not adopt or duplicate a backend.");
+    if (startCalled) throw new Error("This launcher already started; it will not adopt or duplicate a backend.");
     if (shutdownStarted) throw controller.signal.reason;
     startCalled = true;
     phase = "starting";
     try {
       controller.signal.throwIfAborted();
-      if (!["tunnel", "serve", "funnel"].includes(mode)) throw new Error("Unsupported standalone launcher mode.");
+      if (!["tunnel", "serve", "funnel"].includes(mode)) throw new Error("Unsupported launcher mode.");
+      if (attachOnly && !isTailscale) throw new Error("Attach-only operation requires Serve or Funnel; it cannot start tunnel-client.");
       if (isTailscale) {
         validateTailscaleBind(env);
         binary = resolveTailscalePath(env);
@@ -372,24 +375,34 @@ export function createStandaloneLauncher({
         ]);
         controller.signal.throwIfAborted();
         const daemon = inspectDaemon(status);
-        if (daemon.state !== "connected") throw new Error(`Tailscale daemon is ${daemon.state}; establish connectivity separately before standalone exposure.`);
+        if (daemon.state !== "connected") throw new Error(`Tailscale daemon is ${daemon.state}; establish connectivity separately before Tailscale exposure.`);
         baseline = assertTailscaleListenerFree(config);
         hostname = daemon.hostname;
       }
 
-      const backendStartedAt = Date.now();
-      const backend = track(startProcess("portus", "36", process.execPath, ["--import", "tsx", "src/server.ts"], {
-        env, ipc: true, processGroup: true, expectedExit: () => shutdownStarted
-      }), "backend", backendStartedAt);
-      const probeHost = host === "0.0.0.0" ? "127.0.0.1" : host === "::" ? "::1" : host;
-      const urlHost = probeHost.includes(":") ? `[${probeHost}]` : probeHost;
-      await waitForMcpReady({
-        url: new URL(mcpPath, `http://${urlHost}:${port}`),
-        bearerToken: env.PORTUS_MCP_BEARER_TOKEN?.trim() ?? "",
-        bindHost: host, child: backend, signal: controller.signal
-      });
-      controller.signal.throwIfAborted();
-      log("orchestrator", "32", "Owned Portus backend bound its listener and passed local readiness.");
+      let backend;
+      if (attachOnly) {
+        const endpoint = tailscaleEndpoint(env);
+        const local = await probeLocalMcp(endpoint, { signal: controller.signal });
+        controller.signal.throwIfAborted();
+        if (local.state !== "verified") throw new Error(`Existing Portus backend could not be verified [${local.reason}]; no Tailscale exposure was started.`);
+        // The backend is borrowed, not a child. Do not track its PID, lifetime,
+        // or health after attachment; the route survives operator restarts.
+      } else {
+        const backendStartedAt = Date.now();
+        backend = track(startProcess("portus", "36", process.execPath, ["--import", "tsx", "src/server.ts"], {
+          env, ipc: true, processGroup: true, expectedExit: () => shutdownStarted
+        }), "backend", backendStartedAt);
+        const probeHost = host === "0.0.0.0" ? "127.0.0.1" : host === "::" ? "::1" : host;
+        const urlHost = probeHost.includes(":") ? `[${probeHost}]` : probeHost;
+        await waitForMcpReady({
+          url: new URL(mcpPath, `http://${urlHost}:${port}`),
+          bearerToken: env.PORTUS_MCP_BEARER_TOKEN?.trim() ?? "",
+          bindHost: host, child: backend, signal: controller.signal
+        });
+        controller.signal.throwIfAborted();
+        log("orchestrator", "32", "Owned Portus backend bound its listener and passed local readiness.");
+      }
 
       if (mode === "tunnel") {
         const tunnelEnv = { ...env, TUNNEL_CLIENT_PROFILE_DIR: resolveProfileDir(env, profile) };
@@ -405,7 +418,7 @@ export function createStandaloneLauncher({
       }
 
       // Recheck immediately before configuring: a port being free during the initial
-      // preflight is not permission to replace a listener created while Portus started.
+      // preflight is not permission to replace a listener created during backend verification.
       const current = await readConfig(Date.now() + 5_000, controller.signal);
       baseline = assertTailscaleListenerFree(current);
       const color = mode === "funnel" ? "33" : "34";
@@ -422,6 +435,7 @@ export function createStandaloneLauncher({
         lease = findOwnedTailscaleRoute(baseline, config, { hostname, host, port, mcpPath, mode });
         if (lease) {
           phase = "running";
+          if (attachOnly) log("orchestrator", "32", `Tailscale ${mode === "funnel" ? "Funnel" : "Serve"} attached to the existing MCP backend. Press Ctrl+C to stop the companion.`);
           return { backend, external, route: lease.route };
         }
         await delay(100, undefined, { signal: controller.signal });
@@ -435,7 +449,7 @@ export function createStandaloneLauncher({
       }
       const startupError = failure ?? error;
       try { await stop(); }
-      catch (cleanupError) { throw new AggregateError([startupError, cleanupError], "Standalone startup failed and owned cleanup could not be confirmed."); }
+      catch (cleanupError) { throw new AggregateError([startupError, cleanupError], "Launcher startup failed and owned cleanup could not be confirmed."); }
       throw startupError;
     }
   }
@@ -443,21 +457,23 @@ export function createStandaloneLauncher({
 }
 
 async function main() {
-  const mode = process.argv.find((arg) => arg.startsWith("--"))?.slice(2) || "tunnel";
+  const args = process.argv.slice(2);
+  const attachOnly = args.includes("--attach");
+  const mode = args.find((arg) => arg !== "--attach" && arg.startsWith("--"))?.slice(2) || "tunnel";
   const host = process.env.PORTUS_MCP_HOST || "127.0.0.1";
   const port = process.env.PORTUS_MCP_PORT || "8789";
   const mcpPath = process.env.PORTUS_MCP_PATH || "/mcp";
   const profile = process.env.PORTUS_TUNNEL_PROFILE || "portus-local";
-  const launcher = createStandaloneLauncher({ mode });
+  const launcher = createLauncher({ mode, attachOnly });
   const requestShutdown = () => {
-    log("orchestrator", "33", "Stopping owned processes and awaiting bounded teardown.");
+    log("orchestrator", "33", attachOnly ? "Stopping only the owned Tailscale companion and awaiting bounded teardown." : "Stopping owned processes and awaiting bounded teardown.");
     void launcher.stop().catch(() => {}); // The terminal completion below reports cleanup failure.
   };
   process.on("SIGINT", requestShutdown);
   process.on("SIGTERM", requestShutdown);
 
   console.log("==================================================");
-  console.log(`  Portus MCP Orchestrator (Mode: ${mode})`);
+  console.log(`  Portus MCP Orchestrator (Mode: ${attachOnly ? `attach:${mode}` : mode})`);
   console.log(`  • Server:  http://${host}:${port}${mcpPath}`);
   if (mode === "tunnel") {
     console.log(`  • Service: OpenAI tunnel-client (Profile: ${profile})`);
@@ -466,7 +482,7 @@ async function main() {
   } else if (mode === "serve") {
     console.log(`  • Service: Tailscale Serve (Port: ${port})`);
   }
-  console.log("  Press Ctrl+C to stop all processes cleanly.");
+  console.log(attachOnly ? "  Press Ctrl+C to stop only the Tailscale companion." : "  Press Ctrl+C to stop all processes cleanly.");
   console.log("==================================================");
 
   try {

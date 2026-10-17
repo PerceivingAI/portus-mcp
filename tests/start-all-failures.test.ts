@@ -7,7 +7,7 @@ import { createServer as createHttpServer } from "node:http";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { createStandaloneLauncher, startProcess } from "../scripts/start-all.mjs";
+import { createLauncher, startProcess } from "../scripts/start-all.mjs";
 import { cleanupExitedWindowsTree } from "../src/runtime/processTermination.js";
 
 const root = process.cwd();
@@ -32,7 +32,7 @@ async function fixture(t:TestContext, {unverified = false} = {}) {
   let launched = 0;
   let informReady:(value:z.infer<typeof listenerSchema>)=>void = ()=>{};
   const ready = new Promise<z.infer<typeof listenerSchema>>(resolve=>{informReady=resolve;});
-  const launcher = createStandaloneLauncher({env,
+  const launcher = createLauncher({env,
     ...(unverified ? {cleanupExited:async()=>({confirmed:false,terminated:0,unverified:1,remaining:0})} : {}),
     launchTunnel:(_binary:string,_args:string[],options:ManagedOptions)=>{
       launched++;

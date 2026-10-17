@@ -244,9 +244,9 @@ async function jsonResponse(response) {
   } finally { await reader.cancel().catch(() => {}); }
 }
 
-export async function probeLocalMcp(endpoint, { timeoutMs = 5_000 } = {}) {
+export async function probeLocalMcp(endpoint, { timeoutMs = 5_000, signal: parentSignal } = {}) {
   if (!endpoint) return { state: "not-checked", reason: "unsupported-local-endpoint", observedAt: timestamp() };
-  const signal = AbortSignal.timeout(timeoutMs);
+  const signal = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(parentSignal ? [parentSignal] : [])]);
   const host = endpoint.host.includes(":") ? `[${endpoint.host}]` : endpoint.host;
   const url = new URL(endpoint.mcpPath, `http://${host}:${endpoint.port}`);
   const headers = { "content-type": "application/json", accept: "application/json, text/event-stream", ...(endpoint.bearerToken ? { authorization: `Bearer ${endpoint.bearerToken}` } : {}) };

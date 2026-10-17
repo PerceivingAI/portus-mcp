@@ -6,7 +6,7 @@ import { createServer as createHttpServer } from "node:http";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { createStandaloneLauncher, startProcess } from "../scripts/start-all.mjs";
+import { createLauncher, startProcess } from "../scripts/start-all.mjs";
 import { cleanupExitedWindowsTree, type ExitedWindowsTreeOwner } from "../src/runtime/processTermination.js";
 
 const hostname = "fixture.example.ts.net";
@@ -86,7 +86,7 @@ async function fixture(t: TestContext, {initial = {}, port, onConfigRead}: {init
 
   function makeLauncher(mode = "serve", {failSpawn = false, exitBeforeRoute = false, proveDeadRoot = false, host = "127.0.0.1"} = {}) {
     let cliRoot: ChildProcess | undefined;
-    const launcher = createStandaloneLauncher({mode,env:{...env,PORTUS_MCP_HOST:host},
+    const launcher = createLauncher({mode,env:{...env,PORTUS_MCP_HOST:host},
       ...(proveDeadRoot ? {cleanupExited:async(owner:ExitedWindowsTreeOwner,options:{timeoutMs:number})=>{
         if(owner.rootPid !== cliRoot?.pid) return cleanupExitedWindowsTree(owner,options);
         assert(cliRoot.exitCode !== null || cliRoot.signalCode !== null);
