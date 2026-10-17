@@ -3,12 +3,12 @@ import path from "node:path";
 import { run } from "node:test";
 import { spec } from "node:test/reporters";
 
-const concurrency = Number(process.env.PORTUS_TEST_CONCURRENCY ?? (process.platform === "win32" ? 2 : 4));
+const concurrency = Number(process.env.PORTUS_TEST_CONCURRENCY ?? 4);
 if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
   throw new Error("PORTUS_TEST_CONCURRENCY must be a positive integer.");
 }
-// Keep Windows' original lexical order; prioritize measured slow files elsewhere.
-const priority = process.platform === "win32" ? [] : [
+// Start measured long-running files first. Other files retain lexical order.
+const priority = [
   "start-all-recovery.test.ts",
   "start-all-recovery-deadline.test.ts",
   "session-events-stream.test.ts",
