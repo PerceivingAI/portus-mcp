@@ -11,12 +11,16 @@ permissions:
 
 jobs:
   test:
-    name: Test (${{ matrix.os }})
+    name: Test (${{ matrix.os }}, concurrency ${{ matrix.test-concurrency }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        # Temporary same-revision comparison before selecting the CI default.
+        test-concurrency: [2, 4]
+    env:
+      PORTUS_TEST_CONCURRENCY: ${{ matrix.test-concurrency }}
 
     steps:
       - name: Checkout
@@ -29,7 +33,16 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        id: install
+        env:
+          npm_config_logs_dir: ${{ runner.temp }}/npm-install-logs
+        run: npm ci --timing
+
+      - name: Report npm install timing
+        if: ${{ !cancelled() && (steps.install.outcome == 'success' || steps.install.outcome == 'failure') }}
+        env:
+          PORTUS_INSTALL_OUTCOME: ${{ steps.install.outcome }}
+        run: node scripts/report-install-timing.mjs "${{ runner.temp }}/npm-install-logs"
 
       - name: Type check
         run: npm run check
