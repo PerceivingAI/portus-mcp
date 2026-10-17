@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { ChildProcess } from "node:child_process";
 import { createServer as createNetServer, createConnection, type Socket } from "node:net";
 import { createServer as createHttpServer } from "node:http";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { createLauncher, startProcess } from "../scripts/start-all.mjs";
@@ -57,7 +57,7 @@ async function fixture(t: TestContext, {initial = {}, port, onConfigRead}: {init
   const orphanCleanup = {aliveAfterRootExit:false,terminated:0};
   const childInfo = new Promise<z.infer<typeof childInfoSchema>>(resolve => {informChild=resolve;});
   // This local fixture models daemon watch-session release. It never binds a public
-  // listener or contacts Tailscale. Windows child-tree termination remains real.
+  // listener or contacts Tailscale. Native Windows tree/POSIX group cleanup remains real.
   const watchServer = createNetServer(socket => {
     sockets.add(socket);
     let pending = "";
@@ -114,7 +114,8 @@ async function fixture(t: TestContext, {initial = {}, port, onConfigRead}: {init
           const net=require('node:net');
           const watch=net.connect(${watchPort},'127.0.0.1');
           watch.once('connect',()=>{
-            const child=spawn(process.execPath,['-e',${JSON.stringify(nestedSource)}],{stdio:['ignore','ignore','ignore','ipc'],detached:true,windowsHide:true});
+            // Windows cleanup owns the descendant tree; POSIX cleanup owns the inherited group.
+            const child=spawn(process.execPath,['-e',${JSON.stringify(nestedSource)}],{stdio:['ignore','ignore','ignore','ipc'],detached:${process.platform === "win32"},windowsHide:true});
             child.once('message',info=>{
               watch.write(JSON.stringify({mode:${JSON.stringify(args[0])},port:${Number(args[1])}})+'\\n');
               process.send(info);
@@ -164,8 +165,32 @@ async function closedPort(port:number) {
   });
 }
 
+function assertProcessExited(pid:number) {
+  try {
+    process.kill(pid,0);
+  } catch(error) {
+    assert.equal((error as NodeJS.ErrnoException).code,"ESRCH","process existence must not be inferred from permission or unknown errors");
+    return;
+  }
+  assert.equal(process.platform,"linux","the owned descendant must no longer exist");
+  let stat: string;
+  try {
+    stat = readFileSync(`/proc/${pid}/stat`,"utf8");
+  } catch(error) {
+    if((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    // Reaping can race the read, but a missing/unreadable proc entry alone is not proof.
+    assert.throws(()=>process.kill(pid,0),{code:"ESRCH"});
+    return;
+  }
+  // Linux containers may leave an exited orphan awaiting reaping by PID 1. Z/X
+  // cannot execute; a live, malformed, or unknown state must still fail.
+  assert.match(stat,new RegExp(`^${pid} \\([\\s\\S]*\\) [ZX] `),"the owned descendant must be exited, not merely disconnected");
+}
+
+const ownershipScope = process.platform === "win32" ? "Windows child tree" : "POSIX process group";
+
 for(const mode of ["serve","funnel"]) {
-  test(`standalone ${mode} stops its Windows child tree/listeners and preserves unrelated routes`,{timeout:15000},async t => {
+  test(`standalone ${mode} stops its ${ownershipScope}/listeners and preserves unrelated routes`,{timeout:15000},async t => {
     const initial: ServeConfig = {...route(9999,"serve",8443),Foreground:{borrowed:route(9998,"serve",10000)}};
     const f = await fixture(t,{initial});
     const launcher = f.makeLauncher(mode);
@@ -182,7 +207,7 @@ for(const mode of ["serve","funnel"]) {
     assert.equal(terminal.cleanup,"confirmed");
     await closedPort(Number(f.env.PORTUS_MCP_PORT));
     await closedPort(descendant.port);
-    assert.throws(()=>process.kill(descendant.pid,0),{code:"ESRCH"});
+    assertProcessExited(descendant.pid);
     assert.deepEqual(f.state(),initial);
   });
 }
@@ -247,7 +272,7 @@ test("real CLI spawn failure after backend readiness cleans up only owned startu
   await closedPort(Number(f.env.PORTUS_MCP_PORT));
 });
 
-test("unexpected Tailscale exit cleans descendants after their native root is gone",{timeout:15000},async t => {
+test(`unexpected Tailscale exit cleans its ${ownershipScope} after the root is gone`,{timeout:15000},async t => {
   const initial: ServeConfig = {...route(9999,"serve",8443),Foreground:{borrowed:route(9998,"serve",10000)}};
   const f = await fixture(t,{initial});
   const launcher = f.makeLauncher("serve",{proveDeadRoot:process.platform === "win32"});
@@ -271,7 +296,7 @@ test("unexpected Tailscale exit cleans descendants after their native root is go
   t.diagnostic(JSON.stringify({fault:"tailscale-exit-23-dead-root",detectionMs,cleanupMs,state:terminal.state,exitCode:terminal.exitCode,cleanup:terminal.cleanup}));
   await closedPort(Number(f.env.PORTUS_MCP_PORT));
   await closedPort(descendant.port);
-  assert.throws(()=>process.kill(descendant.pid,0),{code:"ESRCH"});
+  assertProcessExited(descendant.pid);
   assert.deepEqual(f.state(),initial);
   assert.equal(f.launchCount(),1);
 });

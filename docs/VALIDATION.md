@@ -13,6 +13,12 @@ npm run build
 npm run flue:check
 ```
 
+## Continuous integration
+
+GitHub Actions runs the standard checks on `ubuntu-latest` and `windows-latest` with Node.js 20. Both matrix jobs run to completion independently when either job fails.
+
+Process-ownership regressions exercise Windows descendant-tree cleanup and POSIX owned-process-group cleanup. The exit-order regression uses a real child with delayed application callbacks so native process reaping can proceed on either platform.
+
 ## Manual ChatGPT Verification
 
 Use ChatGPT to verify project discovery, file read/write/move/delete behavior, delete confirmation, package script execution, search, symbol search, path boundary enforcement, spawned-agent lifecycle, session events, cleanup, config inspection, permission inspection, and agent limit inspection.

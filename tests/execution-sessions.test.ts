@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { ChildProcess } from "node:child_process";
 import {
   startExecutionSession,
   pollExecutionSession,
@@ -141,7 +141,7 @@ test("Execution sessions spawn a resolved executable while preserving the logica
   assert.equal(getExecutionSession(session.sessionId).command, "chrome.exe");
 });
 
-test("Execution sessions preserve the owned child exit result before reconciliation", async () => {
+test("Execution sessions preserve the owned child exit result before reconciliation", async (t) => {
   const ready = path.join(root, "exit-race-ready");
   const release = path.join(root, "exit-race-release");
   const session = await startExecutionSession({
@@ -157,13 +157,33 @@ test("Execution sessions preserve the owned child exit result before reconciliat
   while (!existsSync(ready) && Date.now() < startupDeadline) await delay(10);
   assert.equal(existsSync(ready), true);
   const record = getExecutionSession(session.sessionId);
-  assert(record.pid);
-  writeFileSync(release, "release");
-  // Hold the event loop until OS exit, before Node can publish exit/stdio events.
-  execFileSync(process.execPath, ["-e", `const deadline=Date.now()+3000;const timer=setInterval(()=>{try{process.kill(${record.pid},0);}catch(error){if(error.code==="ESRCH"){clearInterval(timer);process.exit(0);}throw error;}if(Date.now()>deadline)process.exit(2);},5);`], { timeout: 4000, stdio: "pipe" });
-  const beforeCallbacks = pollExecutionSession({ sessionId: session.sessionId, cursor: 0 });
-  assert.equal(beforeCallbacks.status, "running");
-  let completed = beforeCallbacks;
+  const pid = record.pid;
+  assert(pid);
+  // Reap the real child normally, but hold application exit/close delivery.
+  // Blocking the parent until PID absence deadlocks on unreaped POSIX zombies.
+  const held: Array<{ child: ChildProcess; event: string; args: unknown[] }> = [];
+  const originalEmit = ChildProcess.prototype.emit;
+  const delivery = t.mock.method(ChildProcess.prototype, "emit", function(this: ChildProcess, event: string, ...args: unknown[]) {
+    if (this.pid === pid && (event === "exit" || event === "close")) {
+      held.push({ child: this, event, args });
+      return true;
+    }
+    return Reflect.apply(originalEmit, this, [event, ...args]);
+  });
+  try {
+    writeFileSync(release, "release");
+    const exitDeadline = Date.now() + 3000;
+    while (!held.some(item => item.event === "close") && Date.now() < exitDeadline) await delay(10);
+    assert(held.some(item => item.event === "exit"), "the native child must exit before polling");
+    assert(held.some(item => item.event === "close"), "native stdio must close before polling");
+    assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+    const beforeCallbacks = pollExecutionSession({ sessionId: session.sessionId, cursor: 0 });
+    assert.equal(beforeCallbacks.status, "running");
+  } finally {
+    delivery.mock.restore();
+    for (const item of held) Reflect.apply(originalEmit, item.child, [item.event, ...item.args]);
+  }
+  let completed = pollExecutionSession({ sessionId: session.sessionId, cursor: 0 });
   const completionDeadline = Date.now() + 3000;
   while (completed.status === "running" && Date.now() < completionDeadline) {
     await delay(10);
