@@ -1,6 +1,6 @@
 # Portus MCP
 
-Portus MCP is a high-performance, policy-bounded MCP server for AI-assisted software engineering across local workstations, remote machines, and VMs. **The connection is the product; tools are policy-bounded adapters.** A connected agent interacts with pre-registered project workspaces through a unified, secure ten-tool surface.
+Portus MCP is a high-performance, policy-bounded MCP server for AI-assisted software engineering across local workstations, remote machines, and VMs. **Tools are policy-bounded adapters** where a connected agent interacts with pre-registered project workspaces through a unified, secure ten-tool surface.
 
 ---
 
@@ -35,7 +35,7 @@ cd portus-mcp
 npm install
 ```
 
-> **Requirements**: Node.js `20.9.0` or newer, npm `10+`, and Git.
+> **Requirements**: Node.js `>=22.23.4 <23 || >=24.22.1 <25 || >=26.12.1 <27` with bundled npm `11.19.1` from the pinned `24.22.1` runtime, and Git. `.nvmrc` and CI select `24.22.1`; do not bypass `engine-strict`.
 
 ---
 

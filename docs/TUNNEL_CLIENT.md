@@ -58,7 +58,7 @@ For the OpenAI tunnel-client flow, `CONTROL_PLANE_API_KEY` must be a regular Ope
 You need:
 
 ```text
-- Node.js 20 or newer
+- Node.js >=22.23.4 <23 || >=24.22.1 <25 || >=26.12.1 <27; .nvmrc selects 24.22.1
 - npm
 - Git
 - a working Portus MCP checkout
@@ -67,6 +67,8 @@ You need:
 - a regular OpenAI Platform API key
 - the tunnel-client executable
 ```
+
+Preserve `.npmrc` `engine-strict=true` and the [Node/Undici security policy](../README.md). The [October Node security release](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases) replaces the old Node 20+ prerequisite; updating host Node does not replace the separately installed Undici package. Refresh dependencies and restart old MCP/subagent processes during an authorized maintenance window, without changing tunnel authentication or unrelated routes.
 
 Useful links:
 

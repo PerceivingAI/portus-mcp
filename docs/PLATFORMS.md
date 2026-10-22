@@ -40,16 +40,7 @@ npm run build
 npm run flue:check
 ```
 
-Verified environment:
-
-```text
-Linux x86_64
-Node.js v25.6.1
-npm 11.10.0
-git 2.53.0
-```
-
-Node.js 20 or newer is required.
+Runtime pinned by `.nvmrc`: Node `24.22.1` with bundled npm `11.19.1`. The manifest and root lock require `>=22.23.4 <23 || >=24.22.1 <25 || >=26.12.1 <27`; `.npmrc` sets `engine-strict=true`. See the [security policy](../README.md) and [Node advisory](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases).
 
 Start the server with:
 

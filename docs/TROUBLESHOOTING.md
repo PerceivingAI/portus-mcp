@@ -10,7 +10,7 @@ Check Node.js first:
 node -v
 ```
 
-Portus MCP requires Node.js 20.9 or newer.
+Portus MCP requires Node `>=22.23.4 <23 || >=24.22.1 <25 || >=26.12.1 <27` for the [October security fixes](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases). `.nvmrc` selects `24.22.1`; do not bypass `.npmrc` `engine-strict=true` or downgrade to the previous Node 20.9 minimum.
 
 Then confirm dependencies are installed:
 
@@ -18,7 +18,7 @@ Then confirm dependencies are installed:
 npm install
 ```
 
-CI runs on Node.js 20 with npm 10. If GitHub Actions fails at `npm ci` with a missing package from `package-lock.json`, regenerate the lockfile with npm 10 semantics before committing it. A newer local npm version can produce a lockfile that installs locally but still fails in CI.
+CI reads Node `24.22.1` and its bundled npm `11.19.1` from `.nvmrc`; it no longer relies on a floating major. Keep manifest/root-lock engines, the version file and docs aligned. Lockfile changes must be produced with the repository-selected runtime, keep Undici at `7.30.1`, and never roll back to an affected release. The installed-dependency cache keys on the exact Node version/ABI, platform and manifest/lock hashes.
 
 If config paths were changed, confirm these files exist:
 
